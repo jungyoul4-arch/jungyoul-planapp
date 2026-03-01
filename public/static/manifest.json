@@ -1,0 +1,31 @@
+{
+  "name": "고교학점플래너 - 정율사관학원",
+  "short_name": "학점플래너",
+  "description": "고교학점제 시대, 학교생활의 모든 순간을 기록하고 생기부 경쟁력으로 만드세요",
+  "id": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#1a1a24",
+  "theme_color": "#6C5CE7",
+  "orientation": "portrait",
+  "scope": "/",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education"],
+  "screenshots": [],
+  "prefer_related_applications": false
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "credit-planner-v8",
+  "compatibility_date": "2026-02-14",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "credit-planner-db",
+      "database_id": "8c013443-0c9d-4518-b29b-b2b9b24c4b65"
+    }
+  ]
+}
