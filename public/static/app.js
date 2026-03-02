@@ -443,6 +443,7 @@ function renderScreen() {
       tabletContent.innerHTML = renderStudentApp();
       initStudentEvents(tabletContent);
       initAuthEvents(tabletContent);
+      initMobileBottomTab();
       setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
       setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
       setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
@@ -453,6 +454,7 @@ function renderScreen() {
       container.innerHTML = renderStudentApp();
       initStudentEvents(container);
       initAuthEvents(container);
+      initMobileBottomTab();
       setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
       setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
       setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
@@ -662,6 +664,51 @@ function renderSidebar() {
       </div>
     </div>
   `;
+}
+
+// ==================== 모바일 하단 탭바 ====================
+function renderMobileBottomTab() {
+  const tabs = [
+    { id:'home', icon:'fa-house', label:'홈' },
+    { id:'record', icon:'fa-pen-to-square', label:'기록' },
+    { id:'planner', icon:'fa-calendar-check', label:'플래너' },
+    { id:'growth', icon:'fa-chart-line', label:'성장' },
+    { id:'myqa', icon:'fa-circle-question', label:'내 질문' },
+    { id:'my', icon:'fa-user', label:'마이' },
+    { id:'community', icon:'fa-comments', label:'커뮤니티' },
+  ];
+  const unrecordedCount = countUnrecordedEndedClasses();
+  const unanswered = state.myQaStats?.unanswered || 0;
+  return `<nav class="mobile-bottom-tab-bar">
+    ${tabs.map(t => `
+      <button class="mob-tab-item ${state.studentTab===t.id?'active':''}" data-mobtab="${t.id}">
+        <i class="fas ${t.icon}"></i>
+        <span>${t.label}</span>
+        ${t.id==='record' && unrecordedCount>0 ? `<span class="mob-tab-badge">${unrecordedCount}</span>` : ''}
+        ${t.id==='myqa' && unanswered>0 ? `<span class="mob-tab-badge" style="background:var(--accent)">${unanswered}</span>` : ''}
+      </button>
+    `).join('')}
+  </nav>`;
+}
+
+function initMobileBottomTab() {
+  const el = document.getElementById('mobile-bottom-tab');
+  if (!el) return;
+  // 로그인/온보딩 화면에서는 숨김
+  const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor';
+  if (isAuthScreen) { el.innerHTML = ''; return; }
+  el.innerHTML = renderMobileBottomTab();
+  el.querySelectorAll('.mob-tab-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.mobtab;
+      if (tab === 'myqa') { openMyQaIframe(); return; }
+      if (tab === 'community') { openCommunityNewTab(); return; }
+      state._communityOpened = false;
+      state.studentTab = tab;
+      state.currentScreen = 'main';
+      renderScreen();
+    });
+  });
 }
 
 function renderFab() {

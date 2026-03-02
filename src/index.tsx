@@ -2298,6 +2298,7 @@ app.get('/', (c) => {
             </span>
           </div>
           <div id="tablet-content"></div>
+          <div id="mobile-bottom-tab"></div>
         </div>
       </div>
       <div id="desktop-container" style="display:none">
