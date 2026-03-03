@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Records Module — 독립 테스트</title>
+
+  <!-- Font Awesome (아이콘) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <!-- Records Module CSS -->
+  <link rel="stylesheet" href="./records.css">
+
+  <style>
+    /* 독립 테스트 페이지 기본 스타일 */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0D1117;
+      --bg-secondary: #161B22;
+      --bg-card: #1C2128;
+      --bg-hover: #21262D;
+      --border: #30363D;
+      --text-primary: #E6EDF3;
+      --text-secondary: #8B949E;
+      --text-muted: #6E7681;
+      --primary: #6C5CE7;
+      --primary-hover: #5A4BD1;
+      --primary-bg: rgba(108, 92, 231, 0.15);
+      --success: #2EA043;
+      --success-bg: rgba(46, 160, 67, 0.15);
+      --warning: #D29922;
+      --warning-bg: rgba(210, 153, 34, 0.15);
+      --danger: #F85149;
+      --accent: #58A6FF;
+      --streak-fire: #FF6B35;
+      --glass-bg: rgba(22, 27, 34, 0.8);
+      --glass-border: rgba(48, 54, 61, 0.6);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* 테스트 헤더 */
+    .test-header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: rgba(13, 17, 23, 0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+    }
+    .test-header .badge {
+      background: var(--primary);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+    .test-header .info {
+      color: var(--text-muted);
+    }
+    .test-header .info strong {
+      color: var(--text-secondary);
+    }
+    .test-header .login-btn {
+      margin-left: auto;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .test-header .login-btn:hover {
+      background: var(--primary-hover);
+    }
+    .test-header .login-btn.logged-in {
+      background: var(--success);
+    }
+
+    /* 로그인 모달 */
+    .login-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .login-modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px 24px;
+      width: 320px;
+      text-align: center;
+    }
+    .login-modal h3 {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 16px;
+    }
+    .login-modal input {
+      width: 100%;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+    .login-modal button {
+      width: 100%;
+      padding: 10px;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    .login-modal button:hover { background: var(--primary-hover); }
+    .login-modal .cancel {
+      background: transparent;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+    .login-modal .error {
+      color: var(--danger);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    /* 컨테이너 */
+    #records-container {
+      margin-top: 40px;
+      min-height: calc(100vh - 40px);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 테스트 헤더 -->
+  <div class="test-header">
+    <span class="badge">DEV</span>
+    <span class="info">Records Module <strong>독립 테스트</strong></span>
+    <span class="info" id="test-student-info">로그인 필요</span>
+    <button class="login-btn" id="test-login-btn" onclick="openLoginModal()">로그인</button>
+  </div>
+
+  <!-- 메인 컨테이너 -->
+  <div id="records-container" class="records-module"></div>
+
+  <!-- Records Module (ES Module) -->
+  <script type="module">
+    import RecordsModule from './records.js';
+
+    // 글로벌 접근 (테스트용)
+    window._testRM = RecordsModule;
+
+    // 로그인 모달
+    window.openLoginModal = function() {
+      if (document.querySelector('.login-modal-overlay')) return;
+
+      const overlay = document.createElement('div');
+      overlay.className = 'login-modal-overlay';
+      overlay.innerHTML = `
+        <div class="login-modal">
+          <h3>🔐 테스트 로그인</h3>
+          <input type="text" id="login-name" placeholder="이름 (예: 곽정율)" value="곽정율">
+          <input type="password" id="login-pw" placeholder="비밀번호" value="1234">
+          <button onclick="doLogin()">로그인</button>
+          <button class="cancel" onclick="this.closest('.login-modal-overlay').remove()">취소</button>
+          <div class="error" id="login-error" style="display:none"></div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#login-name').focus();
+    };
+
+    window.doLogin = async function() {
+      const name = document.getElementById('login-name').value.trim();
+      const pw = document.getElementById('login-pw').value.trim();
+      const errorEl = document.getElementById('login-error');
+
+      if (!name || !pw) {
+        errorEl.textContent = '이름과 비밀번호를 입력하세요';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/student/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, password: pw })
+        });
+        const data = await res.json();
+
+        if (data.success && data.user) {
+          // 로그인 성공
+          const student = data.user;
+          document.querySelector('.login-modal-overlay')?.remove();
+
+          // 시간표 로드 시도
+          let timetable = { school: [], teachers: {}, subjectColors: {}, periodTimes: [] };
+          try {
+            const ttRes = await fetch(`/api/student/${student.id}/timetable`);
+            if (ttRes.ok) {
+              const ttData = await ttRes.json();
+              if (ttData.timetable) timetable = ttData.timetable;
+            }
+          } catch (_) {}
+
+          // 반 친구 로드
+          let classmates = [];
+          try {
+            const cmRes = await fetch(`/api/student/${student.id}/classmates`);
+            if (cmRes.ok) {
+              const cmData = await cmRes.json();
+              classmates = cmData.classmates || [];
+            }
+          } catch (_) {}
+
+          // RecordsModule 초기화
+          RecordsModule.init({
+            container: '#records-container',
+            studentId: student.id,
+            studentName: student.name,
+            timetable,
+            classmates,
+            standalone: true,
+            onXpEarned: (data) => {
+              console.log('[TEST] XP earned:', data);
+            },
+            onNavigate: (screen) => {
+              console.log('[TEST] Navigate:', screen);
+            },
+          });
+
+          // UI 업데이트
+          document.getElementById('test-student-info').innerHTML =
+            `<strong>${student.name}</strong> (ID: ${student.id})`;
+          const btn = document.getElementById('test-login-btn');
+          btn.textContent = '로그인됨';
+          btn.classList.add('logged-in');
+          btn.onclick = null;
+
+        } else {
+          errorEl.textContent = data.error || '로그인 실패';
+          errorEl.style.display = 'block';
+        }
+      } catch (e) {
+        errorEl.textContent = '서버 연결 실패';
+        errorEl.style.display = 'block';
+        console.error('Login error:', e);
+      }
+    };
+
+    // 초기 안내 렌더
+    const container = document.getElementById('records-container');
+    container.innerHTML = `
+      <div style="text-align:center;padding:120px 20px;color:var(--text-muted)">
+        <div style="font-size:64px;margin-bottom:16px">📝</div>
+        <h2 style="font-size:20px;font-weight:800;color:var(--text-primary);margin:0 0 12px">
+          Records Module 독립 테스트
+        </h2>
+        <p style="font-size:14px;line-height:1.8;margin:0 0 24px">
+          상단의 <strong>로그인</strong> 버튼을 눌러<br>
+          테스트 계정으로 로그인하세요.
+        </p>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;
+                    padding:16px;display:inline-block;text-align:left;font-size:13px;line-height:2">
+          <div><strong>이름:</strong> 곽정율</div>
+          <div><strong>비밀번호:</strong> 1234</div>
+        </div>
+      </div>
+    `;
+  </script>
+
+</body>
+</html>
