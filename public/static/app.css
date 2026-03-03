@@ -454,8 +454,7 @@ body {
   position: relative;
   flex-shrink: 0;
   z-index: 200;
-  overflow-x: visible;
-  overflow-y: auto;
+  overflow: hidden auto; /* overflow-x:hidden, overflow-y:auto — visible+auto는 브라우저에서 자동 변환됨 */
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
               min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
               max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -3387,15 +3386,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
 
 /* ==================== TIMETABLE MANAGEMENT ==================== */
 
-/* Header action button */
-.header-action-btn {
-  background:rgba(108,92,231,0.2); border:1px solid rgba(108,92,231,0.3);
-  color:var(--primary-light); padding:6px 14px; border-radius:var(--radius-md);
-  font-size:12px; font-weight:600; cursor:pointer; display:flex;
-  align-items:center; gap:6px; transition:all var(--transition-fast);
-  font-family:inherit;
-}
-.header-action-btn:hover { background:rgba(108,92,231,0.3); }
+/* Header action button — 최종 스타일은 아래 .header-action-btn 참조 */
 
 /* TT editor enhancements */
 .tt-editor-cell.selected {
@@ -3516,27 +3507,23 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
 /* ==================== RESPONSIVE ==================== */
 /* ==================== MOBILE-ONLY (< 768px) ==================== */
 @media (max-width: 767px) {
-  /* 모바일에서 사이드바 숨기기 → 하단 탭바로 대체 */
-  #tablet-sidebar { display:none !important; }
-
   /* 모바일에서 상태바 간소화 */
   #tablet-status-bar { padding:8px 16px 6px; }
   .tablet-status-title { display:none; }
   
-  /* 모바일 탭 콘텐츠 패딩 → 하단 탭바 높이(60px) + 여유 확보 */
-  #tablet-content .tab-content { padding:0 0 72px; }
-  #tablet-content .form-body { padding:12px 0 80px; }
+  /* 모바일 탭 콘텐츠 패딩 → 수평 0 */
+  #tablet-content .tab-content { padding:0 0 16px; }
+  #tablet-content .form-body { padding:12px 0 32px; }
   #tablet-content .screen-header { padding:14px 0; }
-  #tablet-content { padding-bottom:0 !important; }
   
   /* 모바일 기록 그리드 → 2컬럼 */
   #tablet-content .record-type-grid {
     grid-template-columns:repeat(2, 1fr) !important;
   }
   
-  /* 모바일 FAB → 하단 탭바 위로 올리기 */
+  /* 모바일 FAB */
   #tablet-content .fab {
-    position:fixed; right:16px; bottom:72px;
+    position:fixed; right:16px; bottom:20px;
   }
   
   /* 모바일 상세 화면 풀너비 */
@@ -3545,47 +3532,6 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   
   /* 모바일 활동 추가 유형 그리드 */
   #tablet-content .act-add-type-grid { grid-template-columns:repeat(2, 1fr); }
-
-  /* 모바일 하단 탭바 표시 */
-  #mobile-bottom-tab { display:block !important; }
-}
-
-/* ==================== 모바일 하단 탭바 ==================== */
-#mobile-bottom-tab { display:none; }
-.mobile-bottom-tab-bar {
-  position:fixed; bottom:0; left:0; right:0; z-index:300;
-  display:flex; align-items:stretch; justify-content:space-around;
-  height:60px;
-  background:rgba(11,14,20,0.97);
-  border-top:1px solid rgba(255,255,255,0.06);
-  backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-  padding-bottom:env(safe-area-inset-bottom, 0px);
-}
-.mob-tab-item {
-  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
-  gap:2px; padding:6px 0 4px;
-  color:rgba(255,255,255,0.35);
-  font-size:10px; font-weight:600;
-  cursor:pointer; transition:color 0.2s ease;
-  -webkit-tap-highlight-color:transparent;
-  position:relative;
-  text-decoration:none; border:none; background:none;
-}
-.mob-tab-item i { font-size:18px; transition:transform 0.2s ease; }
-.mob-tab-item.active { color:var(--primary-light, #a29bfe); }
-.mob-tab-item.active i { transform:scale(1.15); }
-.mob-tab-item.active::after {
-  content:''; position:absolute; top:0; left:25%; right:25%;
-  height:2px; border-radius:0 0 2px 2px;
-  background:var(--primary-light, #a29bfe);
-}
-.mob-tab-item .mob-tab-badge {
-  position:absolute; top:4px; right:calc(50% - 16px);
-  min-width:16px; height:16px; padding:0 4px;
-  border-radius:8px; font-size:9px; font-weight:700;
-  display:flex; align-items:center; justify-content:center;
-  background:var(--danger, #FF6B6B); color:#fff;
-  line-height:1;
 }
 
 /* ==================== TABLET-ONLY (768px ~ 1279px) ==================== */
@@ -4449,7 +4395,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
 /* ── Subject Add Modal ── */
 .ea-modal-overlay {
   display:none; position:fixed; inset:0;
-  background:rgba(0,0,0,0.65); z-index:200;
+  background:rgba(0,0,0,0.65); z-index:300;
   align-items:flex-end; justify-content:center; padding:0;
   backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
 }
@@ -4510,14 +4456,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   margin-bottom:10px; padding-left:2px;
 }
 
-/* 헤더 액션 버튼 */
-.header-action-btn {
-  width:36px; height:36px; border-radius:50%; border:none;
-  background:rgba(255,255,255,0.08); color:var(--text-main);
-  cursor:pointer; display:flex; align-items:center; justify-content:center;
-  transition:all 0.2s;
-}
-.header-action-btn:hover { background:rgba(255,255,255,0.15); }
+/* 헤더 액션 버튼 — 최종 스타일은 아래 .header-action-btn 참조 */
 
 /* ==================== AI Loading Spinner ==================== */
 .diag-loading-spinner {
@@ -4582,7 +4521,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
 .cm-action-btn:hover { background:var(--bg-hover, rgba(0,0,0,0.08)); color:var(--text-primary); }
 .cm-delete-btn:hover { background:rgba(231,76,60,0.12); color:#E74C3C; }
 .header-action-btn {
-  width:32px; height:32px; border-radius:10px; border:none;
+  width:44px; height:44px; border-radius:12px; border:none;
   background:var(--primary); color:#fff; font-size:14px;
   cursor:pointer; display:flex; align-items:center; justify-content:center;
   transition:transform 0.15s ease;
@@ -5706,7 +5645,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
     padding: 30px 40px !important;
   }
 
-  /* ---------- 20. 탐구보고서 ---------- */*/
+  /* ---------- 20. 탐구보고서 ---------- */
   #tablet-content .rpt-header {
     padding: 18px 0 12px !important;
   }
@@ -6061,7 +6000,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   font-weight: 700;
   padding: 3px 9px;
   border-radius: 10px;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   letter-spacing: 0.5px;
   z-index: 3;
 }
@@ -6325,7 +6264,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   transition: background 0.2s ease;
 }
 .photo-zoom-close:hover {
@@ -6342,7 +6281,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   background: rgba(0,0,0,0.4);
   padding: 4px 14px;
   border-radius: 14px;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   z-index: 10001;
 }
 .photo-zoom-container {
@@ -6381,7 +6320,7 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   transition: background 0.2s ease;
 }
 .photo-zoom-btn:hover {

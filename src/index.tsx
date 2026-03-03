@@ -8,13 +8,31 @@ type Bindings = {
   GEMINI_API_KEY: string
   PERPLEXITY_API_KEY: string
   QA_APP_SECRET: string
+  ADMIN_KEY: string     // 관리자 API 인증 키
+  JYSK_API_URL: string  // 원격 DB API 프록시 URL
+  JYSK_API_KEY: string  // 원격 DB API 키
   DB: D1Database
+  R2: R2Bucket
+  KV: KVNamespace
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/api/*', cors())
 app.get('/static/*', serveStatic())
+
+// ==================== KST (한국 표준시) 헬퍼 ====================
+function getKSTNow(): Date {
+  return new Date(Date.now() + 9 * 3600000);
+}
+function getKSTString(): string {
+  // 'YYYY-MM-DD HH:MM:SS' 형식의 KST 시간 문자열
+  return getKSTNow().toISOString().slice(0, 19).replace('T', ' ');
+}
+function getKSTDate(): string {
+  // 'YYYY-MM-DD' 형식의 KST 날짜
+  return getKSTNow().toISOString().slice(0, 10);
+}
 
 // ==================== XP 내역 기록 헬퍼 ====================
 async function recordXp(db: D1Database, studentId: number, amount: number, source: string, sourceDetail: string = '', refTable: string | null = null, refId: number | null = null) {
@@ -613,26 +631,263 @@ app.post('/api/auth/mentor/login', async (c) => {
 });
 
 
-// ==================== AUTH API: 학생 회원가입 ====================
+// ==================== AUTH API: 원장 로그인 ====================
+app.post('/api/auth/director/login', async (c) => {
+  try {
+    const { loginId, password } = await c.req.json();
+    if (!loginId || !password) return c.json({ error: '아이디와 비밀번호를 입력해주세요' }, 400);
+
+    const mentor: any = await c.env.DB.prepare(
+      'SELECT * FROM mentors WHERE login_id = ? AND is_director = 1'
+    ).bind(loginId).first();
+
+    if (!mentor) return c.json({ error: '원장 아이디 또는 비밀번호가 틀렸습니다' }, 401);
+
+    const valid = await verifyPassword(password, mentor.password_hash);
+    if (!valid) return c.json({ error: '원장 아이디 또는 비밀번호가 틀렸습니다' }, 401);
+
+    // 원장은 모든 그룹 조회 가능
+    const groups = await c.env.DB.prepare(
+      'SELECT g.id, g.name, g.invite_code, g.description, g.max_students, g.is_active, m.name as mentor_name FROM groups g JOIN mentors m ON g.mentor_id = m.id'
+    ).all();
+
+    const token = generateToken();
+
+    return c.json({
+      success: true,
+      token,
+      role: 'director',
+      user: {
+        id: mentor.id,
+        loginId: mentor.login_id,
+        name: mentor.name,
+        academyName: mentor.academy_name,
+        kind: 1,
+      },
+      groups: groups.results
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+
+// ==================== AUTH API: 외부 앱 연동 로그인 (원격 DB) ====================
+// 호출: GET /api/auth/external-login?user_id=1234
+// 원격 DB(jungyoul.com)에서 사용자 정보를 조회하고 로컬 D1에 자동 동기화
+app.get('/api/auth/external-login', async (c) => {
+  try {
+    const userId = c.req.query('user_id');
+    if (!userId || isNaN(Number(userId))) return c.json({ error: 'user_id 파라미터가 필요합니다' }, 400);
+
+    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php';
+    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026';
+
+    // 1. 원격 DB에서 사용자 정보 조회
+    let userData: any;
+    try {
+      const userRes = await fetch(`${jyskApiUrl}?action=get_user&user_id=${userId}&key=${jyskApiKey}`);
+      const contentType = userRes.headers.get('content-type') || '';
+      if (!contentType.includes('json')) {
+        return c.json({ error: '원격 DB API 서버에 연결할 수 없습니다. PHP 프록시가 배치되었는지 확인하세요.', url: `${jyskApiUrl}?action=get_user&user_id=${userId}` }, 502);
+      }
+      userData = await userRes.json();
+    } catch (fetchErr: any) {
+      return c.json({ error: '원격 DB API 서버 통신 오류', detail: fetchErr.message }, 502);
+    }
+    if (!userData.success || !userData.user) {
+      return c.json({ error: '원격 DB에서 사용자를 찾을 수 없습니다', detail: userData.error }, 404);
+    }
+    const remoteUser = userData.user;
+    
+    // active_flag 확인
+    if (remoteUser.active_flag != 1) {
+      return c.json({ error: '비활성화된 계정입니다. 관리자에게 문의하세요.' }, 403);
+    }
+
+    // kind: 1=원장/관리자, 2=학생, 3=선생님/멘토
+    const kind = Number(remoteUser.kind);
+    const remoteUserId = Number(remoteUser.user_id);
+    const name = remoteUser.name || `사용자${remoteUserId}`;
+
+    // 2. 역할별 분기 처리
+    if (kind === 3) {
+      // ===== 멘토(선생님) =====
+      // 로컬 D1에 멘토가 있는지 확인 (external_user_id로 매칭)
+      let mentor: any = await c.env.DB.prepare(
+        'SELECT * FROM mentors WHERE external_user_id = ?'
+      ).bind(remoteUserId).first();
+
+      if (!mentor) {
+        // 멘토 자동 생성
+        const loginId = `ext_mentor_${remoteUserId}`;
+        const passwordHash = await hashPassword(`ext_${remoteUserId}_auto`);
+        const result = await c.env.DB.prepare(
+          'INSERT INTO mentors (login_id, password_hash, name, academy_name, phone, external_user_id) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(loginId, passwordHash, name, '정율사관학원', remoteUser.phone || '', remoteUserId).run();
+        const mentorId = result.meta.last_row_id;
+
+        // 원격 DB에서 멘토가 관리하는 반/학생 목록 조회
+        let studentsData: any = { success: false };
+        try {
+          const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${remoteUserId}&key=${jyskApiKey}`);
+          const ct = studentsRes.headers.get('content-type') || '';
+          if (ct.includes('json')) studentsData = await studentsRes.json();
+        } catch (_) { /* 원격 DB 연결 실패 시 기본 반 생성으로 진행 */ }
+
+        if (studentsData.success && studentsData.classes) {
+          for (const cls of studentsData.classes) {
+            // 반 생성
+            const inviteCode = generateInviteCode();
+            const groupResult = await c.env.DB.prepare(
+              'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
+            ).bind(mentorId, cls.class_name || `반${cls.class_id}`, inviteCode, '', cls.class_id).run();
+            const groupId = groupResult.meta.last_row_id;
+
+            // 학생들 자동 생성
+            for (const st of cls.students) {
+              const exists = await c.env.DB.prepare(
+                'SELECT id FROM students WHERE external_user_id = ?'
+              ).bind(st.user_id).first();
+              if (!exists) {
+                const stPwHash = await hashPassword(`ext_${st.user_id}_auto`);
+                const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+                const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+                await c.env.DB.prepare(
+                  'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(groupId, st.name, stPwHash, '', 0, emoji, st.user_id).run();
+              }
+            }
+          }
+        } else {
+          // 반/학생 정보 없으면 기본 반 생성
+          const inviteCode = generateInviteCode();
+          await c.env.DB.prepare(
+            'INSERT INTO groups (mentor_id, name, invite_code, description) VALUES (?, ?, ?, ?)'
+          ).bind(mentorId, `${name} 선생님 반`, inviteCode, '').run();
+        }
+
+        mentor = await c.env.DB.prepare('SELECT * FROM mentors WHERE id = ?').bind(mentorId).first();
+      } else {
+        // 멘토 이름 동기화
+        if (mentor.name !== name) {
+          await c.env.DB.prepare('UPDATE mentors SET name = ? WHERE id = ?').bind(name, mentor.id).run();
+          mentor.name = name;
+        }
+      }
+
+      // 멘토 그룹 목록 조회
+      const groups = await c.env.DB.prepare(
+        'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
+      ).bind(mentor.id).all();
+
+      const token = generateToken();
+      return c.json({
+        success: true,
+        token,
+        role: 'mentor',
+        externalUserId: remoteUserId,
+        user: { id: mentor.id, loginId: mentor.login_id, name: mentor.name, academyName: mentor.academy_name, phone: mentor.phone },
+        groups: groups.results,
+      });
+
+    } else if (kind === 2) {
+      // ===== 학생 =====
+      let student: any = await c.env.DB.prepare(
+        'SELECT s.*, g.name as group_name, g.invite_code FROM students s LEFT JOIN groups g ON s.group_id = g.id WHERE s.external_user_id = ? AND s.is_active = 1'
+      ).bind(remoteUserId).first();
+
+      if (!student) {
+        // 학생이 아직 로컬에 없으면 자동 생성 (기본 그룹에 배치)
+        // 원격 DB에서 이 학생이 속한 반의 멘토를 찾아 해당 그룹에 배치
+        const stPwHash = await hashPassword(`ext_${remoteUserId}_auto`);
+        const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+        const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+
+        // 첫 번째 그룹에 임시 배치 (나중에 멘토 로그인 시 올바른 그룹으로 재배치됨)
+        const firstGroup: any = await c.env.DB.prepare('SELECT id FROM groups LIMIT 1').first();
+        const groupId = firstGroup?.id || 1;
+
+        const result = await c.env.DB.prepare(
+          'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(groupId, name, stPwHash, '', 0, emoji, remoteUserId).run();
+
+        student = await c.env.DB.prepare(
+          'SELECT s.*, g.name as group_name, g.invite_code FROM students s LEFT JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
+        ).bind(result.meta.last_row_id).first();
+      } else {
+        // 이름 동기화
+        if (student.name !== name) {
+          await c.env.DB.prepare('UPDATE students SET name = ? WHERE id = ?').bind(name, student.id).run();
+          student.name = name;
+        }
+      }
+
+      await c.env.DB.prepare('UPDATE students SET last_login_at = ? WHERE id = ?').bind(getKSTString(), student.id).run();
+
+      const group: any = student.group_name ? {
+        id: student.group_id, name: student.group_name,
+        mentorName: '정율사관학원', academyName: '정율사관학원',
+      } : null;
+
+      const token = generateToken();
+      return c.json({
+        success: true,
+        token,
+        role: 'student',
+        externalUserId: remoteUserId,
+        user: { id: student.id, name: student.name, schoolName: student.school_name, grade: student.grade, profileEmoji: student.profile_emoji, xp: student.xp || 0, level: student.level || 1, groupId: student.group_id },
+        group,
+      });
+
+    } else if (kind === 1) {
+      // ===== 원장/관리자 =====
+      const token = generateToken();
+      return c.json({
+        success: true,
+        token,
+        role: 'director',
+        externalUserId: remoteUserId,
+        user: { id: remoteUserId, name, kind: 1 },
+      });
+
+    } else {
+      return c.json({ error: `지원하지 않는 사용자 유형입니다 (kind=${kind})` }, 400);
+    }
+
+  } catch (e: any) {
+    console.error('External login error:', e);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+
+// ==================== AUTH API: 학생 회원가입 (초대코드) ====================
 
 app.post('/api/auth/student/register', async (c) => {
   try {
-    const { name, password, schoolName, grade } = await c.req.json();
-    if (!name || !password) return c.json({ error: '이름, 비밀번호는 필수입니다' }, 400);
+    const { inviteCode, name, password, schoolName, grade } = await c.req.json();
+    if (!inviteCode || !name || !password) return c.json({ error: '초대코드, 이름, 비밀번호는 필수입니다' }, 400);
     if (password.length < 4) return c.json({ error: '비밀번호는 4자 이상이어야 합니다' }, 400);
 
-    // 기본 그룹 (첫 번째 활성 그룹) 가져오기
+    // 초대코드로 그룹 찾기
     const group: any = await c.env.DB.prepare(
-      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.is_active = 1 ORDER BY g.id ASC LIMIT 1'
-    ).first();
+      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.invite_code = ? AND g.is_active = 1'
+    ).bind(inviteCode.toUpperCase()).first();
 
-    if (!group) return c.json({ error: '등록 가능한 반이 없습니다. 관리자에게 문의하세요.' }, 404);
+    if (!group) return c.json({ error: '유효하지 않은 초대코드입니다' }, 404);
 
-    // 같은 이름 확인
+    // 같은 그룹에 같은 이름 확인
     const existing = await c.env.DB.prepare(
-      'SELECT id FROM students WHERE name = ? AND is_active = 1'
-    ).bind(name).first();
-    if (existing) return c.json({ error: '동일한 이름이 이미 등록되어 있습니다. 이름 뒤에 번호를 붙여주세요 (예: 홍길동2)' }, 409);
+      'SELECT id FROM students WHERE group_id = ? AND name = ?'
+    ).bind(group.id, name).first();
+    if (existing) return c.json({ error: '같은 반에 동일한 이름이 있습니다. 이름 뒤에 번호를 붙여주세요 (예: 홍길동2)' }, 409);
+
+    // 정원 확인
+    const count: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM students WHERE group_id = ? AND is_active = 1'
+    ).bind(group.id).first();
+    if (count.cnt >= group.max_students) return c.json({ error: '이 반의 정원이 가득 찼습니다' }, 409);
 
     const passwordHash = await hashPassword(password);
     const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
@@ -645,7 +900,10 @@ app.post('/api/auth/student/register', async (c) => {
     return c.json({
       success: true,
       studentId: result.meta.last_row_id,
-      message: '회원가입이 완료되었습니다!',
+      message: `${group.name}에 가입되었습니다!`,
+      groupName: group.name,
+      mentorName: group.mentor_name,
+      academyName: group.academy_name,
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -657,28 +915,29 @@ app.post('/api/auth/student/register', async (c) => {
 
 app.post('/api/auth/student/login', async (c) => {
   try {
-    const { name, password } = await c.req.json();
-    if (!name || !password) return c.json({ error: '이름과 비밀번호를 입력해주세요' }, 400);
+    const { inviteCode, name, password } = await c.req.json();
+    if (!inviteCode || !name || !password) return c.json({ error: '초대코드, 이름, 비밀번호를 모두 입력해주세요' }, 400);
 
-    // 이름으로 학생 찾기 (활성 학생)
+    // 초대코드로 그룹 찾기
+    const group: any = await c.env.DB.prepare(
+      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.invite_code = ?'
+    ).bind(inviteCode.toUpperCase()).first();
+
+    if (!group) return c.json({ error: '유효하지 않은 초대코드입니다' }, 401);
+
     const student: any = await c.env.DB.prepare(
-      'SELECT * FROM students WHERE name = ? AND is_active = 1'
-    ).bind(name).first();
+      'SELECT * FROM students WHERE group_id = ? AND name = ? AND is_active = 1'
+    ).bind(group.id, name).first();
 
     if (!student) return c.json({ error: '이름 또는 비밀번호가 틀렸습니다' }, 401);
 
     const valid = await verifyPassword(password, student.password_hash);
     if (!valid) return c.json({ error: '이름 또는 비밀번호가 틀렸습니다' }, 401);
 
-    // 그룹 정보 가져오기
-    const group: any = await c.env.DB.prepare(
-      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.id = ?'
-    ).bind(student.group_id).first();
-
     // 마지막 로그인 시간 업데이트
     await c.env.DB.prepare(
-      'UPDATE students SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?'
-    ).bind(student.id).run();
+      'UPDATE students SET last_login_at = ? WHERE id = ?'
+    ).bind(getKSTString(), student.id).run();
 
     const token = generateToken();
 
@@ -696,12 +955,12 @@ app.post('/api/auth/student/login', async (c) => {
         level: student.level,
         groupId: student.group_id,
       },
-      group: group ? {
+      group: {
         id: group.id,
         name: group.name,
         mentorName: group.mentor_name,
         academyName: group.academy_name,
-      } : null
+      }
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -763,7 +1022,7 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
     const groups = await c.env.DB.prepare(`
       SELECT g.*, 
         (SELECT COUNT(*) FROM students s WHERE s.group_id = g.id AND s.is_active = 1) as student_count
-      FROM groups g WHERE g.mentor_id = ? ORDER BY g.created_at DESC
+      FROM groups g WHERE g.mentor_id = ? ORDER BY student_count DESC, g.created_at DESC
     `).bind(mentorId).all();
 
     return c.json({ groups: groups.results });
@@ -830,7 +1089,7 @@ app.put('/api/student/exams/:examId', async (c) => {
     if (body.subjects !== undefined) { fields.push('subjects = ?'); values.push(JSON.stringify(body.subjects)); }
     if (body.status !== undefined) { fields.push('status = ?'); values.push(body.status); }
     if (body.memo !== undefined) { fields.push('memo = ?'); values.push(body.memo); }
-    fields.push('updated_at = CURRENT_TIMESTAMP');
+    fields.push('updated_at = ?'); values.push(getKSTString());
 
     values.push(examId);
     await c.env.DB.prepare(`UPDATE exams SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
@@ -976,7 +1235,7 @@ app.put('/api/student/assignments/:assignmentId', async (c) => {
     if (body.planData !== undefined) { fields.push('plan_data = ?'); values.push(JSON.stringify(body.planData)); }
     if (body.title !== undefined) { fields.push('title = ?'); values.push(body.title); }
     if (body.dueDate !== undefined) { fields.push('due_date = ?'); values.push(body.dueDate); }
-    fields.push('updated_at = CURRENT_TIMESTAMP');
+    fields.push('updated_at = ?'); values.push(getKSTString());
 
     values.push(assignmentId);
     await c.env.DB.prepare(`UPDATE assignments SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
@@ -1005,9 +1264,11 @@ app.delete('/api/student/assignments/:assignmentId', async (c) => {
 app.get('/api/student/:studentId/class-records', async (c) => {
   try {
     const studentId = c.req.param('studentId');
+    const limit = parseInt(c.req.query('limit') || '200');
+    const offset = parseInt(c.req.query('offset') || '0');
     const records = await c.env.DB.prepare(
-      'SELECT * FROM class_records WHERE student_id = ? ORDER BY date DESC'
-    ).bind(studentId).all();
+      'SELECT id, subject, date, content, keywords, understanding, memo, topic, pages, teacher_note, created_at FROM class_records WHERE student_id = ? ORDER BY date DESC LIMIT ? OFFSET ?'
+    ).bind(studentId, limit, offset).all();
     return c.json({ records: records.results });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -1063,24 +1324,46 @@ app.put('/api/student/class-records/:recordId', async (c) => {
 
 // ==================== STUDENT DATA API: 수업 기록 사진 ====================
 
-// 사진 업로드 (base64 → DB 저장, photo ID 반환)
+// 사진 업로드 (R2 우선, DB 폴백)
 app.post('/api/student/:studentId/class-record-photos', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const { photos, classRecordId } = await c.req.json();
-    // photos: base64 문자열 배열
     if (!photos || !Array.isArray(photos) || photos.length === 0) {
       return c.json({ error: '사진 데이터가 필요합니다' }, 400);
     }
     const ids: number[] = [];
     for (const photoData of photos) {
       if (typeof photoData !== 'string' || photoData.length < 10) continue;
-      // 썸네일 생성 (base64에서 첫 200자만 저장 - 목록용)
-      const thumbnail = photoData.slice(0, 200);
-      const fileSize = Math.round(photoData.length * 0.75); // base64 → bytes 추정
+      
+      let r2Key = '';
+      let thumbnail = '';
+      const fileSize = Math.round(photoData.length * 0.75);
+      
+      // R2에 저장 시도
+      if (c.env.R2) {
+        try {
+          r2Key = `photos/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+          // base64 → binary
+          const match = photoData.match(/^data:(image\/\w+);base64,(.+)$/);
+          const rawBase64 = match ? match[2] : photoData.replace(/^data:image\/\w+;base64,/, '');
+          const binary = Uint8Array.from(atob(rawBase64), c => c.charCodeAt(0));
+          await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } });
+          thumbnail = `r2:${r2Key}`;
+        } catch (e) {
+          console.error('R2 upload failed, falling back to DB:', e);
+          r2Key = '';
+          thumbnail = photoData.slice(0, 200);
+        }
+      } else {
+        thumbnail = photoData.slice(0, 200);
+      }
+      
+      // DB에 메타데이터 저장 (R2 사용 시 photo_data에 R2 키, 아니면 base64)
+      const dataToStore = r2Key ? `r2:${r2Key}` : photoData;
       const result = await c.env.DB.prepare(
         'INSERT INTO class_record_photos (student_id, class_record_id, photo_data, thumbnail, file_size) VALUES (?, ?, ?, ?, ?)'
-      ).bind(studentId, classRecordId || null, photoData, thumbnail, fileSize).run();
+      ).bind(studentId, classRecordId || null, dataToStore, thumbnail, fileSize).run();
       ids.push(result.meta.last_row_id as number);
     }
     return c.json({ success: true, photoIds: ids });
@@ -1089,7 +1372,7 @@ app.post('/api/student/:studentId/class-record-photos', async (c) => {
   }
 });
 
-// 사진 원본 조회
+// 사진 원본 조회 (R2 또는 DB)
 app.get('/api/photos/:photoId', async (c) => {
   try {
     const photoId = c.req.param('photoId');
@@ -1097,11 +1380,30 @@ app.get('/api/photos/:photoId', async (c) => {
       'SELECT photo_data, mime_type FROM class_record_photos WHERE id = ?'
     ).bind(photoId).first();
     if (!row) return c.json({ error: 'Photo not found' }, 404);
-    // base64 data URL인 경우 그대로 반환
+    
+    // R2에서 조회
+    if (row.photo_data?.startsWith('r2:') && c.env.R2) {
+      try {
+        const r2Key = row.photo_data.slice(3);
+        const obj = await c.env.R2.get(r2Key);
+        if (obj) {
+          const arrayBuf = await obj.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = '';
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+          const mime = obj.httpMetadata?.contentType || 'image/jpeg';
+          return c.json({ photoData: `data:${mime};base64,${base64}` });
+        }
+      } catch (e) {
+        console.error('R2 read failed:', e);
+      }
+    }
+    
+    // DB에서 base64 직접 반환 (레거시 호환)
     if (row.photo_data.startsWith('data:')) {
       return c.json({ photoData: row.photo_data });
     }
-    // raw base64인 경우 data URL로 변환
     return c.json({ photoData: `data:${row.mime_type || 'image/jpeg'};base64,${row.photo_data}` });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -1237,7 +1539,7 @@ app.put('/api/student/activity-records/:recordId', async (c) => {
     if (body.progress !== undefined) { fields.push('progress = ?'); values.push(body.progress); }
     if (body.reflection !== undefined) { fields.push('reflection = ?'); values.push(body.reflection); }
     if (body.description !== undefined) { fields.push('description = ?'); values.push(body.description); }
-    fields.push('updated_at = CURRENT_TIMESTAMP');
+    fields.push('updated_at = ?'); values.push(getKSTString());
 
     values.push(recordId);
     await c.env.DB.prepare(`UPDATE activity_records SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
@@ -1270,7 +1572,7 @@ app.post('/api/student/:studentId/activity-logs', async (c) => {
 
     const result = await c.env.DB.prepare(
       'INSERT INTO activity_logs (activity_record_id, student_id, date, content, reflection, duration, xp_earned) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(activityRecordId, studentId, date || new Date().toISOString().slice(0,10), content, reflection || '', duration || '', xpEarned || 20).run();
+    ).bind(activityRecordId, studentId, date || getKSTDate(), content, reflection || '', duration || '', xpEarned || 20).run();
 
     if (xpEarned) {
       await c.env.DB.prepare('UPDATE students SET xp = xp + ? WHERE id = ?').bind(xpEarned || 20, studentId).run();
@@ -1333,7 +1635,7 @@ app.put('/api/student/report-records/:reportId', async (c) => {
     if (body.questions !== undefined) { fields.push('questions = ?'); values.push(JSON.stringify(body.questions)); }
     if (body.totalXp !== undefined) { fields.push('total_xp = ?'); values.push(body.totalXp); }
     if (body.status !== undefined) { fields.push('status = ?'); values.push(body.status); }
-    fields.push('updated_at = CURRENT_TIMESTAMP');
+    fields.push('updated_at = ?'); values.push(getKSTString());
 
     values.push(reportId);
     await c.env.DB.prepare(`UPDATE report_records SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
@@ -1386,20 +1688,17 @@ app.get('/api/mentor/student/:studentId/all-records', async (c) => {
     const dateTo = c.req.query('to') || '2099-12-31';
 
     const [classRecords, questionRecords, teachRecords, activityRecords, activityLogs, assignments, exams, examResults, reportRecords, classPhotos, myQuestions, feedbacks] = await Promise.all([
-      c.env.DB.prepare('SELECT * FROM class_records WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM question_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM teach_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM activity_records WHERE student_id = ? ORDER BY created_at DESC').bind(studentId).all(),
-      c.env.DB.prepare('SELECT * FROM activity_logs WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM assignments WHERE student_id = ? ORDER BY due_date DESC').bind(studentId).all(),
-      c.env.DB.prepare('SELECT * FROM exams WHERE student_id = ? ORDER BY start_date DESC').bind(studentId).all(),
-      c.env.DB.prepare('SELECT er.*, e.name as exam_name FROM exam_results er JOIN exams e ON er.exam_id = e.id WHERE er.student_id = ? ORDER BY e.start_date DESC').bind(studentId).all(),
-      c.env.DB.prepare('SELECT * FROM report_records WHERE student_id = ? ORDER BY created_at DESC').bind(studentId).all(),
-      // 추가: 수업 기록 사진 (thumbnail만 — 원본은 /api/photos/:id로 별도 조회)
+      c.env.DB.prepare('SELECT id, subject, date, content, keywords, understanding, memo, topic, pages, teacher_note, created_at FROM class_records WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM question_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM teach_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM activity_records WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all(),
+      c.env.DB.prepare('SELECT * FROM activity_logs WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM assignments WHERE student_id = ? ORDER BY due_date DESC LIMIT 100').bind(studentId).all(),
+      c.env.DB.prepare('SELECT * FROM exams WHERE student_id = ? ORDER BY start_date DESC LIMIT 50').bind(studentId).all(),
+      c.env.DB.prepare('SELECT er.*, e.name as exam_name FROM exam_results er JOIN exams e ON er.exam_id = e.id WHERE er.student_id = ? ORDER BY e.start_date DESC LIMIT 50').bind(studentId).all(),
+      c.env.DB.prepare('SELECT * FROM report_records WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all(),
       c.env.DB.prepare('SELECT id, class_record_id, thumbnail, file_size, created_at FROM class_record_photos WHERE student_id = ? ORDER BY id DESC LIMIT 200').bind(studentId).all(),
-      // 추가: 나만의 질문방
-      c.env.DB.prepare('SELECT q.*, (SELECT COUNT(*) FROM my_answers a WHERE a.question_id = q.id) as answer_count FROM my_questions q WHERE q.student_id = ? AND DATE(q.created_at) BETWEEN ? AND ? ORDER BY q.created_at DESC').bind(studentId, dateFrom, dateTo).all(),
-      // 추가: 멘토 피드백
+      c.env.DB.prepare('SELECT q.*, (SELECT COUNT(*) FROM my_answers a WHERE a.question_id = q.id) as answer_count FROM my_questions q WHERE q.student_id = ? AND DATE(q.created_at) BETWEEN ? AND ? ORDER BY q.created_at DESC LIMIT 100').bind(studentId, dateFrom, dateTo).all(),
       c.env.DB.prepare('SELECT * FROM mentor_feedbacks WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all().catch(() => ({ results: [] })),
     ]);
 
@@ -1461,19 +1760,26 @@ app.get('/api/mentor/student/:studentId/all-records', async (c) => {
   }
 });
 
-// 그룹 전체 학생 요약 (멘토용 대시보드)
+// 그룹 전체 학생 요약 (멘토용 대시보드) — 최적화: N+1 → 배치 집계 쿼리
 app.get('/api/mentor/groups/:groupId/summary', async (c) => {
   try {
     const groupId = c.req.param('groupId');
-    const dateFrom = c.req.query('from') || new Date().toISOString().slice(0,10);
-    const dateTo = c.req.query('to') || new Date().toISOString().slice(0,10);
+    const dateFrom = c.req.query('from') || getKSTDate();
+    const dateTo = c.req.query('to') || getKSTDate();
 
-    // KST 기준 오늘 날짜 (UTC+9)
+    // KV 캐시 확인 (5분)
+    const cacheKey = `group-summary:${groupId}:${dateFrom}:${dateTo}`;
+    if (c.env.KV) {
+      try {
+        const cached = await c.env.KV.get(cacheKey, 'json');
+        if (cached) return c.json(cached as any);
+      } catch (_) {}
+    }
+
     const kstNow = new Date(Date.now() + 9 * 3600000);
     const kstToday = kstNow.toISOString().slice(0,10);
-    const kstDayOfWeek = kstNow.getUTCDay(); // 0=Sun,1=Mon,...6=Sat
+    const kstDayOfWeek = kstNow.getUTCDay();
 
-    // 이번 주 평일 수 계산 (from~to 범위 내 월~금)
     const countWeekdays = (from: string, to: string): number => {
       let count = 0;
       const d = new Date(from + 'T00:00:00Z');
@@ -1486,91 +1792,97 @@ app.get('/api/mentor/groups/:groupId/summary', async (c) => {
       return count;
     };
     const weekdaysInRange = countWeekdays(dateFrom, dateTo);
-    // 학교 수업: 평일 평균 6교시 기준
     const CLASSES_PER_DAY = 6;
     const expectedSchoolClasses = weekdaysInRange * CLASSES_PER_DAY;
 
+    // 1. 학생 목록
     const students = await c.env.DB.prepare(
       'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, croquet_balance FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
     ).bind(groupId).all();
 
-    const summaries = [];
-    for (const s of students.results as any[]) {
-      const [classCount, questionCount, teachCount, assignCount, actLogCount,
-             schoolClassCount, allAssignments, todayAcademyRecords, todayAllRecords] = await Promise.all([
-        // 기존 기간 통계
-        c.env.DB.prepare('SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ? AND date BETWEEN ? AND ?').bind(s.id, dateFrom, dateTo).first(),
-        c.env.DB.prepare('SELECT COUNT(*) as cnt FROM question_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ?').bind(s.id, dateFrom, dateTo).first(),
-        c.env.DB.prepare('SELECT COUNT(*) as cnt FROM teach_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ?').bind(s.id, dateFrom, dateTo).first(),
-        c.env.DB.prepare('SELECT COUNT(*) as cnt FROM assignments WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ?').bind(s.id, dateFrom, dateTo).first(),
-        c.env.DB.prepare('SELECT COUNT(*) as cnt FROM activity_logs WHERE student_id = ? AND date BETWEEN ? AND ?').bind(s.id, dateFrom, dateTo).first(),
-        // 수업 기록률: 학교 수업 기록 (memo에 isAcademy 미포함)
-        c.env.DB.prepare("SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ? AND date BETWEEN ? AND ? AND (memo IS NULL OR memo NOT LIKE '%isAcademy%')").bind(s.id, dateFrom, dateTo).first(),
-        // 플래너(과제) 실행률: 기간 내 전체 과제 + 완료 과제
-        c.env.DB.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed FROM assignments WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ?").bind(s.id, dateFrom, dateTo).first(),
-        // 학원 당일 완료율: 오늘(KST) 학원 수업 기록
-        c.env.DB.prepare("SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ? AND date = ? AND memo LIKE '%isAcademy%'").bind(s.id, kstToday).first(),
-        // 오늘 전체 기록 수 (학교+학원)
-        c.env.DB.prepare("SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ? AND date = ?").bind(s.id, kstToday).first(),
-      ]);
-
-      // 수업 기록률 = 학교 수업 기록 ÷ 기대 수업 수
-      const schoolRecords = (schoolClassCount as any)?.cnt || 0;
-      const classRecordRate = expectedSchoolClasses > 0 ? Math.min(100, Math.round(schoolRecords / expectedSchoolClasses * 100)) : 0;
-
-      // 플래너(과제) 실행률 = 완료 과제 ÷ 전체 과제
-      const totalAssign = (allAssignments as any)?.total || 0;
-      const completedAssign = (allAssignments as any)?.completed || 0;
-      const plannerRate = totalAssign > 0 ? Math.round(completedAssign / totalAssign * 100) : -1; // -1 = 과제 없음
-
-      // 학원 당일 완료율: 오늘이 평일이고 학원 수업이 있을 수 있는 날
-      // 학원 스케줄은 클라이언트에 있으므로, 기록 기반으로 계산
-      // 오늘 학원 기록이 0이고 주말이면 "학원 없음" 표시
-      const todayAcademyCount = (todayAcademyRecords as any)?.cnt || 0;
-      const todayTotalCount = (todayAllRecords as any)?.cnt || 0;
-      const isWeekend = kstDayOfWeek === 0 || kstDayOfWeek === 6;
-      // 학원 당일 완료율: -1 = 오늘 학원 없음 (데이터가 없고 주말인 경우)
-      // 학원 스케줄은 DB에 없으므로, "오늘 작성한 학원 기록 수" 기준으로 표시
-      // 학원 수업이 있다고 가정: 평일 1회, 토 2회 (일반적 학원 패턴)
-      // 실제 학원 스케줄은 학생별로 다르므로 기록 유무로 판단
-      let academyTodayRate = -1; // -1 = 학원 없음
-      if (todayAcademyCount > 0) {
-        academyTodayRate = 100; // 기록이 있으면 완료
-      } else if (!isWeekend) {
-        academyTodayRate = 0; // 평일인데 학원 기록 없음 → 0% (학원 있을 수도)
-      }
-      // 주말이고 기록 없으면 -1(학원 없음) 유지
-
-      summaries.push({
-        ...s,
-        periodStats: {
-          classRecords: (classCount as any)?.cnt || 0,
-          questionRecords: (questionCount as any)?.cnt || 0,
-          teachRecords: (teachCount as any)?.cnt || 0,
-          assignments: (assignCount as any)?.cnt || 0,
-          activityLogs: (actLogCount as any)?.cnt || 0,
-          total: ((classCount as any)?.cnt || 0) + ((questionCount as any)?.cnt || 0) + ((teachCount as any)?.cnt || 0) + ((assignCount as any)?.cnt || 0) + ((actLogCount as any)?.cnt || 0),
-        },
-        // 3대 비율 지표
-        rateStats: {
-          classRecordRate,          // 수업 기록률 (0~100)
-          expectedClasses: expectedSchoolClasses,
-          actualClassRecords: schoolRecords,
-          plannerRate,              // 플래너(과제) 실행률 (0~100, -1=과제없음)
-          totalAssignments: totalAssign,
-          completedAssignments: completedAssign,
-          academyTodayRate,         // 학원 당일 완료율 (0~100, -1=학원없음)
-          todayAcademyCount,
-          kstToday,
-        },
-      });
+    const studentIds = (students.results as any[]).map(s => s.id);
+    if (studentIds.length === 0) {
+      const resp = { groupId, dateRange: { from: dateFrom, to: dateTo }, students: [] };
+      return c.json(resp);
     }
 
-    return c.json({
-      groupId,
-      dateRange: { from: dateFrom, to: dateTo },
-      students: summaries,
+    // 2. 배치 집계 쿼리 (N+1 → 7개 쿼리로 통합)
+    const placeholders = studentIds.map(() => '?').join(',');
+    const [classCounts, questionCounts, teachCounts, assignCounts, actLogCounts, schoolClassCounts, assignStats, todayAcademyCounts, todayAllCounts] = await Promise.all([
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM class_records WHERE student_id IN (${placeholders}) AND date BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM question_records WHERE student_id IN (${placeholders}) AND DATE(created_at) BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM teach_records WHERE student_id IN (${placeholders}) AND DATE(created_at) BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM assignments WHERE student_id IN (${placeholders}) AND DATE(created_at) BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM activity_logs WHERE student_id IN (${placeholders}) AND date BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM class_records WHERE student_id IN (${placeholders}) AND date BETWEEN ? AND ? AND (memo IS NULL OR memo NOT LIKE '%isAcademy%') GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed FROM assignments WHERE student_id IN (${placeholders}) AND DATE(created_at) BETWEEN ? AND ? GROUP BY student_id`).bind(...studentIds, dateFrom, dateTo).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM class_records WHERE student_id IN (${placeholders}) AND date = ? AND memo LIKE '%isAcademy%' GROUP BY student_id`).bind(...studentIds, kstToday).all(),
+      c.env.DB.prepare(`SELECT student_id, COUNT(*) as cnt FROM class_records WHERE student_id IN (${placeholders}) AND date = ? GROUP BY student_id`).bind(...studentIds, kstToday).all(),
+    ]);
+
+    // 3. 결과를 student_id별 Map으로 변환
+    const toMap = (rows: any[]) => {
+      const m: Record<number, any> = {};
+      for (const r of rows) m[r.student_id] = r;
+      return m;
+    };
+    const classMap = toMap(classCounts.results as any[]);
+    const questionMap = toMap(questionCounts.results as any[]);
+    const teachMap = toMap(teachCounts.results as any[]);
+    const assignMap = toMap(assignCounts.results as any[]);
+    const actLogMap = toMap(actLogCounts.results as any[]);
+    const schoolMap = toMap(schoolClassCounts.results as any[]);
+    const assignStatsMap = toMap(assignStats.results as any[]);
+    const todayAcademyMap = toMap(todayAcademyCounts.results as any[]);
+    const todayAllMap = toMap(todayAllCounts.results as any[]);
+
+    // 4. 학생별 요약 조합 (DB 호출 없음)
+    const isWeekend = kstDayOfWeek === 0 || kstDayOfWeek === 6;
+    const summaries = (students.results as any[]).map(s => {
+      const cc = classMap[s.id]?.cnt || 0;
+      const qc = questionMap[s.id]?.cnt || 0;
+      const tc = teachMap[s.id]?.cnt || 0;
+      const ac = assignMap[s.id]?.cnt || 0;
+      const alc = actLogMap[s.id]?.cnt || 0;
+      const schoolRecords = schoolMap[s.id]?.cnt || 0;
+      const totalAssign = assignStatsMap[s.id]?.total || 0;
+      const completedAssign = assignStatsMap[s.id]?.completed || 0;
+      const todayAcademyCount = todayAcademyMap[s.id]?.cnt || 0;
+
+      const classRecordRate = expectedSchoolClasses > 0 ? Math.min(100, Math.round(schoolRecords / expectedSchoolClasses * 100)) : 0;
+      const plannerRate = totalAssign > 0 ? Math.round(completedAssign / totalAssign * 100) : -1;
+
+      let academyTodayRate = -1;
+      if (todayAcademyCount > 0) {
+        academyTodayRate = 100;
+      } else if (!isWeekend) {
+        academyTodayRate = 0;
+      }
+
+      return {
+        ...s,
+        periodStats: {
+          classRecords: cc, questionRecords: qc, teachRecords: tc,
+          assignments: ac, activityLogs: alc,
+          total: cc + qc + tc + ac + alc,
+        },
+        rateStats: {
+          classRecordRate, expectedClasses: expectedSchoolClasses,
+          actualClassRecords: schoolRecords, plannerRate,
+          totalAssignments: totalAssign, completedAssignments: completedAssign,
+          academyTodayRate, todayAcademyCount, kstToday,
+        },
+      };
     });
+
+    const resp = { groupId, dateRange: { from: dateFrom, to: dateTo }, students: summaries };
+
+    // KV 캐시 저장 (5분)
+    if (c.env.KV) {
+      try { await c.env.KV.put(cacheKey, JSON.stringify(resp), { expirationTtl: 300 }); } catch (_) {}
+    }
+
+    return c.json(resp);
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -1579,6 +1891,11 @@ app.get('/api/mentor/groups/:groupId/summary', async (c) => {
 // 전체 DB 내보내기 (관리자용) - 파라미터 바인딩으로 SQL 인젝션 방지
 app.get('/api/admin/export/:table', async (c) => {
   try {
+    // 관리자 인증 확인
+    const adminKey = c.req.query('key')
+    const validKey = c.env.ADMIN_KEY || 'jycc_admin_2026'
+    if (!adminKey || adminKey !== validKey) return c.json({ error: 'Unauthorized' }, 403)
+
     const table = c.req.param('table');
     const allowed = ['mentors','groups','students','exams','exam_results','wrong_answers','assignments','class_records','question_records','teach_records','activity_records','activity_logs','report_records'];
     if (!allowed.includes(table)) return c.json({ error: '허용되지 않는 테이블입니다' }, 400);
@@ -1617,7 +1934,7 @@ app.post('/api/student/:studentId/xp-sync', async (c) => {
     const { xpDelta, source, sourceDetail } = await c.req.json();
     if (!xpDelta || xpDelta <= 0) return c.json({ success: true });
 
-    await c.env.DB.prepare('UPDATE students SET xp = xp + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(xpDelta, studentId).run();
+    await c.env.DB.prepare('UPDATE students SET xp = xp + ?, updated_at = ? WHERE id = ?').bind(xpDelta, getKSTString(), studentId).run();
     await recordXp(c.env.DB, Number(studentId), xpDelta, source || '수업 기록', sourceDetail || '')
     
     // 레벨 자동 계산 (100 XP당 1레벨)
@@ -1671,7 +1988,7 @@ app.get('/api/student/:studentId/profile', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const student: any = await c.env.DB.prepare(
-      'SELECT s.*, g.name as group_name FROM students s JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
+      'SELECT s.*, g.name as group_name, g.invite_code FROM students s JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
     ).bind(studentId).first();
 
     if (!student) return c.json({ error: '학생을 찾을 수 없습니다' }, 404);
@@ -1693,6 +2010,7 @@ app.get('/api/student/:studentId/profile', async (c) => {
       xp: student.xp,
       level: student.level,
       groupName: student.group_name,
+      inviteCode: student.invite_code,
       stats: {
         exams: examCount.cnt,
         assignments: assignmentCount.cnt,
@@ -1711,11 +2029,69 @@ app.get('/api/student/:studentId/profile', async (c) => {
 });
 
 
+// ==================== 시간표 API ====================
+// GET - 시간표 조회
+app.get('/api/student/:studentId/timetable', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const row: any = await c.env.DB.prepare(
+      'SELECT * FROM student_timetables WHERE student_id = ?'
+    ).bind(studentId).first();
+
+    if (!row) {
+      return c.json({ school: [], teachers: {}, periodTimes: [], subjectColors: {}, academy: [] });
+    }
+
+    return c.json({
+      school: JSON.parse(row.school_data || '[]'),
+      teachers: JSON.parse(row.teachers_data || '{}'),
+      periodTimes: JSON.parse(row.period_times || '[]'),
+      subjectColors: JSON.parse(row.subject_colors || '{}'),
+      academy: JSON.parse(row.academy_data || '[]'),
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// PUT - 시간표 저장 (upsert)
+app.put('/api/student/:studentId/timetable', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const body = await c.req.json();
+    const { school, teachers, periodTimes, subjectColors, academy } = body;
+
+    await c.env.DB.prepare(`
+      INSERT INTO student_timetables (student_id, school_data, teachers_data, period_times, subject_colors, academy_data, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now','+9 hours'))
+      ON CONFLICT(student_id) DO UPDATE SET
+        school_data = excluded.school_data,
+        teachers_data = excluded.teachers_data,
+        period_times = excluded.period_times,
+        subject_colors = excluded.subject_colors,
+        academy_data = excluded.academy_data,
+        updated_at = excluded.updated_at
+    `).bind(
+      studentId,
+      JSON.stringify(school || []),
+      JSON.stringify(teachers || {}),
+      JSON.stringify(periodTimes || []),
+      JSON.stringify(subjectColors || {}),
+      JSON.stringify(academy || [])
+    ).run();
+
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // ==================== ADMIN: 비밀번호 리셋 ====================
 app.post('/api/admin/reset-password', async (c) => {
   try {
     const { studentId, newPassword, adminKey } = await c.req.json();
-    if (adminKey !== 'jycc_admin_2026') return c.json({ error: 'Unauthorized' }, 403);
+    const validKey = c.env.ADMIN_KEY || 'jycc_admin_2026'
+    if (!adminKey || adminKey !== validKey) return c.json({ error: 'Unauthorized' }, 403);
     if (!studentId || !newPassword) return c.json({ error: 'studentId와 newPassword 필요' }, 400);
     const hash = await hashPassword(newPassword);
     await c.env.DB.prepare('UPDATE students SET password_hash = ? WHERE id = ?').bind(hash, studentId).run();
@@ -1726,26 +2102,627 @@ app.post('/api/admin/reset-password', async (c) => {
 });
 
 
+// ==================== 단일 테스트 학생 시드 (2주치 풍부한 데이터) ====================
+app.get('/api/seed-single-student', async (c) => {
+  const adminKey = c.req.query('key')
+  const validKey = c.env.ADMIN_KEY || 'jycc_admin_2026'
+  if (!adminKey || adminKey !== validKey) return c.json({ error: 'Unauthorized' }, 403)
+  try {
+    const DB = c.env.DB;
+    const step = Number(c.req.query('step') || '0');
+    const groupId = 1; // 김선생 선생님 반
+    const mentorId = 1;
+    const studentName = '열정';
+    const school = '정율고등학교';
+    const grade = 2;
+
+    // KST 헬퍼
+    function kstTs(offsetDays: number, hour = 0, min = 0) {
+      const d = new Date(Date.now() + 9*3600000 + offsetDays*86400000);
+      d.setUTCHours(hour, min, 0, 0);
+      return d.toISOString().replace('T',' ').slice(0,19);
+    }
+    function kstDate(offsetDays: number) {
+      const d = new Date(Date.now() + 9*3600000 + offsetDays*86400000);
+      return d.toISOString().slice(0,10);
+    }
+    function pick<T>(a: T[]): T { return a[Math.floor(Math.random()*a.length)]; }
+    function rand(min: number, max: number) { return Math.floor(Math.random()*(max-min+1))+min; }
+
+    // STEP 0: 학생 생성
+    if (step === 0) {
+      const pwHash = await hashPassword('test1234');
+      let st: any = await DB.prepare('SELECT id FROM students WHERE group_id=? AND name=?').bind(groupId, studentName).first();
+      let studentId: number;
+      if (st) {
+        studentId = st.id;
+        await DB.prepare('UPDATE students SET school_name=?,grade=?,profile_emoji=?,xp=?,level=?,croquet_balance=? WHERE id=?')
+          .bind(school, grade, '🧪', 420, 5, 85, studentId).run();
+      } else {
+        const r = await DB.prepare('INSERT INTO students (group_id,name,password_hash,school_name,grade,profile_emoji,xp,level,croquet_balance) VALUES(?,?,?,?,?,?,?,?,?)')
+          .bind(groupId, studentName, pwHash, school, grade, '🧪', 420, 5, 85).run();
+        studentId = r.meta.last_row_id as number;
+      }
+      return c.json({ success: true, step: 0, studentId, message: `Student "${studentName}" created (id=${studentId})`, nextStep: 1 });
+    }
+
+    // 학생 ID 조회
+    const stRow: any = await DB.prepare('SELECT id FROM students WHERE group_id=? AND name=?').bind(groupId, studentName).first();
+    if (!stRow) return c.json({ error: 'Run step=0 first' }, 400);
+    const sid = stRow.id;
+
+    const subjects = ['국어', '영어', '수학', '물리학Ⅰ', '한국사', '생명과학Ⅰ'];
+    const topicMap: Record<string, string[]> = {
+      '국어': ['현대시 감상', '비문학 독해 전략', '문법 - 음운 변동', '고전소설 해석', '논술문 작성', '수필 이해', '시의 화자 분석'],
+      '영어': ['관계대명사 심화', '분사구문 활용', '독해 - 추론 문제', '영작문 기초', '듣기 실전 연습', '가정법 과거완료', '간접화법 정리'],
+      '수학': ['미분의 활용', '정적분 계산', '수열의 극한', '확률과 통계 기초', '치환 적분', '함수의 연속', '급수의 수렴'],
+      '물리학Ⅰ': ['뉴턴 운동법칙', '에너지 보존 법칙', '파동의 성질', '전기장과 전위', '자기장', '열역학 법칙'],
+      '한국사': ['조선 전기 정치', '일제강점기 독립운동', '고려 사회와 문화', '대한민국 정부 수립', '한국 전쟁', '민주화 운동'],
+      '생명과학Ⅰ': ['세포 분열', 'DNA 복제', '유전자 발현', '면역과 질병', '생태계와 환경', '진화의 증거'],
+    };
+    const keywords = ['핵심개념', '오답정리', '심화학습', '기출분석', '개념정리', '문제풀이', '암기', '이해', '적용', '응용', '보충학습'];
+
+    // 최근 14일 평일 목록
+    const weekdays: string[] = [];
+    for (let i = -14; i <= 0; i++) {
+      const d = new Date(Date.now()+9*3600000+i*86400000);
+      if (d.getDay() >= 1 && d.getDay() <= 5) weekdays.push(d.toISOString().slice(0,10));
+    }
+
+    // STEP 1: 수업 기록 (40~50개) + 사진
+    if (step === 1) {
+      const stmts: any[] = [];
+      for (const day of weekdays) {
+        const numRecords = rand(3, 5); // 하루 3~5개 수업
+        for (let j = 0; j < numRecords; j++) {
+          const subj = subjects[j % subjects.length];
+          const topics = topicMap[subj];
+          const topic = pick(topics);
+          const content = `${topic}에 대해 배웠다. ${pick(['선생님 설명이 명확했다','이해가 잘 됐다','어려웠지만 복습 필요','새로운 개념을 알게 됐다','문제 풀이를 했다'])}. ${pick(['핵심 포인트를 정리했다','노트 필기 완료','예제 문제 3개 풀었다','개념 맵 작성','오답 노트 정리'])}`;
+          const kwArr = [pick(keywords), pick(keywords), pick(keywords)].filter((v,i,a)=>a.indexOf(v)===i);
+          const understanding = rand(2, 5); // 1~5 scale
+          stmts.push(DB.prepare(
+            'INSERT INTO class_records (student_id,subject,topic,content,keywords,understanding,date,created_at) VALUES(?,?,?,?,?,?,?,?)'
+          ).bind(sid, subj, topic, content, JSON.stringify(kwArr), understanding, day, kstTs(-weekdays.indexOf(day)*-1-14, rand(9,16), rand(0,59))));
+        }
+      }
+      // 사진 기록 (15개) - class_record_id는 나중에 매핑
+      const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+      await DB.batch(stmts);
+      // 사진 - 방금 생성된 class_records ID 가져오기
+      const crIds: any = await DB.prepare('SELECT id FROM class_records WHERE student_id=? ORDER BY RANDOM() LIMIT 15').bind(sid).all();
+      const photoStmts: any[] = [];
+      for (const cr of (crIds.results || [])) {
+        photoStmts.push(DB.prepare(
+          'INSERT INTO class_record_photos (student_id,class_record_id,photo_data,thumbnail,mime_type,file_size,created_at) VALUES(?,?,?,?,?,?,?)'
+        ).bind(sid, cr.id, tinyPng, tinyPng, 'image/png', 67, kstTs(-rand(0,13), rand(9,16), rand(0,59))));
+      }
+      if (photoStmts.length > 0) await DB.batch(photoStmts);
+      return c.json({ success: true, step: 1, message: `Class records + photos inserted`, nextStep: 2 });
+    }
+
+    // STEP 2: 질문/교학상장/과제/활동
+    if (step === 2) {
+      const stmts: any[] = [];
+      // question_records (12개) - schema: student_id, subject, question_text, question_level, question_label, axis, is_complete
+      const questions = [
+        {s:'수학',q:'치환적분에서 치환 변수 선택 기준이 뭔가요?',lv:'중',lb:'개념',ax:'curiosity'},
+        {s:'영어',q:'관계대명사 which와 that 차이가 뭐예요?',lv:'하',lb:'문법',ax:'curiosity'},
+        {s:'국어',q:'시의 화자와 작가는 다른 건가요?',lv:'중',lb:'개념',ax:'curiosity'},
+        {s:'물리학Ⅰ',q:'운동에너지와 위치에너지의 합이 보존되는 조건은?',lv:'상',lb:'적용',ax:'deep_think'},
+        {s:'한국사',q:'동학 농민 운동의 1차와 2차 봉기 차이점은?',lv:'중',lb:'비교',ax:'curiosity'},
+        {s:'생명과학Ⅰ',q:'DNA 복제가 반보존적이라는 게 무슨 뜻이에요?',lv:'상',lb:'개념',ax:'deep_think'},
+        {s:'수학',q:'로피탈 정리는 언제 쓸 수 있나요?',lv:'상',lb:'적용',ax:'curiosity'},
+        {s:'영어',q:'가정법 과거와 가정법 과거완료 구분이 헷갈려요',lv:'중',lb:'문법',ax:'curiosity'},
+        {s:'국어',q:'비문학 지문 읽을 때 핵심어 찾는 방법은?',lv:'중',lb:'전략',ax:'creative'},
+        {s:'물리학Ⅰ',q:'전기장 안에서 등전위면은 왜 전기장에 수직이에요?',lv:'상',lb:'개념',ax:'deep_think'},
+        {s:'한국사',q:'갑오개혁과 을미개혁의 관계는?',lv:'중',lb:'비교',ax:'curiosity'},
+        {s:'생명과학Ⅰ',q:'세포 분열에서 G1기와 G2기의 차이점은?',lv:'중',lb:'비교',ax:'curiosity'},
+      ];
+      for (let i = 0; i < questions.length; i++) {
+        const qd = questions[i];
+        const dayOff = -rand(0, 13);
+        stmts.push(DB.prepare(
+          'INSERT INTO question_records (student_id,subject,question_text,question_level,question_label,axis,is_complete,xp_earned,created_at) VALUES(?,?,?,?,?,?,?,?,?)'
+        ).bind(sid, qd.s, qd.q, qd.lv, qd.lb, qd.ax, i < 9 ? 1 : 0, i < 9 ? rand(5,15) : 0, kstTs(dayOff, rand(15,21), rand(0,59))));
+      }
+      // my_questions (8개) - 내 질문 게시판
+      const myQs = [
+        {s:'수학',t:'미분 계수의 기하학적 의미가 뭔가요?',c:'접선의 기울기라고 하는데 정확히 어떤 의미인지 모르겠어요'},
+        {s:'영어',t:'현재완료와 과거시제 구분이 어려워요',c:'have been과 was의 차이가 뭔가요?'},
+        {s:'물리학Ⅰ',t:'마찰력이 운동 방향과 반대인 이유',c:'항상 반대인가요? 예외는 없나요?'},
+        {s:'국어',t:'고전시가에서 자연 소재의 상징적 의미',c:'솔, 대나무, 매화 등이 각각 무엇을 상징하나요?'},
+        {s:'한국사',t:'일제 강점기 독립운동 단체 정리',c:'의열단, 한인애국단, 광복군 등의 차이점이 헷갈려요'},
+        {s:'생명과학Ⅰ',t:'유전자형과 표현형의 관계',c:'같은 유전자형인데 표현형이 다를 수 있나요?'},
+        {s:'수학',t:'정적분의 넓이 계산에서 부호 처리',c:'음수가 나오면 어떻게 하나요?'},
+        {s:'영어',t:'분사구문 만드는 규칙이 복잡해요',c:'주어가 같을 때와 다를 때 어떻게 다른가요?'},
+      ];
+      const myQAnswers = [
+        '접선의 기울기는 그 점에서 함수가 변하는 순간 변화율을 의미합니다.',
+        '현재완료는 과거의 행위가 현재에 영향을 미칠 때 사용합니다.',
+        '정지 마찰력은 운동 방향과 같은 방향일 수도 있습니다 (예: 자동차 구동륜).',
+        '솔(소나무)은 지조와 절개, 대나무는 굳은 절개, 매화는 고결함을 상징합니다.',
+        '의열단은 무장투쟁, 한인애국단은 의거 활동, 광복군은 정규군 활동입니다.',
+        '네, 환경 요인에 의해 같은 유전자형도 다른 표현형을 보일 수 있습니다 (표현형 가소성).',
+      ];
+      for (let i = 0; i < myQs.length; i++) {
+        const mq = myQs[i];
+        const dayOff = -rand(0, 13);
+        const status = i < 6 ? '답변완료' : '미답변';
+        stmts.push(DB.prepare(
+          'INSERT INTO my_questions (student_id,subject,title,content,status,created_at) VALUES(?,?,?,?,?,?)'
+        ).bind(sid, mq.s, mq.t, mq.c, status, kstTs(dayOff, rand(14,20), rand(0,59))));
+      }
+      await DB.batch(stmts);
+      // my_answers 추가 (답변이 있는 질문에 대해)
+      const insertedQs: any = await DB.prepare('SELECT id FROM my_questions WHERE student_id=? ORDER BY id DESC LIMIT 8').bind(sid).all();
+      const ansStmts: any[] = [];
+      const qIds = (insertedQs.results || []).reverse();
+      for (let i = 0; i < Math.min(6, qIds.length); i++) {
+        ansStmts.push(DB.prepare(
+          'INSERT INTO my_answers (question_id,student_id,content,resolve_hours,resolve_days,created_at) VALUES(?,?,?,?,?,?)'
+        ).bind(qIds[i].id, sid, myQAnswers[i], rand(1,48), rand(0,2), kstTs(-rand(0,12), rand(10,18), rand(0,59))));
+      }
+      if (ansStmts.length > 0) await DB.batch(ansStmts);
+
+      // 교학상장 (5개) - teach_records: student_id, subject, topic, taught_to, content, reflection, xp_earned
+      const teachStmts: any[] = [];
+      const teachTopics = [
+        {s:'수학',t:'미분 개념을 친구에게 설명',to:'같은 반 친구 3명',c:'미분 계수의 의미와 공식 유도 과정을 칠판에 설명했다',r:'친구가 미분 계수의 의미를 이해함'},
+        {s:'영어',t:'관계대명사 정리 노트 공유',to:'스터디 그룹',c:'관계대명사 종류와 용법을 표로 정리해서 공유했다',r:'표를 만들어 정리하니 반응이 좋았다'},
+        {s:'국어',t:'비문학 독해 전략 발표',to:'반 전체',c:'비문학 지문 읽는 3단계 전략을 발표했다',r:'핵심어 추적법을 설명했고 질문을 많이 받았다'},
+        {s:'물리학Ⅰ',t:'에너지 보존 문제 풀이 도움',to:'옆자리 친구',c:'역학적 에너지 보존 법칙 문제 풀이를 도와줬다',r:'에너지 관계식을 그림과 함께 설명하니 효과적이었다'},
+        {s:'한국사',t:'일제강점기 연표 정리 공유',to:'역사 스터디',c:'일제강점기 주요 사건을 연표로 정리해서 공유했다',r:'사건 흐름을 시각화해서 전달하니 이해도가 높아졌다'},
+      ];
+      for (const tt of teachTopics) {
+        teachStmts.push(DB.prepare(
+          'INSERT INTO teach_records (student_id,subject,topic,taught_to,content,reflection,xp_earned,created_at) VALUES(?,?,?,?,?,?,?,?)'
+        ).bind(sid, tt.s, tt.t, tt.to, tt.c, tt.r, rand(10,20), kstTs(-rand(0,13), rand(14,18), rand(0,59))));
+      }
+      // 과제 (6개) - assignments: student_id, subject, title, description, due_date, status, progress, color
+      const assignments = [
+        {s:'수학',t:'미적분 단원 종합 문제 풀기',d:'교과서 p.120~p.145 문제 풀기',st:'completed',p:100,cl:'#6C5CE7'},
+        {s:'영어',t:'영어 독해 모의고사 2회분',d:'수능 모의고사 독해 파트 2회분 풀기',st:'completed',p:100,cl:'#00B894'},
+        {s:'국어',t:'비문학 지문 5개 독해 연습',d:'EBS 수능특강 비문학 지문 5개',st:'completed',p:100,cl:'#FDCB6E'},
+        {s:'물리학Ⅰ',t:'역학 단원 문제집 1~50번',d:'물리 문제집 역학 파트 풀기',st:'in_progress',p:60,cl:'#E17055'},
+        {s:'한국사',t:'근현대사 요약 노트 작성',d:'갑오개혁~대한민국 정부 수립까지 정리',st:'in_progress',p:40,cl:'#0984E3'},
+        {s:'생명과학Ⅰ',t:'유전 파트 개념 정리 + 문제 풀이',d:'유전 개념 정리 및 기출문제 20문항',st:'pending',p:0,cl:'#E84393'},
+      ];
+      for (const a of assignments) {
+        const created = kstTs(-rand(5,13), 16, 0);
+        const due = kstDate(-rand(-3, 3));
+        teachStmts.push(DB.prepare(
+          'INSERT INTO assignments (student_id,subject,title,description,due_date,status,progress,color,created_at) VALUES(?,?,?,?,?,?,?,?,?)'
+        ).bind(sid, a.s, a.t, a.d, due, a.st, a.p, a.cl, created));
+      }
+      // 활동 기록 (3개) - activity_records: student_id, activity_type, title, description, start_date, end_date, status, progress
+      const activities = [
+        {t:'research',title:'과학 탐구 프로젝트',d:'물의 표면장력 실험 설계 및 보고서 작성',st:'in-progress',p:70},
+        {t:'competition',title:'영어 스피치 대회 준비',d:'3분 영어 스피치 원고 작성 및 발표 연습',st:'completed',p:100},
+        {t:'club',title:'수학 동아리 활동',d:'매주 수요일 방과 후 수학 심화 문제 풀이',st:'in-progress',p:50},
+      ];
+      for (const act of activities) {
+        const startOff = -rand(10,13);
+        const endOff = rand(5,14);
+        teachStmts.push(DB.prepare(
+          'INSERT INTO activity_records (student_id,activity_type,title,description,start_date,end_date,status,progress,created_at) VALUES(?,?,?,?,?,?,?,?,?)'
+        ).bind(sid, act.t, act.title, act.d, kstDate(startOff), kstDate(endOff), act.st, act.p, kstTs(startOff, 15, 0)));
+      }
+      await DB.batch(teachStmts);
+      // 활동 로그 추가
+      const actIds: any = await DB.prepare('SELECT id FROM activity_records WHERE student_id=? ORDER BY id DESC LIMIT 3').bind(sid).all();
+      const logStmts: any[] = [];
+      for (const act of (actIds.results || [])) {
+        const logCount = rand(3, 5);
+        for (let j = 0; j < logCount; j++) {
+          const dayOff = -rand(0,10);
+          logStmts.push(DB.prepare(
+            'INSERT INTO activity_logs (activity_record_id,student_id,date,content,reflection,duration,xp_earned,created_at) VALUES(?,?,?,?,?,?,?,?)'
+          ).bind(act.id, sid, kstDate(dayOff), pick([
+            '오늘 자료 조사를 진행했다',
+            '실험 재료를 준비했다',
+            '중간 발표 자료를 만들었다',
+            '보고서 초안을 작성했다',
+            '팀원들과 역할을 분담했다',
+            '발표 리허설을 했다',
+            '피드백을 반영해 수정했다',
+            '최종 정리 및 제출 완료',
+          ]), pick(['뿌듯했다','더 노력해야겠다','재밌었다','힘들었지만 보람 있었다','']), pick(['1시간','2시간','30분','1시간 30분']), rand(5,15), kstTs(dayOff, rand(14,20), rand(0,59))));
+        }
+      }
+      if (logStmts.length > 0) await DB.batch(logStmts);
+      return c.json({ success: true, step: 2, message: 'Questions, teach records, assignments, activities inserted', nextStep: 3 });
+    }
+
+    // STEP 3: 크로켓 포인트 + XP + 멘토 피드백 + AHA 리포트 + 시험
+    if (step === 3) {
+      const stmts: any[] = [];
+      // 크로켓 포인트 (10개)
+      let balance = 0;
+      const reasons = ['수업 기록 우수','질문 활동 우수','교학상장 참여','플래너 실행 우수','학원 과제 완료'];
+      for (let i = 0; i < 10; i++) {
+        const amt = pick([5, 10, 10, 15, 20, -5]);
+        balance += amt;
+        if (balance < 0) balance = 0;
+        stmts.push(DB.prepare(
+          'INSERT INTO croquet_points (student_id,mentor_id,amount,reason,reason_detail,balance_after,created_at) VALUES(?,?,?,?,?,?,?)'
+        ).bind(sid, mentorId, amt, pick(reasons), '', balance, kstTs(-rand(0,13), rand(10,18), rand(0,59))));
+      }
+      // XP 히스토리 (20개) - xp_history: student_id, amount, source, source_detail, ref_table, ref_id
+      let totalXp = 0;
+      for (let i = 0; i < 20; i++) {
+        const xpAmt = pick([5, 10, 10, 15, 20, 25, 30]);
+        totalXp += xpAmt;
+        const source = pick(['class_record','question','teach','assignment','attendance','aha_report','activity']);
+        const sourceDetail = pick(['수업 기록 작성','질문 등록','교학상장 활동','과제 완료','출석 보너스','AHA 리포트 작성','활동 기록']);
+        stmts.push(DB.prepare(
+          'INSERT INTO xp_history (student_id,amount,source,source_detail,created_at) VALUES(?,?,?,?,?)'
+        ).bind(sid, xpAmt, source, sourceDetail, kstTs(-rand(0,13), rand(9,20), rand(0,59))));
+      }
+      // 멘토 피드백 (5개) - mentor_feedbacks: mentor_id, student_id, record_type, record_id, content, feedback_type, is_read
+      const feedbacks = [
+        '수업 태도가 매우 좋아지고 있어요. 질문도 적극적으로 하고 있네요!',
+        '이번 주 수학 성적 향상이 눈에 띕니다. 꾸준히 노력하세요.',
+        '교학상장 활동이 훌륭합니다. 친구들에게 설명하면서 본인도 성장하고 있어요.',
+        '영어 독해 속도가 빨라졌어요. 어휘력을 더 키우면 좋겠습니다.',
+        '물리 개념 이해도가 많이 올랐습니다. 실전 문제 연습을 더 해보세요.',
+      ];
+      for (let i = 0; i < feedbacks.length; i++) {
+        stmts.push(DB.prepare(
+          'INSERT INTO mentor_feedbacks (mentor_id,student_id,record_type,content,feedback_type,is_read,created_at) VALUES(?,?,?,?,?,?,?)'
+        ).bind(mentorId, sid, 'general', feedbacks[i], pick(['encouragement','note','suggestion']), i < 3 ? 1 : 0, kstTs(-rand(0,12), rand(10,17), rand(0,59))));
+      }
+      // AHA 리포트 (3개)
+      const ahaReports = [
+        {s:'수학',u:'미분',sec_p:'미분계수 구하기',sec_t:'함수의 극한과 미분',sec_r:'교과서 + 수능특강',sec_f:'미분 개념을 확실히 이해하게 됨',ai:'미분의 기본 개념을 잘 이해하고 있으며 응용 문제에도 적용할 수 있습니다.'},
+        {s:'영어',u:'관계사',sec_p:'관계대명사 구분',sec_t:'관계대명사와 관계부사',sec_r:'Grammar in Use + 기출문제',sec_f:'which/that 구분이 명확해짐',ai:'관계사 개념을 체계적으로 정리했습니다. 복합관계사까지 확장하면 좋겠습니다.'},
+        {s:'물리학Ⅰ',u:'역학',sec_p:'뉴턴 제2법칙 적용',sec_t:'힘과 가속도의 관계',sec_r:'물리학 개념서 + EBS 강의',sec_f:'F=ma 공식을 다양한 상황에 적용하는 연습이 필요',ai:'역학 기초가 탄탄합니다. 마찰력과 합력 문제를 더 연습하세요.'},
+      ];
+      for (const aha of ahaReports) {
+        stmts.push(DB.prepare(
+          'INSERT INTO aha_reports (student_id,subject,unit,section_problem,section_topic,section_research,section_self_feedback,ai_feedback,ai_source,croquet_given,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)'
+        ).bind(sid, aha.s, aha.u, aha.sec_p, aha.sec_t, aha.sec_r, aha.sec_f, aha.ai, 'gemini', 10, kstTs(-rand(1,10), rand(15,19), rand(0,59))));
+      }
+      // 시험 (중간고사 완료 + 기말고사 예정) - exams: student_id, name, type, start_date, subjects, status
+      const subjectsJson = JSON.stringify(subjects.map(s => ({name: s, target_score: rand(80,95)})));
+      const midR = await DB.prepare('INSERT INTO exams (student_id,name,type,start_date,subjects,status,created_at) VALUES(?,?,?,?,?,?,?)')
+        .bind(sid, '1학기 중간고사', 'midterm', kstDate(-10), subjectsJson, 'completed', kstTs(-12, 10, 0)).run();
+      const midId = midR.meta.last_row_id as number;
+      // exam_results: exam_id, student_id, total_score, grade, subjects_data, overall_reflection
+      const subjectsData = subjects.map(s => ({name: s, score: rand(72,98), rank: rand(1,15), total: 35}));
+      const totalScore = Math.round(subjectsData.reduce((a,b) => a+b.score, 0) / subjectsData.length);
+      stmts.push(DB.prepare(
+        'INSERT INTO exam_results (exam_id,student_id,total_score,grade,subjects_data,overall_reflection,created_at) VALUES(?,?,?,?,?,?,?)'
+      ).bind(midId, sid, totalScore, rand(1,3), JSON.stringify(subjectsData), '전체적으로 잘 봤지만 물리와 수학에서 실수가 있었다. 다음에는 꼼꼼히 검토하자.', kstTs(-6, 12, 0)));
+      // 기말고사 (예정)
+      const finalR = await DB.prepare('INSERT INTO exams (student_id,name,type,start_date,subjects,status,created_at) VALUES(?,?,?,?,?,?,?)')
+        .bind(sid, '1학기 기말고사', 'final', kstDate(20), subjectsJson, 'upcoming', kstTs(-1, 10, 0)).run();
+      await DB.batch(stmts);
+      // croquet_balance, xp, level 업데이트
+      await DB.prepare('UPDATE students SET croquet_balance=?, xp=?, level=? WHERE id=?').bind(balance, totalXp, Math.floor(totalXp/100)+1, sid).run();
+      // 초대코드 가져오기
+      const grp: any = await DB.prepare('SELECT invite_code FROM groups WHERE id=?').bind(groupId).first();
+      return c.json({
+        success: true, step: 3, message: 'All seed data complete!',
+        student: { id: sid, name: studentName, school, grade, password: 'test1234', inviteCode: grp?.invite_code || '' },
+        counts: { croquet_points: 10, xp_history: 20, mentor_feedbacks: 5, aha_reports: 3, exams: 2, my_questions: 8, my_answers: 6, activities: 3, teach_records: 5, assignments: 6 }
+      });
+    }
+
+    return c.json({ error: 'Invalid step. Use step=0,1,2,3' }, 400);
+  } catch (e: any) {
+    return c.json({ error: e.message, stack: e.stack?.slice(0,300) }, 500);
+  }
+});
+
+
+// ==================== 시드 테스트 데이터 API (step 분할) ====================
+app.get('/api/seed-test-data', async (c) => {
+  const adminKey = c.req.query('key')
+  const validKey = c.env.ADMIN_KEY || 'jycc_admin_2026'
+  if (!adminKey || adminKey !== validKey) return c.json({ error: 'Unauthorized' }, 403)
+  try {
+    const step = Number(c.req.query('step') || '0');
+    const DB = c.env.DB;
+
+    // 공통: 멘토 & 그룹 확인
+    let mentor: any = await DB.prepare('SELECT * FROM mentors WHERE login_id = ?').bind('mentor1').first();
+    if (!mentor) mentor = await DB.prepare('SELECT * FROM mentors LIMIT 1').first();
+    if (!mentor) return c.json({ error: 'No mentor found' }, 400);
+    const mentorId = mentor.id;
+    let group: any = await DB.prepare('SELECT * FROM groups WHERE mentor_id = ? LIMIT 1').bind(mentorId).first();
+    if (!group) return c.json({ error: 'No group found' }, 400);
+    const groupId = group.id;
+
+    const studentsInfo = [
+      { name: '홍길동', school: '정율고등학교', grade: 2, emoji: '🐱' },
+      { name: '이서연', school: '정율고등학교', grade: 2, emoji: '🦊' },
+      { name: '박준호', school: '정율고등학교', grade: 2, emoji: '🦁' },
+      { name: '김하은', school: '정율고등학교', grade: 1, emoji: '🐰' },
+      { name: '최민재', school: '정율고등학교', grade: 1, emoji: '🐻' },
+      { name: '장예린', school: '정율고등학교', grade: 3, emoji: '🦄' },
+    ];
+    const subjects = ['국어', '영어', '수학', '물리학Ⅰ', '한국사', '생명과학Ⅰ'];
+    const topicMap: Record<string, string[]> = {
+      '국어': ['현대시 감상', '비문학 독해 전략', '문법 - 음운 변동', '고전소설 해석', '논술문 작성'],
+      '영어': ['관계대명사 심화', '분사구문 활용', '독해 - 추론 문제', '영작문 기초', '듣기 실전 연습'],
+      '수학': ['미분의 활용', '정적분 계산', '수열의 극한', '확률과 통계 기초', '치환 적분'],
+      '물리학Ⅰ': ['뉴턴 운동법칙', '에너지 보존 법칙', '파동의 성질', '전기장과 전위'],
+      '한국사': ['조선 전기 정치', '일제강점기 독립운동', '고려 사회와 문화', '대한민국 정부 수립'],
+      '생명과학Ⅰ': ['세포 분열', 'DNA 복제', '유전자 발현', '면역과 질병'],
+    };
+    function kstStr(offset: number) { const d = new Date(Date.now() + 9*3600000 + offset*86400000); return d.toISOString().slice(0,10); }
+    function kstTs(offset: number) { const d = new Date(Date.now() + 9*3600000 + offset*86400000); return d.toISOString().replace('T',' ').slice(0,19); }
+    function pick<T>(a: T[]): T { return a[Math.floor(Math.random()*a.length)]; }
+    // weekdays
+    const wds: string[] = [];
+    for (let i = -25; i <= 0; i++) { const d = new Date(Date.now()+9*3600000+i*86400000); if(d.getDay()>=1&&d.getDay()<=5) wds.push(d.toISOString().slice(0,10)); }
+    const recentDays = wds.slice(-15);
+
+    // ============ STEP 0: 학생 생성/업데이트 ============
+    if (step === 0) {
+      const pwHash = await hashPassword('test1234');
+      const ids: number[] = [];
+      for (const s of studentsInfo) {
+        let ex: any = await DB.prepare('SELECT id FROM students WHERE group_id=? AND name=?').bind(groupId, s.name).first();
+        if (ex) {
+          ids.push(ex.id);
+          await DB.prepare('UPDATE students SET school_name=?,grade=?,profile_emoji=? WHERE id=?').bind(s.school,s.grade,s.emoji,ex.id).run();
+        } else {
+          const r = await DB.prepare('INSERT INTO students (group_id,name,password_hash,school_name,grade,profile_emoji) VALUES(?,?,?,?,?,?)').bind(groupId,s.name,pwHash,s.school,s.grade,s.emoji).run();
+          ids.push(r.meta.last_row_id as number);
+        }
+      }
+      return c.json({ success: true, step: 0, message: 'Students created', studentIds: ids, nextStep: 1 });
+    }
+
+    // 학생 ID 로드
+    const allStudents: any = await DB.prepare('SELECT id,name FROM students WHERE group_id=? ORDER BY id').bind(groupId).all();
+    const studentIds = allStudents.results.map((s:any) => s.id).slice(0, 6);
+    if (studentIds.length === 0) return c.json({ error: 'No students. Run step=0 first.' }, 400);
+
+    // ============ STEP 1: 수업기록 (batch) ============
+    if (step === 1) {
+      await DB.prepare('DELETE FROM class_records WHERE student_id IN ('+studentIds.join(',')+')').run();
+      for (const sid of studentIds) {
+        const stmts: any[] = [];
+        for (const date of recentDays) {
+          const cnt = 2 + Math.floor(Math.random()*2);
+          const daySubjs = [...subjects].sort(()=>Math.random()-0.5).slice(0,cnt);
+          for (const subj of daySubjs) {
+            const tp = pick(topicMap[subj]||['일반']);
+            const und = pick([3,4,5,3,4,2,5]);
+            const ct = `${tp}에 대해 배웠다. 핵심 개념을 정리하고 예제를 풀어보았다.`;
+            const kw = JSON.stringify([tp.split(' ')[0], subj]);
+            stmts.push(DB.prepare('INSERT INTO class_records(student_id,subject,date,content,keywords,understanding,topic) VALUES(?,?,?,?,?,?,?)').bind(sid,subj,date,ct,kw,und,tp));
+          }
+        }
+        // batch max ~100
+        for (let i=0; i<stmts.length; i+=80) { await DB.batch(stmts.slice(i,i+80)); }
+      }
+      return c.json({ success: true, step: 1, message: 'Class records inserted', nextStep: 2 });
+    }
+
+    // ============ STEP 2: 사진 + 질문 + 교학상장 ============
+    if (step === 2) {
+      const placeholder = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      await DB.prepare('DELETE FROM class_record_photos WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM question_records WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM teach_records WHERE student_id IN ('+studentIds.join(',')+')').run();
+
+      for (const sid of studentIds) {
+        // 사진 12개
+        const crIds: any = await DB.prepare('SELECT id FROM class_records WHERE student_id=? ORDER BY RANDOM() LIMIT 12').bind(sid).all();
+        const photoStmts = crIds.results.map((r:any) =>
+          DB.prepare('INSERT INTO class_record_photos(student_id,class_record_id,photo_data,thumbnail,mime_type,file_size) VALUES(?,?,?,?,?,?)').bind(sid,r.id,placeholder,placeholder,'image/png',1024+Math.floor(Math.random()*50000))
+        );
+        if (photoStmts.length) await DB.batch(photoStmts);
+
+        // 질문 10개
+        const qTexts: Record<string,string[]> = {
+          '국어': ['비문학 지문에서 핵심 주장을 빠르게 찾는 방법이 있나요?','현대시에서 화자의 정서를 파악하는 기준이 뭔가요?'],
+          '영어': ['관계대명사 that과 which는 어떻게 구분하나요?','분사구문에서 주어가 다를 때 어떻게 처리하나요?'],
+          '수학': ['치환 적분할 때 치환 변수를 어떻게 고르나요?','미분의 활용에서 최대최소 문제 접근법?'],
+          '물리학Ⅰ': ['자유낙하와 수평 투사의 시간이 같은 이유는?','에너지 보존 법칙 문제에서 마찰력 처리 방법?'],
+          '한국사': ['조선 전기 붕당정치와 탕평정치의 차이점?'],
+          '생명과학Ⅰ': ['DNA 복제에서 선도 가닥과 지연 가닥의 차이?'],
+        };
+        const levels = ['C-1','C-2','C-3','B-1','B-2','A-1'];
+        const qStmts: any[] = [];
+        for (let q=0; q<10; q++) {
+          const subj = pick(subjects);
+          const qt = pick(qTexts[subj]||['이 부분이 이해가 안 돼요']);
+          qStmts.push(DB.prepare('INSERT INTO question_records(student_id,subject,question_text,question_level,axis,xp_earned,is_complete,created_at) VALUES(?,?,?,?,?,?,1,?)')
+            .bind(sid,subj,qt,pick(levels),pick(['curiosity','reflection']),10+Math.floor(Math.random()*30),kstTs(-Math.floor(Math.random()*21))));
+        }
+        await DB.batch(qStmts);
+
+        // 교학상장 4개
+        const teachTopics = ['치환적분 역함수 관점','관계대명사 용법','뉴턴 제2법칙 실생활 예시','세포 분열 과정'];
+        const tStmts: any[] = [];
+        for (let t=0; t<4; t++) {
+          const subj = pick(subjects);
+          const tp = pick(teachTopics);
+          const to = pick(studentsInfo).name;
+          tStmts.push(DB.prepare('INSERT INTO teach_records(student_id,subject,topic,taught_to,content,reflection,xp_earned,created_at) VALUES(?,?,?,?,?,?,?,?)')
+            .bind(sid,subj,tp,to,`${to}에게 ${tp}에 대해 설명했다.`,`설명하면서 나도 정리가 됐다.`,15+Math.floor(Math.random()*25),kstTs(-Math.floor(Math.random()*18))));
+        }
+        await DB.batch(tStmts);
+      }
+      return c.json({ success: true, step: 2, message: 'Photos + Questions + Teach records', nextStep: 3 });
+    }
+
+    // ============ STEP 3: 과제 + 포인트 + XP ============
+    if (step === 3) {
+      await DB.prepare('DELETE FROM assignments WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM croquet_points WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM xp_history WHERE student_id IN ('+studentIds.join(',')+')').run();
+
+      for (const sid of studentIds) {
+        // 과제 5개
+        const assigns = [
+          {s:'국어',t:'비문학 독해 프린트 풀기',d:3,st:'completed',p:100,tc:'이정민'},
+          {s:'영어',t:'영어 문법 워크북 3단원',d:5,st:'completed',p:100,tc:'김영희'},
+          {s:'수학',t:'미적분 문제집 풀기',d:7,st:'in-progress',p:60,tc:'박수학'},
+          {s:'물리학Ⅰ',t:'물리 실험 보고서 작성',d:-2,st:'completed',p:100,tc:'최물리'},
+          {s:'한국사',t:'한국사 정리 노트 제출',d:10,st:'pending',p:20,tc:'강한국'},
+        ];
+        const aStmts = assigns.map(a =>
+          DB.prepare('INSERT INTO assignments(student_id,subject,title,description,teacher_name,due_date,status,progress,color) VALUES(?,?,?,?,?,?,?,?,?)')
+            .bind(sid,a.s,a.t,`${a.t} 상세`,a.tc,kstStr(a.d),a.st,a.p,pick(['#6C5CE7','#FF6B6B','#00B894','#FDCB6E']))
+        );
+        await DB.batch(aStmts);
+
+        // 포인트 10건
+        const reasons = ['수업기록','질문등록','교학상장','과제완료','출석보너스','멘토보너스'];
+        let balance = 0;
+        const cpStmts: any[] = [];
+        for (let p=0; p<10; p++) {
+          const amt = pick([5,10,15,20,30,50]);
+          balance += amt;
+          cpStmts.push(DB.prepare('INSERT INTO croquet_points(student_id,mentor_id,amount,reason,reason_detail,balance_after,created_at) VALUES(?,?,?,?,?,?,?)')
+            .bind(sid,mentorId,amt,pick(reasons),'보상',balance,kstTs(-(10-p))));
+        }
+        await DB.batch(cpStmts);
+        await DB.prepare('UPDATE students SET croquet_balance=? WHERE id=?').bind(balance,sid).run();
+
+        // XP 20건
+        const xpSrcs = ['class_record','question','teach','assignment','activity','daily_login'];
+        let totalXp = 0;
+        const xpStmts: any[] = [];
+        for (let x=0; x<20; x++) {
+          const amt = pick([5,10,15,20,25,30]);
+          totalXp += amt;
+          xpStmts.push(DB.prepare('INSERT INTO xp_history(student_id,amount,source,source_detail,created_at) VALUES(?,?,?,?,?)')
+            .bind(sid,amt,pick(xpSrcs),'활동 보상',kstTs(-(20-x))));
+        }
+        await DB.batch(xpStmts);
+        const level = Math.min(20,Math.floor(totalXp/100)+1);
+        await DB.prepare('UPDATE students SET xp=?,level=?,last_login_at=? WHERE id=?').bind(totalXp,level,kstTs(0),sid).run();
+      }
+      return c.json({ success: true, step: 3, message: 'Assignments + Points + XP', nextStep: 4 });
+    }
+
+    // ============ STEP 4: 피드백 + 비교과 + 아하리포트 + 시험 ============
+    if (step === 4) {
+      await DB.prepare('DELETE FROM mentor_feedbacks WHERE mentor_id=?').bind(mentorId).run();
+      await DB.prepare('DELETE FROM activity_logs WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM activity_records WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM aha_reports WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM wrong_answers WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM exam_results WHERE student_id IN ('+studentIds.join(',')+')').run();
+      await DB.prepare('DELETE FROM exams WHERE student_id IN ('+studentIds.join(',')+')').run();
+
+      const feedbacks = [
+        '수업 기록이 매우 충실합니다!','질문의 깊이가 좋아지고 있어요.',
+        '교학상장 활동이 인상적입니다.','과제 제출이 꾸준합니다.',
+        '수업 이해도가 높아지고 있어요.','포트폴리오에 큰 도움이 될 거예요.',
+      ];
+      const activities = [
+        {ty:'report',ti:'수학 알고리즘 탐구 보고서',ds:'피보나치 수열과 황금비',dy:60},
+        {ty:'competition',ti:'교내 과학 탐구 대회',ds:'물리 자유낙하 실험 발표',dy:30},
+        {ty:'volunteer',ti:'또래 튜터링 봉사',ds:'수학 기초반 학생 멘토링',dy:45},
+        {ty:'club',ti:'영어 토론 동아리',ds:'AI와 교육의 미래',dy:90},
+      ];
+
+      for (const sid of studentIds) {
+        // 피드백 4건
+        const fbStmts = [];
+        for (let f=0; f<4; f++) {
+          fbStmts.push(DB.prepare('INSERT INTO mentor_feedbacks(mentor_id,student_id,record_type,content,feedback_type,is_read,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+            .bind(mentorId,sid,pick(['general','class_record','question']),pick(feedbacks),'note',f<2?1:0,kstTs(-f*3),kstTs(-f*3)));
+        }
+        await DB.batch(fbStmts);
+
+        // 비교과 2~3개
+        const actPicked = [...activities].sort(()=>Math.random()-0.5).slice(0,2+Math.floor(Math.random()*2));
+        for (const act of actPicked) {
+          const st = pick(['in-progress','completed']);
+          const prog = st==='completed'?100:30+Math.floor(Math.random()*50);
+          const r = await DB.prepare('INSERT INTO activity_records(student_id,activity_type,title,description,start_date,end_date,status,progress) VALUES(?,?,?,?,?,?,?,?)')
+            .bind(sid,act.ty,act.ti,act.ds,kstStr(-act.dy),kstStr(Math.floor(act.dy*0.3)),st,prog).run();
+          const actId = r.meta.last_row_id;
+          const logTexts = ['자료 조사 및 개요 작성','본론 초안 작성','실험 데이터 분석','발표 자료 제작'];
+          const logStmts = logTexts.slice(0,3).map((lt,i) =>
+            DB.prepare('INSERT INTO activity_logs(activity_record_id,student_id,date,content,reflection,duration,xp_earned) VALUES(?,?,?,?,?,?,?)')
+              .bind(actId,sid,kstStr(-act.dy+Math.floor(act.dy/3*i)),lt,'활동이 유익했다.','60분',15)
+          );
+          await DB.batch(logStmts);
+        }
+
+        // 아하 리포트 3개
+        const ahaStmts: any[] = [];
+        for (let a=0; a<3; a++) {
+          const subj = pick(subjects);
+          const unit = pick(topicMap[subj]||['일반']);
+          const sName = studentsInfo[studentIds.indexOf(sid)]?.name || '학생';
+          ahaStmts.push(DB.prepare('INSERT INTO aha_reports(student_id,subject,unit,student_name_detected,subject_detected,unit_detected,section_problem,section_topic,section_research,section_self_feedback,ai_feedback,croquet_given,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .bind(sid,subj,unit,sName,subj,unit,
+              `${unit} 관련 문제를 풀면서 개념 적용이 어려웠다.`,
+              `${unit}의 핵심 원리와 적용 방법을 정리했다.`,
+              `교과서와 참고서를 비교하며 탐구했다.`,
+              `${unit}에 대한 이해가 깊어졌다.`,
+              `${sName}의 ${subj} ${unit} 탐구가 체계적입니다.`,
+              1,kstTs(-Math.floor(Math.random()*18))));
+        }
+        await DB.batch(ahaStmts);
+
+        // 시험 2개
+        const exam1Subjs = JSON.stringify(subjects.slice(0,4).map((s,i) => ({subject:s,readiness:50+Math.floor(Math.random()*40),color:['#FF6B6B','#6C5CE7','#00B894','#FDCB6E'][i]})));
+        const e1 = await DB.prepare('INSERT INTO exams(student_id,name,type,start_date,subjects,status) VALUES(?,?,?,?,?,?)').bind(sid,'1학기 1차 지필고사','midterm',kstStr(-14),exam1Subjs,'completed').run();
+        const eid = e1.meta.last_row_id;
+        const sArr = subjects.slice(0,4).map(s=>({subject:s,score:60+Math.floor(Math.random()*35),grade:pick([1,2,3]),reflection:`${s} 시험 괜찮았다.`}));
+        const ts = Math.round(sArr.reduce((a,b)=>a+b.score,0)/sArr.length);
+        await DB.prepare('INSERT INTO exam_results(exam_id,student_id,total_score,grade,subjects_data,overall_reflection) VALUES(?,?,?,?,?,?)')
+          .bind(eid,sid,ts,sArr[0].grade,JSON.stringify(sArr),'다음 시험엔 복습 계획을 더 체계적으로 세워야겠다.').run();
+
+        const exam2Subjs = JSON.stringify(subjects.slice(0,5).map((s,i)=>({subject:s,readiness:20+Math.floor(Math.random()*40),color:['#FF6B6B','#6C5CE7','#00B894','#FDCB6E','#E056A0'][i]})));
+        await DB.prepare('INSERT INTO exams(student_id,name,type,start_date,subjects,status) VALUES(?,?,?,?,?,?)').bind(sid,'1학기 2차 지필고사','final',kstStr(14),exam2Subjs,'upcoming').run();
+      }
+
+      // 최종 카운트
+      const counts: Record<string,number> = {};
+      for (const t of ['students','class_records','class_record_photos','question_records','teach_records','assignments','croquet_points','xp_history','mentor_feedbacks','activity_records','activity_logs','aha_reports','exams','exam_results']) {
+        const r:any = await DB.prepare(`SELECT COUNT(*) as cnt FROM ${t}`).first();
+        counts[t] = r?.cnt||0;
+      }
+      return c.json({ success: true, step: 4, message: 'All seed data complete!', counts });
+    }
+
+    return c.json({ error: 'Invalid step. Use step=0,1,2,3,4', usage: 'Call /api/seed-test-data?step=0 then step=1,2,3,4 in order' }, 400);
+  } catch (e: any) {
+    console.error('Seed error:', e);
+    return c.json({ error: e.message, stack: e.stack }, 500);
+  }
+});
+
+
 // ==================== DB 자동 마이그레이션 ====================
 app.get('/api/migrate', async (c) => {
+  const adminKey = c.req.query('key')
+  const validKey = c.env.ADMIN_KEY || 'jycc_admin_2026'
+  if (adminKey && adminKey !== validKey) return c.json({ error: 'Unauthorized' }, 403)
   try {
     const stmts = [
-      `CREATE TABLE IF NOT EXISTS mentors (id INTEGER PRIMARY KEY AUTOINCREMENT, login_id TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, academy_name TEXT DEFAULT '', phone TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
-      `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL, name TEXT NOT NULL, invite_code TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', max_students INTEGER DEFAULT 30, is_active INTEGER DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (mentor_id) REFERENCES mentors(id))`,
-      `CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, password_hash TEXT NOT NULL, school_name TEXT DEFAULT '', grade INTEGER DEFAULT 1, profile_emoji TEXT DEFAULT '😊', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, is_active INTEGER DEFAULT 1, last_login_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id))`,
-      `CREATE TABLE IF NOT EXISTS exams (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'midterm', start_date TEXT NOT NULL, subjects TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'upcoming', memo TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS exam_results (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL UNIQUE, student_id INTEGER NOT NULL, total_score INTEGER, grade INTEGER, subjects_data TEXT NOT NULL DEFAULT '[]', overall_reflection TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (exam_id) REFERENCES exams(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS wrong_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_result_id INTEGER NOT NULL, student_id INTEGER NOT NULL, subject TEXT NOT NULL, question_number INTEGER, topic TEXT DEFAULT '', error_type TEXT DEFAULT '', my_answer TEXT DEFAULT '', correct_answer TEXT DEFAULT '', reason TEXT DEFAULT '', reflection TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (exam_result_id) REFERENCES exam_results(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS wrong_answer_images (id INTEGER PRIMARY KEY AUTOINCREMENT, wrong_answer_id INTEGER NOT NULL, image_data TEXT NOT NULL, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (wrong_answer_id) REFERENCES wrong_answers(id))`,
-      `CREATE TABLE IF NOT EXISTS assignments (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, title TEXT NOT NULL, description TEXT DEFAULT '', teacher_name TEXT DEFAULT '', due_date TEXT NOT NULL, status TEXT DEFAULT 'pending', progress INTEGER DEFAULT 0, color TEXT DEFAULT '#6C5CE7', plan_data TEXT DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS class_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, date TEXT NOT NULL, content TEXT DEFAULT '', keywords TEXT DEFAULT '[]', understanding INTEGER DEFAULT 3, memo TEXT DEFAULT '', topic TEXT DEFAULT '', pages TEXT DEFAULT '', photos TEXT DEFAULT '[]', teacher_note TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS question_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, question_text TEXT NOT NULL, question_level TEXT DEFAULT '', question_label TEXT DEFAULT '', axis TEXT DEFAULT 'curiosity', coaching_messages TEXT DEFAULT '[]', xp_earned INTEGER DEFAULT 0, is_complete INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS teach_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, topic TEXT NOT NULL, taught_to TEXT DEFAULT '', content TEXT DEFAULT '', reflection TEXT DEFAULT '', xp_earned INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
-      `CREATE TABLE IF NOT EXISTS activity_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, activity_type TEXT DEFAULT '', title TEXT NOT NULL, description TEXT DEFAULT '', start_date TEXT, end_date TEXT, status TEXT DEFAULT 'in-progress', progress INTEGER DEFAULT 0, reflection TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS mentors (id INTEGER PRIMARY KEY AUTOINCREMENT, login_id TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, academy_name TEXT DEFAULT '', phone TEXT DEFAULT '', external_user_id INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE INDEX IF NOT EXISTS idx_mentors_external ON mentors(external_user_id)`,
+      `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL, name TEXT NOT NULL, invite_code TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', max_students INTEGER DEFAULT 30, is_active INTEGER DEFAULT 1, external_class_id INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (mentor_id) REFERENCES mentors(id))`,
+      `CREATE INDEX IF NOT EXISTS idx_groups_external ON groups(external_class_id)`,
+      `CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, password_hash TEXT NOT NULL, school_name TEXT DEFAULT '', grade INTEGER DEFAULT 1, profile_emoji TEXT DEFAULT '😊', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, is_active INTEGER DEFAULT 1, external_user_id INTEGER DEFAULT NULL, last_login_at DATETIME, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (group_id) REFERENCES groups(id))`,
+      `CREATE INDEX IF NOT EXISTS idx_students_external ON students(external_user_id)`,
+      `CREATE TABLE IF NOT EXISTS exams (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'midterm', start_date TEXT NOT NULL, subjects TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'upcoming', memo TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS exam_results (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL UNIQUE, student_id INTEGER NOT NULL, total_score INTEGER, grade INTEGER, subjects_data TEXT NOT NULL DEFAULT '[]', overall_reflection TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS wrong_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_result_id INTEGER NOT NULL, student_id INTEGER NOT NULL, subject TEXT NOT NULL, question_number INTEGER, topic TEXT DEFAULT '', error_type TEXT DEFAULT '', my_answer TEXT DEFAULT '', correct_answer TEXT DEFAULT '', reason TEXT DEFAULT '', reflection TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_result_id) REFERENCES exam_results(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS wrong_answer_images (id INTEGER PRIMARY KEY AUTOINCREMENT, wrong_answer_id INTEGER NOT NULL, image_data TEXT NOT NULL, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (wrong_answer_id) REFERENCES wrong_answers(id))`,
+      `CREATE TABLE IF NOT EXISTS assignments (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, title TEXT NOT NULL, description TEXT DEFAULT '', teacher_name TEXT DEFAULT '', due_date TEXT NOT NULL, status TEXT DEFAULT 'pending', progress INTEGER DEFAULT 0, color TEXT DEFAULT '#6C5CE7', plan_data TEXT DEFAULT '[]', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS class_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, date TEXT NOT NULL, content TEXT DEFAULT '', keywords TEXT DEFAULT '[]', understanding INTEGER DEFAULT 3, memo TEXT DEFAULT '', topic TEXT DEFAULT '', pages TEXT DEFAULT '', photos TEXT DEFAULT '[]', teacher_note TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS question_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, question_text TEXT NOT NULL, question_level TEXT DEFAULT '', question_label TEXT DEFAULT '', axis TEXT DEFAULT 'curiosity', coaching_messages TEXT DEFAULT '[]', xp_earned INTEGER DEFAULT 0, is_complete INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS teach_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, topic TEXT NOT NULL, taught_to TEXT DEFAULT '', content TEXT DEFAULT '', reflection TEXT DEFAULT '', xp_earned INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS activity_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, activity_type TEXT DEFAULT '', title TEXT NOT NULL, description TEXT DEFAULT '', start_date TEXT, end_date TEXT, status TEXT DEFAULT 'in-progress', progress INTEGER DEFAULT 0, reflection TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
       // 활동 로그 별도 테이블 (날짜별 기록 보장)
-      `CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, activity_record_id INTEGER NOT NULL, student_id INTEGER NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', reflection TEXT DEFAULT '', duration TEXT DEFAULT '', xp_earned INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (activity_record_id) REFERENCES activity_records(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, activity_record_id INTEGER NOT NULL, student_id INTEGER NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', reflection TEXT DEFAULT '', duration TEXT DEFAULT '', xp_earned INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (activity_record_id) REFERENCES activity_records(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
       // 탐구보고서 기록 테이블
-      `CREATE TABLE IF NOT EXISTS report_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, title TEXT NOT NULL, subject TEXT DEFAULT '', phase TEXT DEFAULT '', timeline TEXT DEFAULT '[]', questions TEXT DEFAULT '[]', total_xp INTEGER DEFAULT 0, status TEXT DEFAULT 'in-progress', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id))`,
+      `CREATE TABLE IF NOT EXISTS report_records (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, title TEXT NOT NULL, subject TEXT DEFAULT '', phase TEXT DEFAULT '', timeline TEXT DEFAULT '[]', questions TEXT DEFAULT '[]', total_xp INTEGER DEFAULT 0, status TEXT DEFAULT 'in-progress', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
       `CREATE INDEX IF NOT EXISTS idx_groups_mentor ON groups(mentor_id)`,
       `CREATE INDEX IF NOT EXISTS idx_groups_invite ON groups(invite_code)`,
       `CREATE INDEX IF NOT EXISTS idx_students_group ON students(group_id)`,
@@ -1771,14 +2748,14 @@ app.get('/api/migrate', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_activity_logs_student_date ON activity_logs(student_id, date)`,
       `CREATE INDEX IF NOT EXISTS idx_report_records_student ON report_records(student_id)`,
       // ===== 나만의 질문방 테이블 =====
-      `CREATE TABLE IF NOT EXISTS my_questions (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT DEFAULT '기타', class_record_id INTEGER DEFAULT NULL, title TEXT NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, thumbnail_key TEXT DEFAULT NULL, status TEXT DEFAULT '미답변', question_level TEXT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
-      `CREATE TABLE IF NOT EXISTS my_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL, student_id INTEGER NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, resolve_hours REAL DEFAULT NULL, resolve_days INTEGER DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (question_id) REFERENCES my_questions(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS my_questions (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT DEFAULT '기타', class_record_id INTEGER DEFAULT NULL, title TEXT NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, thumbnail_key TEXT DEFAULT NULL, status TEXT DEFAULT '미답변', question_level TEXT DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS my_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL, student_id INTEGER NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, resolve_hours REAL DEFAULT NULL, resolve_days INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (question_id) REFERENCES my_questions(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_my_questions_student ON my_questions(student_id)`,
       `CREATE INDEX IF NOT EXISTS idx_my_questions_status ON my_questions(student_id, status)`,
       `CREATE INDEX IF NOT EXISTS idx_my_questions_subject ON my_questions(student_id, subject)`,
       `CREATE INDEX IF NOT EXISTS idx_my_answers_question ON my_answers(question_id)`,
       // ===== XP 내역 기록 테이블 =====
-      `CREATE TABLE IF NOT EXISTS xp_history (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, amount INTEGER NOT NULL, source TEXT NOT NULL, source_detail TEXT DEFAULT '', ref_table TEXT DEFAULT NULL, ref_id INTEGER DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS xp_history (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, amount INTEGER NOT NULL, source TEXT NOT NULL, source_detail TEXT DEFAULT '', ref_table TEXT DEFAULT NULL, ref_id INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_xp_history_student ON xp_history(student_id, created_at DESC)`,
       // class_records 새 컬럼 추가 (기존 테이블 호환)
       `ALTER TABLE class_records ADD COLUMN topic TEXT DEFAULT ''`,
@@ -1786,82 +2763,71 @@ app.get('/api/migrate', async (c) => {
       `ALTER TABLE class_records ADD COLUMN photos TEXT DEFAULT '[]'`,
       `ALTER TABLE class_records ADD COLUMN teacher_note TEXT DEFAULT ''`,
       // ===== 수업 기록 사진 별도 저장 테이블 =====
-      `CREATE TABLE IF NOT EXISTS class_record_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, class_record_id INTEGER, photo_data TEXT NOT NULL, thumbnail TEXT DEFAULT '', mime_type TEXT DEFAULT 'image/jpeg', file_size INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS class_record_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, class_record_id INTEGER, photo_data TEXT NOT NULL, thumbnail TEXT DEFAULT '', mime_type TEXT DEFAULT 'image/jpeg', file_size INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_crp_student ON class_record_photos(student_id)`,
       `CREATE INDEX IF NOT EXISTS idx_crp_record ON class_record_photos(class_record_id)`,
       // ===== 멘토 피드백 테이블 =====
-      `CREATE TABLE IF NOT EXISTS mentor_feedbacks (id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL, student_id INTEGER NOT NULL, record_type TEXT NOT NULL DEFAULT 'general', record_id INTEGER DEFAULT NULL, content TEXT NOT NULL, feedback_type TEXT DEFAULT 'note', is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (mentor_id) REFERENCES mentors(id), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS mentor_feedbacks (id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL, student_id INTEGER NOT NULL, record_type TEXT NOT NULL DEFAULT 'general', record_id INTEGER DEFAULT NULL, content TEXT NOT NULL, feedback_type TEXT DEFAULT 'note', is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (mentor_id) REFERENCES mentors(id), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_mf_student ON mentor_feedbacks(student_id, created_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_mf_mentor ON mentor_feedbacks(mentor_id, created_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_mf_record ON mentor_feedbacks(record_type, record_id)`,
       `CREATE INDEX IF NOT EXISTS idx_mf_unread ON mentor_feedbacks(student_id, is_read)`,
       // 크로켓 포인트 테이블
-      `CREATE TABLE IF NOT EXISTS croquet_points (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, mentor_id INTEGER NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '기타', reason_detail TEXT DEFAULT '', balance_after INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE, FOREIGN KEY (mentor_id) REFERENCES mentors(id))`,
+      `CREATE TABLE IF NOT EXISTS croquet_points (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, mentor_id INTEGER, amount INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '기타', reason_detail TEXT DEFAULT '', balance_after INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_cp_student ON croquet_points(student_id, created_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_cp_mentor ON croquet_points(mentor_id, created_at DESC)`,
       // students 테이블에 croquet_balance 컬럼 추가
       `ALTER TABLE students ADD COLUMN croquet_balance INTEGER NOT NULL DEFAULT 0`,
-      // 시간표 테이블
-      `CREATE TABLE IF NOT EXISTS timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_schedule TEXT NOT NULL DEFAULT '[]', teachers TEXT NOT NULL DEFAULT '{}', subject_colors TEXT NOT NULL DEFAULT '{}', period_times TEXT NOT NULL DEFAULT '[]', academy_schedule TEXT NOT NULL DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      // 아하 리포트 저장 테이블
+      `CREATE TABLE IF NOT EXISTS aha_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT NOT NULL, unit TEXT DEFAULT '', student_name_detected TEXT DEFAULT '', subject_detected TEXT DEFAULT '', unit_detected TEXT DEFAULT '', section_problem TEXT DEFAULT '', section_topic TEXT DEFAULT '', section_research TEXT DEFAULT '', section_self_feedback TEXT DEFAULT '', ai_feedback TEXT DEFAULT '', photos TEXT DEFAULT '[]', ai_source TEXT DEFAULT 'gemini', croquet_given INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_aha_student ON aha_reports(student_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_aha_subject ON aha_reports(student_id, subject)`,
+      // 외부 앱 연동용 external_user_id, external_class_id 추가 (기존 DB 호환)
+      `ALTER TABLE mentors ADD COLUMN is_director INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE mentors ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
+      `ALTER TABLE groups ADD COLUMN external_class_id INTEGER DEFAULT NULL`,
+      `ALTER TABLE students ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
+      // 시간표 저장 테이블
+      `CREATE TABLE IF NOT EXISTS student_timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_data TEXT DEFAULT '[]', teachers_data TEXT DEFAULT '{}', period_times TEXT DEFAULT '[]', subject_colors TEXT DEFAULT '{}', academy_data TEXT DEFAULT '[]', updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
     }
+
+    // croquet_points 테이블 마이그레이션: mentor_id를 nullable로 변경 (자동 지급 지원)
+    try {
+      const tableInfo: any = await c.env.DB.prepare("PRAGMA table_info(croquet_points)").all();
+      const mentorCol = tableInfo.results?.find((col: any) => col.name === 'mentor_id');
+      if (mentorCol && mentorCol.notnull === 1) {
+        // NOT NULL 제약이 있으면 테이블 재생성
+        await c.env.DB.prepare('ALTER TABLE croquet_points RENAME TO croquet_points_old').run();
+        await c.env.DB.prepare(`CREATE TABLE croquet_points (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, mentor_id INTEGER, amount INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '기타', reason_detail TEXT DEFAULT '', balance_after INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`).run();
+        await c.env.DB.prepare('INSERT INTO croquet_points (id, student_id, mentor_id, amount, reason, reason_detail, balance_after, created_at) SELECT id, student_id, mentor_id, amount, reason, reason_detail, balance_after, created_at FROM croquet_points_old').run();
+        await c.env.DB.prepare('DROP TABLE croquet_points_old').run();
+        await c.env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_cp_student ON croquet_points(student_id, created_at DESC)').run();
+        await c.env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_cp_mentor ON croquet_points(mentor_id, created_at DESC)').run();
+      }
+    } catch(_) { /* migration may have already been applied */ }
+
+    // 원장 기본 계정 자동 생성 (없을 경우)
+    try {
+      const directorExists: any = await c.env.DB.prepare(
+        'SELECT id FROM mentors WHERE login_id = ? AND is_director = 1'
+      ).bind('director').first();
+      if (!directorExists) {
+        const dirPwHash = await hashPassword('jysk2026!');
+        await c.env.DB.prepare(
+          'INSERT INTO mentors (login_id, password_hash, name, academy_name, is_director) VALUES (?, ?, ?, ?, 1)'
+        ).bind('director', dirPwHash, '원장', '정율사관학원').run();
+      }
+    } catch(_) { /* director account may already exist */ }
+
     return c.json({ success: true, message: 'Migration completed', tables: 17 });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
 });
 
-
-// ==================== 시간표 API ====================
-
-// 시간표 조회
-app.get('/api/student/:studentId/timetable', async (c) => {
-  try {
-    const studentId = c.req.param('studentId');
-    const row: any = await c.env.DB.prepare('SELECT * FROM timetables WHERE student_id = ?').bind(studentId).first();
-    if (!row) return c.json({ timetable: null });
-    return c.json({
-      timetable: {
-        school: JSON.parse(row.school_schedule || '[]'),
-        teachers: JSON.parse(row.teachers || '{}'),
-        subjectColors: JSON.parse(row.subject_colors || '{}'),
-        periodTimes: JSON.parse(row.period_times || '[]'),
-        academy: JSON.parse(row.academy_schedule || '[]'),
-      }
-    });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
-// 시간표 저장 (UPSERT)
-app.put('/api/student/:studentId/timetable', async (c) => {
-  try {
-    const studentId = c.req.param('studentId');
-    const body = await c.req.json();
-    const school = JSON.stringify(body.school || []);
-    const teachers = JSON.stringify(body.teachers || {});
-    const subjectColors = JSON.stringify(body.subjectColors || {});
-    const periodTimes = JSON.stringify(body.periodTimes || []);
-    const academy = JSON.stringify(body.academy || []);
-    await c.env.DB.prepare(
-      `INSERT INTO timetables (student_id, school_schedule, teachers, subject_colors, period_times, academy_schedule, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(student_id) DO UPDATE SET
-         school_schedule = excluded.school_schedule,
-         teachers = excluded.teachers,
-         subject_colors = excluded.subject_colors,
-         period_times = excluded.period_times,
-         academy_schedule = excluded.academy_schedule,
-         updated_at = CURRENT_TIMESTAMP`
-    ).bind(studentId, school, teachers, subjectColors, periodTimes, academy).run();
-    return c.json({ success: true });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
 
 // ==================== 크로켓 포인트 API ====================
 
@@ -2005,7 +2971,7 @@ app.post('/api/my-questions', async (c) => {
     ).bind(studentId, subject || '기타', classRecordId || null, title.trim(), content || '', imageKey || null, thumbnailKey || null, questionLevel || null).run()
 
     // XP +3 (질문 등록 보상)
-    await c.env.DB.prepare('UPDATE students SET xp = xp + 3, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(studentId).run()
+    await c.env.DB.prepare('UPDATE students SET xp = xp + 3, updated_at = ? WHERE id = ?').bind(getKSTString(), studentId).run()
     await recordXp(c.env.DB, Number(studentId), 3, '질문 등록', `${subject || '기타'} — ${title.trim().slice(0, 40)}`, 'my_questions', result.meta.last_row_id as number)
     // 레벨 자동 계산
     const student: any = await c.env.DB.prepare('SELECT xp FROM students WHERE id = ?').bind(studentId).first()
@@ -2114,7 +3080,7 @@ app.post('/api/my-questions/:id/answer', async (c) => {
     // 1일 이내 해결 시 보너스 +3
     if (resolveDays <= 1) totalXp += 3
 
-    await c.env.DB.prepare('UPDATE students SET xp = xp + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(totalXp, studentId).run()
+    await c.env.DB.prepare('UPDATE students SET xp = xp + ?, updated_at = ? WHERE id = ?').bind(totalXp, getKSTString(), studentId).run()
     const bonusText = resolveDays <= 1 ? ' (빠른해결 보너스 +3)' : ''
     await recordXp(c.env.DB, Number(studentId), totalXp, '답변 등록', `질문 #${questionId} 답변${bonusText}`, 'my_answers', result.meta.last_row_id as number)
     // 레벨 자동 계산
@@ -2227,7 +3193,7 @@ app.put('/api/mentor/feedback/:feedbackId', async (c) => {
     const fields: string[] = []; const values: any[] = [];
     if (content !== undefined) { fields.push('content = ?'); values.push(content); }
     if (feedbackType !== undefined) { fields.push('feedback_type = ?'); values.push(feedbackType); }
-    fields.push("updated_at = datetime('now')");
+    fields.push("updated_at = datetime('now','+9 hours')");
     values.push(feedbackId);
     await c.env.DB.prepare(`UPDATE mentor_feedbacks SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
     return c.json({ success: true });
@@ -2242,6 +3208,341 @@ app.delete('/api/mentor/feedback/:feedbackId', async (c) => {
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
+
+// ==================== 아하 리포트 AI 분석 (Gemini 3.0 Flash) ====================
+app.post('/api/aha-report/analyze', async (c) => {
+  try {
+    const geminiKey = c.env.GEMINI_API_KEY
+    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
+
+    const { photos, subject, unit } = await c.req.json<{
+      photos: string[],  // base64 data URLs
+      subject?: string,
+      unit?: string
+    }>()
+
+    if (!photos || photos.length === 0) return c.json({ error: '사진이 필요합니다.' }, 400)
+    if (photos.length > 3) return c.json({ error: '사진은 최대 3장까지 가능합니다.' }, 400)
+
+    const systemPrompt = `당신은 고교학점제 전문가이자 학생들의 학습 멘토입니다.
+학생이 작성한 영역 탐구 보고서(AHA-Report) 사진을 분석합니다.
+
+[작업 1] 사진에서 손글씨를 OCR 인식하여 다음 4개 섹션으로 정리해주세요:
+
+1. 문제 상황: 학생이 "1. 문제 상황"에 작성한 내용
+2. 주제 설정: 학생이 "2. 주제 설정"에 작성한 내용
+3. 탐구 과정 및 결론 도출: 학생이 "3. 탐구 과정 및 결론 도출"에 작성한 내용
+4. 자가 피드백: 학생이 "4. 자가 피드백"에 작성한 내용
+
+OCR 규칙:
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+- 영어/한국어 혼합 내용도 그대로 반영
+- 보고서 양식 상단의 "과목", "수업 단원 및 내용", "반명", "이름"도 인식
+- 탐구 과정 섹션은 번호별 항목(1., 2., 3.)을 줄바꿈으로 구분하고, 결론 부분은 별도 단락으로 분리하여 가독성을 높일 것
+- 단어 나열(예: want, hope, decide...)이 있으면 줄바꿈하여 별도로 표시할 것
+
+[작업 2] 위 4개 섹션 분석 결과를 바탕으로 피드백을 작성해주세요.
+
+피드백 규칙:
+- 따뜻하고 격려하는 톤, 반드시 존댓말 사용
+- 부정적이거나 비판적인 표현 절대 금지
+- 150~250자 내외
+
+피드백에 포함할 내용:
+1. 탐구 보고서 진정성 평가:
+   - 탐구 주제가 수업 내용과 연관성이 있는지
+   - 탐구 과정이 논리적으로 전개되었는지
+   - 자가 피드백에서 진솔한 성찰이 담겨 있는지
+   - 개선할 수 있는 부분 1~2가지 구체적 제안
+2. 격려 및 조언:
+   - 학생의 노력을 인정하는 격려 메시지
+   - 고교학점제에서 이 탐구 활동이 어떤 의미를 갖는지
+   - 학교 세부능력특기사항과 연결할 수 있는 팁
+   - 향후 발전 방향 조언
+
+위 두 가지를 자연스럽게 하나의 글로 연결하여 작성해주세요.
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "sections": {
+    "problem": "문제 상황 정리 내용",
+    "topic": "주제 설정 정리 내용",
+    "research": "탐구 과정 및 결론 정리 내용",
+    "self_feedback": "자가 피드백 정리 내용"
+  },
+  "ai_feedback": "피드백 전체 텍스트 (150~250자, 따뜻한 격려 톤, 존댓말)",
+  "subject_detected": "인식된 과목명",
+  "unit_detected": "인식된 단원명",
+  "student_name": "인식된 학생 이름"
+}`
+
+    // Build parts: text prompt + multiple images
+    const promptText = `${systemPrompt}\n\n---\n학생 선택 과목: ${subject || '미선택'}\n단원: ${unit || '미입력'}`
+    const parts: any[] = [{ text: promptText }]
+
+    // Extract image data for both Gemini and OpenAI
+    const imageDataList: { mime_type: string, data: string }[] = []
+    for (const photo of photos) {
+      const match = photo.match(/^data:(image\/\w+);base64,(.+)$/)
+      if (match) {
+        imageDataList.push({ mime_type: match[1], data: match[2] })
+        parts.push({ inline_data: { mime_type: match[1], data: match[2] } })
+      }
+    }
+
+    let rawText = '{}'
+    let aiSource = 'gemini'
+
+    // Step 1: Gemini 시도
+    try {
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: {
+              temperature: 0.2,
+              responseMimeType: 'application/json'
+            }
+          })
+        }
+      )
+
+      if (geminiRes.ok) {
+        const data: any = await geminiRes.json()
+        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+      } else {
+        const errStatus = geminiRes.status
+        console.log('Gemini API error:', errStatus, '→ OpenAI로 폴백')
+        throw new Error(`Gemini ${errStatus}`)
+      }
+    } catch (geminiErr) {
+      // Step 2: OpenAI GPT-4o 폴백 (이미지 지원)
+      console.log('Gemini 실패, OpenAI GPT-4o로 폴백:', geminiErr)
+      aiSource = 'openai'
+
+      const openaiKey = c.env.OPENAI_API_KEY
+      if (!openaiKey) {
+        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 502)
+      }
+
+      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+      for (const img of imageDataList) {
+        openaiContent.push({
+          type: 'image_url',
+          image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
+        })
+      }
+
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: openaiContent }],
+          temperature: 0.2,
+          response_format: { type: 'json_object' }
+        })
+      })
+
+      if (!openaiRes.ok) {
+        const errText = await openaiRes.text()
+        console.log('OpenAI fallback error:', openaiRes.status, errText)
+        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 502)
+      }
+
+      const openaiData: any = await openaiRes.json()
+      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+    }
+
+    let result: any
+    try {
+      result = JSON.parse(rawText)
+    } catch {
+      return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
+    }
+
+    // Validate sections exist
+    const sections = result.sections || {}
+    if (!sections.problem && !sections.topic && !sections.research && !sections.self_feedback) {
+      return c.json({
+        error: '사진이 잘 안 읽혔어요. 밝은 곳에서 다시 찍어보세요.',
+        result
+      }, 422)
+    }
+
+    return c.json({
+      success: true,
+      sections: {
+        problem: sections.problem || '[판독 불가]',
+        topic: sections.topic || '[판독 불가]',
+        research: sections.research || '[판독 불가]',
+        self_feedback: sections.self_feedback || '[판독 불가]'
+      },
+      ai_feedback: result.ai_feedback || null,
+      subject_detected: result.subject_detected || null,
+      unit_detected: result.unit_detected || null,
+      student_name: result.student_name || null,
+      ai_source: aiSource
+    })
+  } catch (e: any) {
+    console.log('AHA Report analyze error:', e)
+    return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
+  }
+})
+
+// 아하 리포트 제출 시 크로켓 포인트 자동 지급 (3P 고정)
+app.post('/api/aha-report/give-croquet', async (c) => {
+  try {
+    const { studentId, subject } = await c.req.json<{ studentId: number, subject?: string }>()
+    if (!studentId) return c.json({ error: '학생 ID가 필요합니다.' }, 400)
+
+    const amount = 3
+    const reason = '아하 리포트 제출'
+    const reasonDetail = subject ? `아하 리포트 제출 (${subject})` : '아하 리포트 제출'
+
+    // 잔액 업데이트
+    await c.env.DB.prepare('UPDATE students SET croquet_balance = croquet_balance + ? WHERE id = ?').bind(amount, studentId).run()
+    const student: any = await c.env.DB.prepare('SELECT croquet_balance FROM students WHERE id = ?').bind(studentId).first()
+    const newBalance = student?.croquet_balance || 0
+
+    // 이력 저장 (mentor_id = NULL 은 "자동 지급")
+    await c.env.DB.prepare(
+      'INSERT INTO croquet_points (student_id, mentor_id, amount, reason, reason_detail, balance_after) VALUES (?, NULL, ?, ?, ?, ?)'
+    ).bind(studentId, amount, reason, reasonDetail, newBalance).run()
+
+    return c.json({ success: true, newBalance, amount })
+  } catch (e: any) {
+    console.log('AHA croquet give error:', e)
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ==================== 아하 리포트 저장/조회 ====================
+// 리포트 저장 (사진은 R2 우선)
+app.post('/api/aha-report/save', async (c) => {
+  try {
+    const { studentId, subject, unit, photos, sections, ai_feedback, ai_source, student_name_detected, subject_detected, unit_detected, croquet_given } = await c.req.json<{
+      studentId: number, subject: string, unit?: string, photos: string[],
+      sections: { problem: string, topic: string, research: string, self_feedback: string },
+      ai_feedback?: string, ai_source?: string,
+      student_name_detected?: string, subject_detected?: string, unit_detected?: string,
+      croquet_given?: number
+    }>()
+    if (!studentId || !subject) return c.json({ error: '필수 정보가 누락되었습니다.' }, 400)
+
+    // 사진을 R2에 저장 (가능하면)
+    let photosToStore: string[] = [];
+    if (c.env.R2 && photos && photos.length > 0) {
+      for (const photo of photos) {
+        try {
+          const r2Key = `aha/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+          const match = photo.match(/^data:(image\/\w+);base64,(.+)$/);
+          const rawBase64 = match ? match[2] : photo.replace(/^data:image\/\w+;base64,/, '');
+          const binary = Uint8Array.from(atob(rawBase64), c => c.charCodeAt(0));
+          await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } });
+          photosToStore.push(`r2:${r2Key}`);
+        } catch (e) {
+          // R2 실패 시 원본 base64 저장
+          photosToStore.push(photo);
+        }
+      }
+    } else {
+      photosToStore = photos || [];
+    }
+
+    const result = await c.env.DB.prepare(
+      `INSERT INTO aha_reports (student_id, subject, unit, photos, section_problem, section_topic, section_research, section_self_feedback, ai_feedback, ai_source, student_name_detected, subject_detected, unit_detected, croquet_given)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      studentId, subject, unit || '', JSON.stringify(photosToStore),
+      sections?.problem || '', sections?.topic || '', sections?.research || '', sections?.self_feedback || '',
+      ai_feedback || '', ai_source || 'gemini',
+      student_name_detected || '', subject_detected || '', unit_detected || '',
+      croquet_given || 0
+    ).run()
+
+    return c.json({ success: true, reportId: result.meta.last_row_id })
+  } catch (e: any) {
+    console.log('AHA report save error:', e)
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 학생 리포트 목록 조회
+app.get('/api/student/:studentId/aha-reports', async (c) => {
+  try {
+    const studentId = Number(c.req.param('studentId'))
+    const subject = c.req.query('subject') || ''
+    
+    let query = 'SELECT id, subject, unit, section_topic, ai_feedback, croquet_given, created_at, student_name_detected, subject_detected, unit_detected FROM aha_reports WHERE student_id = ?'
+    const binds: any[] = [studentId]
+    
+    if (subject) {
+      query += ' AND subject = ?'
+      binds.push(subject)
+    }
+    query += ' ORDER BY created_at DESC'
+    
+    const stmt = c.env.DB.prepare(query)
+    const { results } = await stmt.bind(...binds).all()
+    return c.json({ reports: results || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 리포트 상세 조회 (R2 사진 복원 지원)
+app.get('/api/aha-report/:reportId', async (c) => {
+  try {
+    const reportId = Number(c.req.param('reportId'))
+    const report: any = await c.env.DB.prepare(
+      'SELECT * FROM aha_reports WHERE id = ?'
+    ).bind(reportId).first()
+    
+    if (!report) return c.json({ error: '리포트를 찾을 수 없습니다.' }, 404)
+    
+    // Parse photos JSON and resolve R2 URLs
+    let photos: string[] = [];
+    try { photos = JSON.parse(report.photos || '[]') } catch { photos = [] }
+    
+    // R2 키를 base64 data URL로 변환
+    if (c.env.R2) {
+      const resolved = await Promise.all(photos.map(async (p: string) => {
+        if (p.startsWith('r2:')) {
+          try {
+            const r2Key = p.slice(3);
+            const obj = await c.env.R2.get(r2Key);
+            if (obj) {
+              const arrayBuf = await obj.arrayBuffer();
+              const bytes = new Uint8Array(arrayBuf);
+              let binary = '';
+              for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+              const base64 = btoa(binary);
+              const mime = obj.httpMetadata?.contentType || 'image/jpeg';
+              return `data:${mime};base64,${base64}`;
+            }
+          } catch (e) { console.error('R2 read failed:', e); }
+        }
+        return p; // 이미 base64이거나 R2 실패 시 그대로 반환
+      }));
+      report.photos = resolved;
+    } else {
+      report.photos = photos;
+    }
+    
+    return c.json({ report })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 // ==================== 헬스체크 ====================
 app.get('/api/health', (c) => {
@@ -2280,6 +3581,12 @@ app.get('/', (c) => {
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
   <link href="/static/app.css" rel="stylesheet">
+  <style>
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.95)} }
+    #initial-loader, #initial-loader-tablet, #initial-loader-desktop {
+      transition: opacity 0.3s ease;
+    }
+  </style>
 </head>
 <body>
   <div id="prototype-wrapper">
@@ -2321,7 +3628,12 @@ app.get('/', (c) => {
             <span>9:41</span>
             <span><i class="fas fa-signal"></i> <i class="fas fa-wifi"></i> <i class="fas fa-battery-full"></i></span>
           </div>
-          <div id="app-content"></div>
+          <div id="app-content">
+            <div id="initial-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px">
+              <img src="/static/logo.png" alt="" style="width:56px;height:56px;border-radius:14px;animation:pulse 1.5s ease-in-out infinite">
+              <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
+            </div>
+          </div>
         </div>
       </div>
       <div id="tablet-container" style="display:none">
@@ -2337,12 +3649,21 @@ app.get('/', (c) => {
               <span class="tablet-status-time">9:41</span>
             </span>
           </div>
-          <div id="tablet-content"></div>
-          <div id="mobile-bottom-tab"></div>
+          <div id="tablet-content">
+            <div id="initial-loader-tablet" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px">
+              <img src="/static/logo.png" alt="" style="width:56px;height:56px;border-radius:14px;animation:pulse 1.5s ease-in-out infinite">
+              <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
+            </div>
+          </div>
         </div>
       </div>
       <div id="desktop-container" style="display:none">
-        <div id="desktop-content"></div>
+        <div id="desktop-content">
+          <div id="initial-loader-desktop" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px">
+            <img src="/static/logo.png" alt="" style="width:56px;height:56px;border-radius:14px;animation:pulse 1.5s ease-in-out infinite">
+            <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
