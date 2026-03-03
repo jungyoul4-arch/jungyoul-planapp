@@ -1250,6 +1250,24 @@ function hideAuthUI() {
 
 async function externalLogin(userId, deviceMode) {
   try {
+    // 0. 이전 세션 완전 초기화 (항상 새로운 화면으로 시작)
+    localStorage.removeItem('cp_auth');
+    state._authUser = null;
+    state._authToken = '';
+    state._authRole = '';
+    state._authGroup = null;
+    state._authMentorGroups = [];
+    state._loginError = '';
+    state.currentScreen = 'login';
+    state.studentTab = 'home';
+    state.mode = 'student';
+    if (typeof _mentor !== 'undefined') {
+      _mentor.initialLoading = false;
+      _mentor.loading = false;
+      _mentor.selectedGroupId = null;
+      _mentor.selectedStudentId = null;
+    }
+
     // 1. device_mode 적용
     if (deviceMode) applyDeviceMode(deviceMode);
 
@@ -13862,9 +13880,15 @@ initTodayAcademy(); // 오늘 요일 기준 학원 시간표 동적 생성
 // 외부 앱 파라미터 체크 → 자동 로그인 or 일반 자동 로그인
 const _urlParams = getUrlParams();
 if (_urlParams.user_id) {
-  // 외부 앱에서 호출됨 → URL 파라미터 기반 자동 로그인
-  // 즉시 로딩 UI 표시 (fetch 완료 전)
+  // 외부 앱에서 호출됨 → 이전 세션 완전 제거 후 새로 로그인
+  localStorage.removeItem('cp_auth');
   _externalMode = true;
+  // 서비스워커 업데이트 강제 요청
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg) reg.update();
+    });
+  }
   externalLogin(_urlParams.user_id, _urlParams.device_mode);
 } else {
   // 일반 접속 → localStorage 기반 자동 로그인

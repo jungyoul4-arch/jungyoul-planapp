@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'cp-20260227-v8';
+const CACHE_VERSION = 'cp-20260303-v9';
 const STATIC_ASSETS = [
   '/',
   '/static/app.js',
@@ -57,6 +57,16 @@ self.addEventListener('fetch', (event) => {
           status: 503,
           headers: { 'Content-Type': 'application/json' }
         });
+      })
+    );
+    return;
+  }
+
+  // 외부 앱 호출 (user_id 파라미터 포함) → 항상 네트워크 (캐시 완전 우회)
+  if (url.searchParams.has('user_id')) {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return caches.match('/').then(c => c || new Response('오프라인', { status: 503 }));
       })
     );
     return;
