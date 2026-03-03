@@ -862,32 +862,26 @@ app.get('/api/auth/external-login', async (c) => {
 });
 
 
-// ==================== AUTH API: 학생 회원가입 (초대코드) ====================
+// ==================== AUTH API: 학생 회원가입 ====================
 
 app.post('/api/auth/student/register', async (c) => {
   try {
-    const { inviteCode, name, password, schoolName, grade } = await c.req.json();
-    if (!inviteCode || !name || !password) return c.json({ error: '초대코드, 이름, 비밀번호는 필수입니다' }, 400);
+    const { name, password, schoolName, grade } = await c.req.json();
+    if (!name || !password) return c.json({ error: '이름, 비밀번호는 필수입니다' }, 400);
     if (password.length < 4) return c.json({ error: '비밀번호는 4자 이상이어야 합니다' }, 400);
 
-    // 초대코드로 그룹 찾기
+    // 기본 그룹 (첫 번째 활성 그룹) 가져오기
     const group: any = await c.env.DB.prepare(
-      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.invite_code = ? AND g.is_active = 1'
-    ).bind(inviteCode.toUpperCase()).first();
+      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.is_active = 1 ORDER BY g.id ASC LIMIT 1'
+    ).first();
 
-    if (!group) return c.json({ error: '유효하지 않은 초대코드입니다' }, 404);
+    if (!group) return c.json({ error: '등록 가능한 반이 없습니다. 관리자에게 문의하세요.' }, 404);
 
-    // 같은 그룹에 같은 이름 확인
+    // 같은 이름 확인
     const existing = await c.env.DB.prepare(
-      'SELECT id FROM students WHERE group_id = ? AND name = ?'
-    ).bind(group.id, name).first();
-    if (existing) return c.json({ error: '같은 반에 동일한 이름이 있습니다. 이름 뒤에 번호를 붙여주세요 (예: 홍길동2)' }, 409);
-
-    // 정원 확인
-    const count: any = await c.env.DB.prepare(
-      'SELECT COUNT(*) as cnt FROM students WHERE group_id = ? AND is_active = 1'
-    ).bind(group.id).first();
-    if (count.cnt >= group.max_students) return c.json({ error: '이 반의 정원이 가득 찼습니다' }, 409);
+      'SELECT id FROM students WHERE name = ? AND is_active = 1'
+    ).bind(name).first();
+    if (existing) return c.json({ error: '동일한 이름이 이미 등록되어 있습니다. 이름 뒤에 번호를 붙여주세요 (예: 홍길동2)' }, 409);
 
     const passwordHash = await hashPassword(password);
     const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
@@ -900,10 +894,7 @@ app.post('/api/auth/student/register', async (c) => {
     return c.json({
       success: true,
       studentId: result.meta.last_row_id,
-      message: `${group.name}에 가입되었습니다!`,
-      groupName: group.name,
-      mentorName: group.mentor_name,
-      academyName: group.academy_name,
+      message: '회원가입이 완료되었습니다!',
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -915,24 +906,23 @@ app.post('/api/auth/student/register', async (c) => {
 
 app.post('/api/auth/student/login', async (c) => {
   try {
-    const { inviteCode, name, password } = await c.req.json();
-    if (!inviteCode || !name || !password) return c.json({ error: '초대코드, 이름, 비밀번호를 모두 입력해주세요' }, 400);
+    const { name, password } = await c.req.json();
+    if (!name || !password) return c.json({ error: '이름과 비밀번호를 입력해주세요' }, 400);
 
-    // 초대코드로 그룹 찾기
-    const group: any = await c.env.DB.prepare(
-      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.invite_code = ?'
-    ).bind(inviteCode.toUpperCase()).first();
-
-    if (!group) return c.json({ error: '유효하지 않은 초대코드입니다' }, 401);
-
+    // 이름으로 학생 찾기
     const student: any = await c.env.DB.prepare(
-      'SELECT * FROM students WHERE group_id = ? AND name = ? AND is_active = 1'
-    ).bind(group.id, name).first();
+      'SELECT * FROM students WHERE name = ? AND is_active = 1'
+    ).bind(name).first();
 
     if (!student) return c.json({ error: '이름 또는 비밀번호가 틀렸습니다' }, 401);
 
     const valid = await verifyPassword(password, student.password_hash);
     if (!valid) return c.json({ error: '이름 또는 비밀번호가 틀렸습니다' }, 401);
+
+    // 그룹 정보 가져오기
+    const group: any = await c.env.DB.prepare(
+      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.id = ?'
+    ).bind(student.group_id).first();
 
     // 마지막 로그인 시간 업데이트
     await c.env.DB.prepare(
@@ -955,12 +945,12 @@ app.post('/api/auth/student/login', async (c) => {
         level: student.level,
         groupId: student.group_id,
       },
-      group: {
+      group: group ? {
         id: group.id,
         name: group.name,
         mentorName: group.mentor_name,
         academyName: group.academy_name,
-      }
+      } : null
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -1988,7 +1978,7 @@ app.get('/api/student/:studentId/profile', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const student: any = await c.env.DB.prepare(
-      'SELECT s.*, g.name as group_name, g.invite_code FROM students s JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
+      'SELECT s.*, g.name as group_name FROM students s JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
     ).bind(studentId).first();
 
     if (!student) return c.json({ error: '학생을 찾을 수 없습니다' }, 404);
@@ -2010,7 +2000,6 @@ app.get('/api/student/:studentId/profile', async (c) => {
       xp: student.xp,
       level: student.level,
       groupName: student.group_name,
-      inviteCode: student.invite_code,
       stats: {
         exams: examCount.cnt,
         assignments: assignmentCount.cnt,

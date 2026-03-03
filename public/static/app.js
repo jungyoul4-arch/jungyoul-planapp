@@ -551,7 +551,7 @@ function renderOnboardingWelcome() {
       <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
         <div class="onboarding-logo">
           <img src="/static/logo.png" alt="정율사관학원" class="onboarding-logo-img">
-          <h2>고교학점플래너</h2>
+          <h2>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.1</span></h2>
           <p>HS CreditPlanner</p>
         </div>
         <p style="text-align:center;color:var(--text-secondary);font-size:15px;line-height:1.8;margin-bottom:40px">
@@ -559,10 +559,7 @@ function renderOnboardingWelcome() {
           <strong style="color:var(--text-primary)">학교생활의 모든 순간</strong>을 기록하고<br>
           <strong style="color:var(--primary-light)">생기부 경쟁력</strong>으로 만드세요
         </p>
-        <div class="field-group" style="width:100%">
-          <label class="field-label">초대 코드를 입력하세요</label>
-          <input class="input-field" placeholder="JYCC-2025-XXXX" value="JYCC-2025-0314" style="text-align:center;font-size:16px;font-weight:600;letter-spacing:2px">
-        </div>
+
       </div>
       <button class="btn-primary btn-glow" onclick="goScreen('onboarding-info')">
         시작하기 <i class="fas fa-arrow-right" style="margin-left:8px"></i>
@@ -720,22 +717,12 @@ function renderOnboardingGuide() {
 // ==================== LOGIN / REGISTER SCREENS ====================
 
 function renderLoginScreen() {
-  // URL 파라미터에서 초대코드 확인 (예: ?code=JYCC-VJMX-3LCP)
-  const urlParams = new URLSearchParams(window.location.search);
-  const urlInviteCode = urlParams.get('code') || urlParams.get('invite') || '';
-  // 이전에 저장된 초대코드 자동 채우기
-  const savedAuth = (() => { try { return JSON.parse(localStorage.getItem('cp_auth') || '{}'); } catch { return {}; } })();
-  const savedInviteCode = urlInviteCode || savedAuth.inviteCode || savedAuth.group?.inviteCode || '';
-  
-  // 기본 초대코드 (멘토가 학생에게 공유용)
-  const DEFAULT_INVITE_CODE = 'JYCC-VJMX-3LCP';
-  const showInviteCode = savedInviteCode || DEFAULT_INVITE_CODE;
   return `
     <div class="onboarding-screen animate-in">
       <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
         <div class="onboarding-logo">
           <img src="/static/logo.png" alt="정율사관학원" class="onboarding-logo-img">
-          <h2>고교학점플래너</h2>
+          <h2>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.1</span></h2>
           <p>HS CreditPlanner</p>
         </div>
         <p style="text-align:center;color:var(--text-secondary);font-size:15px;line-height:1.8;margin-bottom:32px">
@@ -746,16 +733,6 @@ function renderLoginScreen() {
 
         ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;width:100%;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
 
-        <div style="background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.12));border:1px solid rgba(99,102,241,0.25);border-radius:12px;padding:12px 16px;margin-bottom:20px;width:100%;text-align:center">
-          <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">📋 정율사관학원 초대코드</div>
-          <div style="font-size:18px;font-weight:700;color:var(--primary-light);letter-spacing:3px;font-family:monospace">${DEFAULT_INVITE_CODE}</div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">이름과 비밀번호만 입력하면 로그인!</div>
-        </div>
-
-        <div class="field-group" style="width:100%">
-          <label class="field-label">초대 코드</label>
-          <input class="input-field" id="login-invite-code" placeholder="JYCC-XXXX-XXXX" value="${showInviteCode}" style="text-align:center;font-size:16px;font-weight:600;letter-spacing:2px" autocomplete="off">
-        </div>
         <div class="field-group" style="width:100%">
           <label class="field-label">이름 (가입할 때 입력한 이름)</label>
           <input class="input-field" id="login-name" placeholder="홍길동" style="font-size:15px">
@@ -786,11 +763,6 @@ function renderLoginScreen() {
 }
 
 function renderStudentRegister() {
-  // URL 파라미터 또는 기본 초대코드
-  const urlParams = new URLSearchParams(window.location.search);
-  const urlCode = urlParams.get('code') || urlParams.get('invite') || '';
-  const DEFAULT_INVITE_CODE = 'JYCC-VJMX-3LCP';
-  const prefillCode = urlCode || DEFAULT_INVITE_CODE;
   return `
     <div class="onboarding-screen animate-slide">
       <div class="screen-header" style="padding:0 0 16px 0">
@@ -800,16 +772,6 @@ function renderStudentRegister() {
 
       ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
 
-      <div style="background:linear-gradient(135deg,rgba(34,197,94,0.12),rgba(16,185,129,0.12));border:1px solid rgba(34,197,94,0.25);border-radius:12px;padding:10px 16px;margin-bottom:16px;text-align:center">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">✅ 초대코드가 자동으로 입력되었어요</div>
-        <div style="font-size:15px;font-weight:700;color:#22c55e;letter-spacing:2px;font-family:monospace">${prefillCode}</div>
-      </div>
-
-      <div class="field-group">
-        <label class="field-label">초대 코드 <span style="color:#FF6B6B">*</span></label>
-        <input class="input-field" id="reg-invite-code" placeholder="선생님이 알려준 코드" value="${prefillCode}" style="text-align:center;font-size:16px;font-weight:600;letter-spacing:2px">
-        <div id="invite-code-status" style="font-size:12px;margin-top:4px;min-height:18px"></div>
-      </div>
       <div class="field-group">
         <label class="field-label">이름 <span style="color:#FF6B6B">*</span></label>
         <input class="input-field" id="reg-name" placeholder="실명을 입력하세요">
@@ -957,16 +919,15 @@ function initAuthEvents(container) {
 
   // 학생 로그인
   container.querySelector('#btn-student-login')?.addEventListener('click', async () => {
-    const code = container.querySelector('#login-invite-code')?.value?.trim();
     const name = container.querySelector('#login-name')?.value?.trim();
     const pw = container.querySelector('#login-password')?.value;
-    if (!code || !name || !pw) { state._loginError = '모든 항목을 입력해주세요'; renderScreen(); return; }
+    if (!name || !pw) { state._loginError = '이름과 비밀번호를 입력해주세요'; renderScreen(); return; }
 
     state._loginLoading = true; state._loginError = ''; renderScreen();
     try {
       const res = await fetch('/api/auth/student/login', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ inviteCode: code, name, password: pw })
+        body: JSON.stringify({ name, password: pw })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '로그인 실패');
@@ -979,10 +940,9 @@ function initAuthEvents(container) {
       state._loginError = '';
       state._loginLoading = false;
 
-      // localStorage에 저장 (자동 로그인) - 초대코드도 저장
+      // localStorage에 저장 (자동 로그인)
       localStorage.setItem('cp_auth', JSON.stringify({
-        user: data.user, token: data.token, role: 'student', group: data.group,
-        inviteCode: code
+        user: data.user, token: data.token, role: 'student', group: data.group
       }));
 
       state.currentScreen = 'main';
@@ -1025,7 +985,6 @@ function initAuthEvents(container) {
 
   // 학생 회원가입
   container.querySelector('#btn-student-register')?.addEventListener('click', async () => {
-    const code = container.querySelector('#reg-invite-code')?.value?.trim();
     const name = container.querySelector('#reg-name')?.value?.trim();
     const pw = container.querySelector('#reg-password')?.value;
     const pw2 = container.querySelector('#reg-password2')?.value;
@@ -1033,7 +992,7 @@ function initAuthEvents(container) {
     const gradeBtn = container.querySelector('.reg-grade-btn.active');
     const grade = gradeBtn ? parseInt(gradeBtn.dataset.grade) : 1;
 
-    if (!code || !name || !pw) { state._loginError = '초대코드, 이름, 비밀번호는 필수입니다'; renderScreen(); return; }
+    if (!name || !pw) { state._loginError = '이름, 비밀번호는 필수입니다'; renderScreen(); return; }
     if (pw !== pw2) { state._loginError = '비밀번호가 일치하지 않습니다'; renderScreen(); return; }
     if (pw.length < 4) { state._loginError = '비밀번호는 4자 이상이어야 합니다'; renderScreen(); return; }
 
@@ -1041,13 +1000,13 @@ function initAuthEvents(container) {
     try {
       const res = await fetch('/api/auth/student/register', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ inviteCode: code, name, password: pw, schoolName: school, grade })
+        body: JSON.stringify({ name, password: pw, schoolName: school, grade })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '가입 실패');
 
       state._loginLoading = false;
-      alert(`🎉 ${data.groupName}에 가입되었습니다!\\n\\n담당: ${data.mentorName} 선생님\\n이제 로그인해주세요.`);
+      alert(`🎉 회원가입이 완료되었습니다!\\n\\n이제 로그인해주세요.`);
       state._loginError = '';
       goScreen('login');
     } catch (e) {
@@ -1065,26 +1024,7 @@ function initAuthEvents(container) {
     });
   });
 
-  // 초대코드 실시간 확인
-  const inviteInput = container.querySelector('#reg-invite-code');
-  let inviteTimer = null;
-  inviteInput?.addEventListener('input', () => {
-    clearTimeout(inviteTimer);
-    const status = container.querySelector('#invite-code-status');
-    const val = inviteInput.value.trim();
-    if (val.length < 10) { if (status) status.innerHTML = ''; return; }
-    inviteTimer = setTimeout(async () => {
-      try {
-        const res = await fetch('/api/auth/verify-invite/' + encodeURIComponent(val));
-        const data = await res.json();
-        if (data.valid) {
-          status.innerHTML = `<span style="color:#00B894">✅ ${escapeHtml(data.academyName)} - ${escapeHtml(data.groupName)} (${escapeHtml(data.mentorName)} 선생님)</span>`;
-        } else {
-          status.innerHTML = `<span style="color:#FF6B6B">❌ ${escapeHtml(data.error)}</span>`;
-        }
-      } catch { status.innerHTML = ''; }
-    }, 500);
-  });
+
 
   // 멘토 로그인
   container.querySelector('#btn-mentor-login')?.addEventListener('click', async () => {
@@ -1191,7 +1131,7 @@ function initAuthEvents(container) {
       if (!res.ok) throw new Error(data.error || '가입 실패');
 
       state._loginLoading = false;
-      alert(`🎉 멘토 등록 완료!\\n\\n기본 반 초대코드: ${data.defaultGroupInviteCode}\\n이 코드를 학생들에게 알려주세요.\\n\\n이제 로그인해주세요.`);
+      alert(`🎉 멘토 등록 완료!\\n\\n이제 로그인해주세요.`);
       state._loginError = '';
       goScreen('login-mentor');
     } catch (e) {
@@ -13277,7 +13217,7 @@ function renderDirectorDashboard() {
       <div style="display:flex;align-items:center;gap:14px">
         <img src="/static/logo.png" alt="정율사관학원" class="desk-header-logo">
         <div>
-          <h1>고교학점플래너 <span style="color:var(--accent)">원장</span></h1>
+          <h1>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.1</span> <span style="color:var(--accent)">원장</span></h1>
           <p style="font-size:13px;color:var(--text-secondary);margin-top:4px">정율고교학점데이터센터 | 498/500명</p>
         </div>
       </div>
