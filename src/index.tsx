@@ -1812,6 +1812,8 @@ app.get('/api/migrate', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_cp_mentor ON croquet_points(mentor_id, created_at DESC)`,
       // students 테이블에 croquet_balance 컬럼 추가
       `ALTER TABLE students ADD COLUMN croquet_balance INTEGER NOT NULL DEFAULT 0`,
+      // 시간표 테이블
+      `CREATE TABLE IF NOT EXISTS timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_schedule TEXT NOT NULL DEFAULT '[]', teachers TEXT NOT NULL DEFAULT '{}', subject_colors TEXT NOT NULL DEFAULT '{}', period_times TEXT NOT NULL DEFAULT '[]', academy_schedule TEXT NOT NULL DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
@@ -1822,6 +1824,55 @@ app.get('/api/migrate', async (c) => {
   }
 });
 
+
+// ==================== 시간표 API ====================
+
+// 시간표 조회
+app.get('/api/student/:studentId/timetable', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const row: any = await c.env.DB.prepare('SELECT * FROM timetables WHERE student_id = ?').bind(studentId).first();
+    if (!row) return c.json({ timetable: null });
+    return c.json({
+      timetable: {
+        school: JSON.parse(row.school_schedule || '[]'),
+        teachers: JSON.parse(row.teachers || '{}'),
+        subjectColors: JSON.parse(row.subject_colors || '{}'),
+        periodTimes: JSON.parse(row.period_times || '[]'),
+        academy: JSON.parse(row.academy_schedule || '[]'),
+      }
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 시간표 저장 (UPSERT)
+app.put('/api/student/:studentId/timetable', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const body = await c.req.json();
+    const school = JSON.stringify(body.school || []);
+    const teachers = JSON.stringify(body.teachers || {});
+    const subjectColors = JSON.stringify(body.subjectColors || {});
+    const periodTimes = JSON.stringify(body.periodTimes || []);
+    const academy = JSON.stringify(body.academy || []);
+    await c.env.DB.prepare(
+      `INSERT INTO timetables (student_id, school_schedule, teachers, subject_colors, period_times, academy_schedule, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(student_id) DO UPDATE SET
+         school_schedule = excluded.school_schedule,
+         teachers = excluded.teachers,
+         subject_colors = excluded.subject_colors,
+         period_times = excluded.period_times,
+         academy_schedule = excluded.academy_schedule,
+         updated_at = CURRENT_TIMESTAMP`
+    ).bind(studentId, school, teachers, subjectColors, periodTimes, academy).run();
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
 
 // ==================== 크로켓 포인트 API ====================
 

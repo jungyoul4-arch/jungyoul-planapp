@@ -1411,10 +1411,49 @@ const DB = {
         this.loadReportRecords(),
         this.loadProfile(),
         this.loadMentorFeedbacks(),
+        this.loadTimetable(),
       ]);
     } catch (e) {
       console.error('DB loadAll error:', e);
     }
+  },
+
+  // === 시간표 ===
+  async loadTimetable() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/timetable`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.timetable) {
+          state.timetable.school = data.timetable.school || state.timetable.school;
+          state.timetable.teachers = data.timetable.teachers || state.timetable.teachers;
+          state.timetable.subjectColors = data.timetable.subjectColors || state.timetable.subjectColors;
+          state.timetable.periodTimes = data.timetable.periodTimes || state.timetable.periodTimes;
+          state.timetable.academy = data.timetable.academy || state.timetable.academy;
+          syncTodayRecords();
+        }
+      }
+    } catch (e) { logger.error('loadTimetable:', e); }
+  },
+
+  async saveTimetable() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      await fetch(`/api/student/${sid}/timetable`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          school: state.timetable.school,
+          teachers: state.timetable.teachers,
+          subjectColors: state.timetable.subjectColors,
+          periodTimes: state.timetable.periodTimes,
+          academy: state.timetable.academy,
+        }),
+      });
+    } catch (e) { logger.error('saveTimetable:', e); }
   },
 
   // === 프로필 ===
@@ -12071,6 +12110,7 @@ function setTtSubject(subject) {
   state.timetable.school[period][dayIdx] = subject;
   // todayRecords도 동기화 (오늘이 해당 요일이면)
   syncTodayRecords();
+  DB.saveTimetable();
   renderScreen();
 }
 
@@ -12081,6 +12121,7 @@ function setTtTeacher(name) {
   if (subject) {
     state.timetable.teachers[subject] = name;
     syncTodayRecords();
+    DB.saveTimetable();
   }
 }
 
@@ -12169,6 +12210,7 @@ function saveAcademy() {
 
   // 플래너에 학원 일정 자동 추가
   syncAcademyToPlanner();
+  DB.saveTimetable();
   showXpPopup(5, '학원 일정이 저장되었어요!');
 }
 
@@ -12176,6 +12218,7 @@ function deleteAcademy(id) {
   state.timetable.academy = state.timetable.academy.filter(a => a.id !== id);
   // 플래너에서도 해당 학원 일정 제거
   state.plannerItems = state.plannerItems.filter(p => p.academyId !== id);
+  DB.saveTimetable();
   renderScreen();
 }
 
