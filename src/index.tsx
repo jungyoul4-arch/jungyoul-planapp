@@ -2799,6 +2799,16 @@ app.get('/api/migrate', async (c) => {
       `ALTER TABLE students ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
       // 시간표 저장 테이블
       `CREATE TABLE IF NOT EXISTS student_timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_data TEXT DEFAULT '[]', teachers_data TEXT DEFAULT '{}', period_times TEXT DEFAULT '[]', subject_colors TEXT DEFAULT '{}', academy_data TEXT DEFAULT '[]', updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      // ===== 시간표 사진 → 과목 자동 등록 (학기/과목/시간표슬롯/시험과목) =====
+      `CREATE TABLE IF NOT EXISTS semesters (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, year INTEGER NOT NULL, term INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_semesters_unique ON semesters(student_id, year, term)`,
+      `CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, name TEXT NOT NULL, teacher TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_subjects_semester ON subjects(semester_id)`,
+      `CREATE TABLE IF NOT EXISTS timetable_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, day_of_week INTEGER NOT NULL, period INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_timetable_slots_semester ON timetable_slots(semester_id)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_slots_unique ON timetable_slots(semester_id, day_of_week, period)`,
+      `CREATE TABLE IF NOT EXISTS exam_subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, exam_date TEXT NOT NULL, period INTEGER, scope TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam ON exam_subjects(exam_id)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
@@ -2838,6 +2848,195 @@ app.get('/api/migrate', async (c) => {
   }
 });
 
+
+// ==================== 시간표 사진 → 과목 자동 등록 API ====================
+
+// GET /api/student/:id/semesters — 전체 학기 목록
+app.get('/api/student/:id/semesters', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, year, term, created_at FROM semesters WHERE student_id = ? ORDER BY year DESC, term DESC'
+    ).bind(studentId).all()
+    return c.json({ success: true, data: results || [] })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// GET /api/student/:id/subjects?year=2026&term=1 — 해당 학기 과목 목록
+app.get('/api/student/:id/subjects', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  const year = Number(c.req.query('year'))
+  const term = Number(c.req.query('term'))
+  try {
+    const semester: any = await c.env.DB.prepare(
+      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
+    ).bind(studentId, year, term).first()
+    if (!semester) return c.json({ success: true, data: { subjects: [], slots: [] } })
+
+    const { results: subjects } = await c.env.DB.prepare(
+      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
+    ).bind(semester.id).all()
+
+    const { results: slots } = await c.env.DB.prepare(
+      'SELECT id, subject_id, day_of_week, period FROM timetable_slots WHERE semester_id = ? ORDER BY day_of_week, period'
+    ).bind(semester.id).all()
+
+    return c.json({ success: true, data: { semesterId: semester.id, subjects: subjects || [], slots: slots || [] } })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/timetable/photo — 시간표 사진 분석 (Gemini Vision)
+app.post('/api/student/:id/timetable/photo', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const body = await c.req.json()
+    const { imageBase64, mimeType = 'image/jpeg', year, term } = body
+    if (!imageBase64) return c.json({ success: false, error: '이미지가 없습니다' }, 400)
+
+    const currentYear = year || new Date(Date.now() + 9 * 3600000).getFullYear()
+    const currentTerm = term || (new Date(Date.now() + 9 * 3600000).getMonth() < 7 ? 1 : 2)
+
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+
+    const prompt = `당신은 한국 고등학교 시간표 분석 전문가입니다.
+
+이 시간표 사진을 분석하여 아래 JSON 형식으로 정확히 추출해주세요.
+
+처리 규칙:
+1. 과목명, 요일(1=월~5=금), 교시(1~7), 담당 교사명을 추출
+2. 고교학점제 특성상 학생마다 과목이 다름 — 보이는 그대로 추출
+3. 교사명이 없는 칸은 teacher: null
+4. 빈 칸(자습/공강)은 포함하지 말 것
+5. 과목명은 정확히 (예: "생명과학Ⅱ", "미적분", "화학Ⅰ")
+
+반드시 아래 JSON만 출력:
+{
+  "slots": [
+    { "subject": "과목명", "teacher": "교사명 또는 null", "day_of_week": 1, "period": 1 }
+  ]
+}`
+
+    // Gemini 3.1 Flash Vision으로 시간표 분석
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: cleanBase64 } }
+          ] }],
+          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+        })
+      }
+    )
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text()
+      console.error('Gemini Vision error:', errText)
+      return c.json({ success: false, error: 'AI 분석 실패: ' + geminiRes.status }, 500)
+    }
+    const geminiData: any = await geminiRes.json()
+    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+
+    // JSON 파싱 (```json 블록 제거)
+    let parsed: any
+    try {
+      const jsonStr = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+      parsed = JSON.parse(jsonStr)
+    } catch {
+      return c.json({ success: false, error: 'AI 응답 파싱 실패', raw: aiText }, 500)
+    }
+
+    const slots = parsed.slots || []
+    if (!slots.length) return c.json({ success: false, error: '시간표에서 과목을 찾지 못했습니다' }, 400)
+
+    // 분석 결과만 반환 (저장은 confirm API에서)
+    return c.json({
+      success: true,
+      data: {
+        year: currentYear,
+        term: currentTerm,
+        slots,
+        subjectList: [...new Set(slots.map((s: any) => s.subject))]
+      }
+    })
+  } catch (e: any) {
+    console.error('Timetable photo error:', e)
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/timetable/confirm — 분석 결과 확인 후 DB 저장
+app.post('/api/student/:id/timetable/confirm', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const body = await c.req.json()
+    const { year, term, slots } = body
+    if (!year || !term || !slots?.length) return c.json({ success: false, error: '필수 데이터 누락' }, 400)
+
+    const DB = c.env.DB
+
+    // 1) semester upsert (동일 학기 있으면 기존 데이터 삭제 후 재등록)
+    let semester: any = await DB.prepare(
+      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
+    ).bind(studentId, year, term).first()
+
+    if (semester) {
+      await DB.prepare('DELETE FROM timetable_slots WHERE semester_id = ?').bind(semester.id).run()
+      await DB.prepare('DELETE FROM subjects WHERE semester_id = ?').bind(semester.id).run()
+    } else {
+      const ins = await DB.prepare(
+        'INSERT INTO semesters (student_id, year, term) VALUES (?, ?, ?)'
+      ).bind(studentId, year, term).run()
+      semester = { id: ins.meta.last_row_id }
+    }
+
+    const semesterId = semester.id
+
+    // 2) 고유 과목 추출 및 저장
+    const uniqueSubjects = new Map<string, string | null>()
+    for (const s of slots) {
+      if (!uniqueSubjects.has(s.subject)) {
+        uniqueSubjects.set(s.subject, s.teacher || null)
+      }
+    }
+
+    const subjectIdMap = new Map<string, number>()
+    for (const [name, teacher] of uniqueSubjects) {
+      const res = await DB.prepare(
+        'INSERT INTO subjects (semester_id, name, teacher) VALUES (?, ?, ?)'
+      ).bind(semesterId, name, teacher).run()
+      subjectIdMap.set(name, res.meta.last_row_id as number)
+    }
+
+    // 3) 시간표 슬롯 저장
+    for (const s of slots) {
+      const subjectId = subjectIdMap.get(s.subject)
+      if (!subjectId) continue
+      await DB.prepare(
+        'INSERT OR REPLACE INTO timetable_slots (semester_id, subject_id, day_of_week, period) VALUES (?, ?, ?, ?)'
+      ).bind(semesterId, subjectId, s.day_of_week, s.period).run()
+    }
+
+    // 4) 저장된 과목 목록 반환
+    const { results: savedSubjects } = await DB.prepare(
+      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
+    ).bind(semesterId).all()
+
+    return c.json({
+      success: true,
+      data: { semesterId, year, term, subjects: savedSubjects || [], slotCount: slots.length }
+    })
+  } catch (e: any) {
+    console.error('Timetable confirm error:', e)
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
 
 // ==================== 크로켓 포인트 API ====================
 

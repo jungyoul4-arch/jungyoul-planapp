@@ -265,7 +265,7 @@ function _renderScreenImpl(forced) {
       tabletContainer.style.display = 'flex';
       // 사이드바 렌더링 (로그인/온보딩 화면이 아닐 때만)
       const sidebarEl = document.getElementById('tablet-sidebar');
-      const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor';
+      const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'timetable-onboarding' || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor';
       if (sidebarEl) {
         if (isAuthScreen) {
           sidebarEl.style.display = 'none';
@@ -390,6 +390,7 @@ if (screen.orientation) {
 // ==================== STUDENT APP ROUTER ====================
 
 function renderStudentApp() {
+  if (state.currentScreen === 'timetable-onboarding') return renderTimetableOnboarding();
   if (state.currentScreen.startsWith('onboarding')) return renderOnboarding();
   // 외부 앱 호출 시 로그인 화면 대신 로딩 표시
   if (_externalMode && (state.currentScreen === 'login' || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor')) {
@@ -441,6 +442,7 @@ function renderStudentApp() {
   if (state.currentScreen === 'class-record-detail') return renderClassRecordDetail();
   if (state.currentScreen === 'record-status') return renderRecordStatus();
   if (state.currentScreen === 'mentor-feedback') return renderStudentFeedbackScreen();
+  if (state.currentScreen === 'timetable-onboarding') return renderTimetableOnboarding();
 
   let content = '';
   content += renderXpBar();
@@ -550,7 +552,7 @@ function initMobileBottomTab() {
   const el = document.getElementById('mobile-bottom-tab');
   if (!el) return;
   // 로그인/온보딩 화면에서는 숨김
-  const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen.startsWith('register') || state.currentScreen === 'login-mentor' || state.currentScreen === 'login-director';
+  const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'timetable-onboarding' || state.currentScreen.startsWith('register') || state.currentScreen === 'login-mentor' || state.currentScreen === 'login-director';
   if (isAuthScreen) { el.innerHTML = ''; return; }
   el.innerHTML = renderMobileBottomTab();
   el.querySelectorAll('.mob-tab-item').forEach(btn => {
@@ -774,11 +776,11 @@ function renderLoginScreen() {
 
         <div class="field-group" style="width:100%">
           <label class="field-label">이름 (가입할 때 입력한 이름)</label>
-          <input class="input-field" id="login-name" placeholder="홍길동" style="font-size:15px">
+          <input class="input-field" id="login-name" placeholder="홍길동" value="${location.hostname === 'localhost' ? '곽정율' : ''}" style="font-size:15px">
         </div>
         <div class="field-group" style="width:100%">
           <label class="field-label">비밀번호</label>
-          <input class="input-field" id="login-password" type="password" placeholder="비밀번호 입력" style="font-size:15px">
+          <input class="input-field" id="login-password" type="password" placeholder="비밀번호 입력" value="${location.hostname === 'localhost' ? '1234' : ''}" style="font-size:15px">
         </div>
       </div>
 
@@ -984,9 +986,23 @@ function initAuthEvents(container) {
         user: data.user, token: data.token, role: 'student', group: data.group
       }));
 
+      state.mode = 'student';
+
+      // 학기 데이터 확인 → 없으면 시간표 온보딩
+      try {
+        const semRes = await fetch('/api/student/' + data.user.id + '/semesters');
+        const semData = await semRes.json();
+        if (semData.success && (!semData.data || semData.data.length === 0)) {
+          state.currentScreen = 'timetable-onboarding';
+          state._ttOnboardingStep = 'intro';
+          state.studentTab = 'home';
+          renderScreen();
+          return;
+        }
+      } catch(_) { /* 실패 시 그냥 메인으로 */ }
+
       state.currentScreen = 'main';
       state.studentTab = 'home';
-      state.mode = 'student';
       renderScreen();
 
       // DB에서 데이터 로드 (비동기)
@@ -1358,10 +1374,19 @@ function autoLogin() {
         if (!res.ok) throw new Error('Profile check failed');
         return res.json();
       }).then(() => {
+        // 학기 데이터 확인 → 없으면 시간표 온보딩
+        return fetch(`/api/student/${auth.user.id}/semesters`).then(r => r.json()).then(sd => {
+          if (sd.success && (!sd.data || sd.data.length === 0)) {
+            state.currentScreen = 'timetable-onboarding';
+            state._ttOnboardingStep = 'intro';
+            renderScreen();
+            return;
+          }
+        }).catch(() => {});
+      }).then(() => {
+        if (state.currentScreen === 'timetable-onboarding') return;
         DB.loadAll().then(() => refreshDataWidgets());
-        // 수업 종료 자동 감지 시작
         startClassEndChecker();
-        // 멀티디바이스 자동 동기화 시작
         startAutoSync();
       }).catch(() => {
         // 서버 검증 실패 → 로그아웃
@@ -12595,7 +12620,7 @@ function renderTimetableManage() {
       <div class="screen-header">
         <button class="back-btn" onclick="state.editingTimetable=false;state.selectedTtCell=null;state.selectedAcSlot=null;state.viewingAcademyDetail=null;goScreen('main');state.studentTab='my'"><i class="fas fa-arrow-left"></i></button>
         <h1>📋 시간표 관리</h1>
-        <button class="header-action-btn" onclick="state.editingTimetable=!state.editingTimetable;state.selectedTtCell=null;state.selectedAcSlot=null;renderScreen()">
+        <button class="header-action-btn" onclick="state.editingTimetable=!state.editingTimetable;state.selectedTtCell=null;state.selectedAcSlot=null;renderScreen(true)">
           <i class="fas ${state.editingTimetable ? 'fa-check' : 'fa-edit'}"></i>
           ${state.editingTimetable ? '완료' : '편집'}
         </button>
@@ -12607,6 +12632,12 @@ function renderTimetableManage() {
           <div class="card-header-row">
             <span class="card-title">🏫 학교 시간표</span>
             ${state.editingTimetable ? '<span class="card-subtitle" style="color:var(--primary-light)">셀을 터치하여 수정</span>' : ''}
+          </div>
+          <div style="margin-bottom:12px">
+            <input type="file" id="tt-manage-file" accept="image/*" style="display:none" onchange="ttManagePhoto(this)">
+            <button class="btn-secondary" onclick="document.getElementById('tt-manage-file').click();" style="width:100%;padding:10px;font-size:13px">
+              <i class="fas fa-camera" style="margin-right:6px"></i> 시간표 사진으로 자동 입력
+            </button>
           </div>
           <div class="tt-editor">
             <div class="tt-editor-header"></div>
@@ -12887,7 +12918,7 @@ function selectTtCell(period, dayIdx) {
   } else {
     state.selectedTtCell = { period, dayIdx };
   }
-  renderScreen();
+  renderScreen(true);
 }
 
 function setTtSubject(subject) {
@@ -12896,7 +12927,7 @@ function setTtSubject(subject) {
   state.timetable.school[period][dayIdx] = subject;
   syncTodayRecords();
   DB.saveTimetable();
-  renderScreen();
+  renderScreen(true);
 }
 
 function setTtTeacher(name) {
@@ -13701,6 +13732,7 @@ function initStudentEvents(root) {
       }
     });
   }
+
 }
 
 function initMentorEvents() {
@@ -13822,6 +13854,408 @@ if (_urlParams.user_id) {
   autoLogin();
 }
 renderScreen();
+
+// ==================== 시간표 온보딩 (시간표 사진 → 과목 자동 등록) ====================
+// state._ttOnboardingStep: 'intro' → 'photo' → 'loading' → 'confirm' → 'done'
+// state._ttAnalyzedSlots: AI 분석 결과
+// state._ttPhotoBase64: 촬영한 사진
+
+// 시간표 온보딩 전역 헬퍼
+async function ttAnalyze() {
+  if (!state._ttPhotoBase64) return;
+  state._ttOnboardingStep = 'loading';
+  renderScreen(true);
+  try {
+    const sid = state._authUser?.id;
+    const mode = state._ttMode || 'school';
+    const res = await fetch('/api/student/' + sid + '/timetable/photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: state._ttPhotoBase64, mimeType: 'image/jpeg', mode })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'AI 분석 실패');
+    if (mode === 'academy') {
+      state._ttAcademySlots = data.data.academySlots;
+    } else {
+      state._ttAnalyzedSlots = data.data.slots;
+      state._ttYear = data.data.year;
+      state._ttTerm = data.data.term;
+    }
+    state._ttOnboardingStep = 'confirm';
+  } catch (err) {
+    alert('분석 실패: ' + err.message);
+    state._ttOnboardingStep = 'photo';
+  }
+  renderScreen(true);
+}
+
+async function ttSave() {
+  const mode = state._ttMode || 'school';
+
+  if (mode === 'academy') {
+    // 학원 모드: localStorage에 저장
+    const items = state._ttAcademySlots || [];
+    const colors = ['#E056A0','#6C5CE7','#00B894','#FDCB6E','#FF6B6B','#74B9FF','#00CEC9','#FF9F43'];
+    items.forEach((item, i) => {
+      const dayMap = {'월':0,'화':1,'수':2,'목':3,'금':4,'토':5,'일':6};
+      // 같은 학원+수업명 중복 방지
+      const exists = state.timetable.academy.find(a => a.name === item.name && a.day === item.day);
+      if (!exists) {
+        state.timetable.academy.push({
+          id: 'ac' + (Date.now() % 100000) + i,
+          name: item.name || '학원 수업',
+          academy: item.academy || '',
+          subject: item.subject || '기타',
+          day: item.day || '월',
+          slot: item.slot || 1,
+          startTime: item.startTime || '18:00',
+          endTime: item.endTime || '20:00',
+          color: colors[i % colors.length],
+          memo: ''
+        });
+      }
+    });
+    saveTimetableToStorage();
+    state._ttSavedSubjects = items.map(s => ({ name: s.name + ' (' + (s.academy || '학원') + ')' }));
+    state._ttOnboardingStep = 'done';
+    renderScreen(true);
+    return;
+  }
+
+  // 학교 모드: DB에 저장 + state.timetable.school 반영
+  const nameInputs = document.querySelectorAll('.tt-subject-name');
+  const renameMap = {};
+  nameInputs.forEach(inp => {
+    const original = inp.dataset.original;
+    const newName = inp.value.trim();
+    if (original && newName && original !== newName) renameMap[original] = newName;
+  });
+  let slots = state._ttAnalyzedSlots || [];
+  if (Object.keys(renameMap).length > 0) {
+    slots = slots.map(s => ({ ...s, subject: renameMap[s.subject] || s.subject }));
+  }
+  try {
+    const sid = state._authUser?.id;
+    const res = await fetch('/api/student/' + sid + '/timetable/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year: state._ttYear, term: state._ttTerm, slots })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || '저장 실패');
+    state._ttSavedSubjects = data.data.subjects;
+
+    // state.timetable.school에도 반영 (시간표 관리 화면과 동기화)
+    const colors = ['#FF6B6B','#6C5CE7','#00B894','#FDCB6E','#74B9FF','#A29BFE','#FD79A8','#00CEC9','#E17055','#55E6C1'];
+    const maxP = Math.max(...slots.map(s => s.period), 7);
+    const newSchool = [];
+    for (let p = 0; p < maxP; p++) newSchool.push(['','','','','']);
+    const newTeachers = { ...state.timetable.teachers };
+    const newColors = { ...state.timetable.subjectColors };
+    const subjectSet = [...new Set(slots.map(s => s.subject))];
+    subjectSet.forEach((s, i) => {
+      if (!newColors[s]) newColors[s] = colors[i % colors.length];
+    });
+    slots.forEach(s => {
+      const pIdx = s.period - 1;
+      const dIdx = s.day_of_week - 1;
+      if (pIdx >= 0 && pIdx < newSchool.length && dIdx >= 0 && dIdx < 5) {
+        newSchool[pIdx][dIdx] = s.subject;
+      }
+      if (s.teacher) newTeachers[s.subject] = s.teacher;
+    });
+    state.timetable.school = newSchool;
+    state.timetable.teachers = newTeachers;
+    state.timetable.subjectColors = newColors;
+    DB.saveTimetable();
+
+    state._ttOnboardingStep = 'done';
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+  }
+  renderScreen(true);
+}
+
+function ttRemoveSubject(name) {
+  const mode = state._ttMode || 'school';
+  if (mode === 'academy') {
+    state._ttAcademySlots = (state._ttAcademySlots || []).filter(s => s.name !== name);
+  } else {
+    state._ttAnalyzedSlots = (state._ttAnalyzedSlots || []).filter(s => s.subject !== name);
+  }
+  renderScreen(true);
+}
+
+function ttManagePhoto(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 1600;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      state._ttPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+      state._ttMode = 'school';
+      state._ttOnboardingStep = 'photo';
+      state._ttReturnTo = 'timetable-manage';
+      state.currentScreen = 'timetable-onboarding';
+      renderScreen(true);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function ttHandleFileInput(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 1600;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      state._ttPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+      renderScreen(true);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderTimetableOnboarding() {
+  const step = state._ttOnboardingStep || 'intro';
+
+  if (step === 'intro') return _renderTTIntro();
+  if (step === 'photo') return _renderTTPhoto();
+  if (step === 'loading') return _renderTTLoading();
+  if (step === 'confirm') return _renderTTConfirm();
+  if (step === 'done') return _renderTTDone();
+  return _renderTTIntro();
+}
+
+function _renderTTIntro() {
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;min-height:100vh">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
+        <div style="font-size:64px;margin-bottom:24px">📋</div>
+        <h2 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:12px">시간표를 등록해주세요</h2>
+        <p style="color:var(--text-secondary);font-size:15px;line-height:1.7;margin-bottom:8px">
+          시간표 사진을 찍으면<br>
+          <strong style="color:var(--primary-light)">AI가 자동으로 과목/일정을 인식</strong>합니다
+        </p>
+        <p style="color:var(--text-muted);font-size:13px;margin-top:16px">
+          학교 수업, 학원 일정 모두 등록 가능합니다
+        </p>
+      </div>
+      <button class="btn-primary btn-glow" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;state._ttMode='school';renderScreen(true);" style="width:100%;margin-bottom:12px">
+        <i class="fas fa-camera" style="margin-right:8px"></i> 시간표 촬영하기
+      </button>
+      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
+        나중에 할게요
+      </button>
+    </div>`;
+}
+
+function _renderTTPhoto() {
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:24px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="btn-back" onclick="state._ttOnboardingStep='intro';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">${state._ttMode === 'academy' ? '학원 시간표 촬영' : '학교 시간표 촬영'}</h1>
+        <div style="width:32px"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
+        <div id="tt-photo-preview" style="width:100%;max-width:400px;aspect-ratio:3/4;border-radius:16px;overflow:hidden;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;margin-bottom:24px;border:2px dashed var(--border-color)">
+          ${state._ttPhotoBase64
+            ? '<img src="' + state._ttPhotoBase64 + '" style="width:100%;height:100%;object-fit:contain">'
+            : '<div style="color:var(--text-muted)"><i class="fas fa-image" style="font-size:48px;margin-bottom:12px;display:block"></i><p style="font-size:14px">시간표 사진을 선택해주세요</p></div>'
+          }
+        </div>
+        <input type="file" id="tt-file-input" accept="image/*" capture="environment" style="display:none" onchange="ttHandleFileInput(this)">
+        <div style="display:flex;gap:12px;width:100%;max-width:400px">
+          <button class="btn-secondary" onclick="var i=document.getElementById('tt-file-input');if(i){i.removeAttribute('capture');i.click();}" style="flex:1">
+            <i class="fas fa-camera" style="margin-right:6px"></i> 촬영
+          </button>
+          <button class="btn-secondary" onclick="var i=document.getElementById('tt-file-input');if(i){i.removeAttribute('capture');i.click();}" style="flex:1">
+            <i class="fas fa-images" style="margin-right:6px"></i> 앨범
+          </button>
+        </div>
+      </div>
+      <button class="btn-primary" onclick="ttAnalyze();" style="width:100%;margin-top:20px" ${state._ttPhotoBase64 ? '' : 'disabled'}>
+        <i class="fas fa-magic" style="margin-right:8px"></i> AI 분석 시작
+      </button>
+    </div>`;
+}
+
+function _renderTTLoading() {
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
+      <div style="font-size:48px;margin-bottom:24px" class="animate-pulse">🔍</div>
+      <i class="fas fa-spinner fa-spin" style="font-size:32px;color:var(--primary-light);margin-bottom:20px"></i>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:8px">시간표를 분석하고 있어요</h2>
+      <p style="color:var(--text-secondary);font-size:14px">AI가 과목명과 시간을 인식 중입니다...</p>
+    </div>`;
+}
+
+function _renderTTConfirm() {
+  const mode = state._ttMode || 'school';
+  if (mode === 'academy') return _renderTTConfirmAcademy();
+  return _renderTTConfirmSchool();
+}
+
+function _renderTTConfirmSchool() {
+  const slots = state._ttAnalyzedSlots || [];
+  const subjects = [...new Set(slots.map(s => s.subject))];
+  const dayNames = ['', '월', '화', '수', '목', '금'];
+
+  const colors = ['#6C5CE7', '#00B894', '#FDCB6E', '#E17055', '#74B9FF', '#A29BFE', '#FF7675', '#55E6C1', '#FDA7DF', '#778CA3'];
+  const subjectColor = {};
+  subjects.forEach((s, i) => { subjectColor[s] = colors[i % colors.length]; });
+
+  const maxPeriod = Math.max(...slots.map(s => s.period), 7);
+  let gridRows = '';
+  for (let p = 1; p <= maxPeriod; p++) {
+    gridRows += `<tr><td style="padding:6px 4px;font-weight:600;color:var(--text-muted);font-size:12px;text-align:center;width:30px">${p}</td>`;
+    for (let d = 1; d <= 5; d++) {
+      const slot = slots.find(s => s.day_of_week === d && s.period === p);
+      if (slot) {
+        const bg = subjectColor[slot.subject] || '#6C5CE7';
+        gridRows += `<td style="padding:3px"><div style="background:${bg}22;border:1px solid ${bg}44;border-radius:8px;padding:4px 2px;text-align:center;min-height:36px;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:11px;font-weight:600;color:${bg}">${escapeHtml(slot.subject)}</span>${slot.teacher ? '<span style="font-size:9px;color:var(--text-muted)">' + escapeHtml(slot.teacher) + '</span>' : ''}</div></td>`;
+      } else {
+        gridRows += `<td style="padding:3px"><div style="min-height:36px"></div></td>`;
+      }
+    }
+    gridRows += '</tr>';
+  }
+
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 12px 0">
+        <button class="btn-back" onclick="state._ttOnboardingStep='photo';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">학교 시간표 확인</h1>
+        <div style="width:32px"></div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;text-align:center">
+        AI가 인식한 시간표입니다. 틀린 부분을 수정해주세요.
+      </p>
+      <div style="overflow-x:auto;margin-bottom:16px">
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+          <thead><tr>
+            <th style="width:30px"></th>
+            ${dayNames.slice(1).map(d => '<th style="padding:6px 4px;font-size:12px;font-weight:600;color:var(--text-secondary);text-align:center">' + d + '</th>').join('')}
+          </tr></thead>
+          <tbody>${gridRows}</tbody>
+        </table>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">
+          인식된 과목 (${subjects.length}개)
+        </h3>
+        <div style="display:flex;flex-direction:column;gap:8px" id="tt-subject-list">
+          ${subjects.map((s, i) => {
+            const count = slots.filter(sl => sl.subject === s).length;
+            const bg = subjectColor[s] || '#6C5CE7';
+            return `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg-secondary);border-radius:10px;border:1px solid var(--border-color)">
+              <div style="width:8px;height:8px;border-radius:50%;background:${bg};flex-shrink:0"></div>
+              <input class="input-field tt-subject-name" value="${escapeHtml(s)}" data-original="${escapeHtml(s)}" style="flex:1;font-size:14px;padding:4px 8px;margin:0">
+              <span style="font-size:11px;color:var(--text-muted);white-space:nowrap">${count}시간</span>
+              <button onclick="ttRemoveSubject('${escapeHtml(s).replace(/'/g, "\\'")}');" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div style="margin-top:auto;display:flex;flex-direction:column;gap:10px">
+        <button class="btn-primary btn-glow" onclick="ttSave();" style="width:100%">
+          <i class="fas fa-check" style="margin-right:8px"></i> 이대로 저장하기
+        </button>
+        <button class="btn-secondary" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;renderScreen(true);" style="width:100%">
+          <i class="fas fa-redo" style="margin-right:8px"></i> 다시 촬영하기
+        </button>
+      </div>
+    </div>`;
+}
+
+function _renderTTConfirmAcademy() {
+  const items = state._ttAcademySlots || [];
+  const colors = ['#E056A0','#6C5CE7','#00B894','#FDCB6E','#FF6B6B','#74B9FF','#00CEC9','#FF9F43'];
+
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 12px 0">
+        <button class="btn-back" onclick="state._ttOnboardingStep='photo';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">학원 일정 확인</h1>
+        <div style="width:32px"></div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;text-align:center">
+        AI가 인식한 학원 일정입니다. 확인 후 저장해주세요.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;flex:1;overflow-y:auto">
+        ${items.length === 0 ? '<p style="text-align:center;color:var(--text-muted);padding:40px 0">인식된 학원 일정이 없습니다</p>' : items.map((item, i) => {
+          const bg = colors[i % colors.length];
+          return `<div style="padding:14px 16px;background:var(--bg-secondary);border-radius:12px;border-left:4px solid ${bg}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <strong style="font-size:15px;color:var(--text-primary)">${escapeHtml(item.name || '수업')}</strong>
+              <button onclick="ttRemoveSubject('${escapeHtml(item.name).replace(/'/g, "\\'")}');" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--text-secondary)">
+              ${item.academy ? '<span><i class="fas fa-building" style="margin-right:4px;color:' + bg + '"></i>' + escapeHtml(item.academy) + '</span>' : ''}
+              <span><i class="fas fa-calendar-day" style="margin-right:4px"></i>${escapeHtml(item.day || '?')}요일</span>
+              <span><i class="fas fa-clock" style="margin-right:4px"></i>${escapeHtml(item.startTime || '?')} ~ ${escapeHtml(item.endTime || '?')}</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button class="btn-primary btn-glow" onclick="ttSave();" style="width:100%">
+          <i class="fas fa-check" style="margin-right:8px"></i> ${items.length}개 학원 일정 저장하기
+        </button>
+        <button class="btn-secondary" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;renderScreen(true);" style="width:100%">
+          <i class="fas fa-redo" style="margin-right:8px"></i> 다시 촬영하기
+        </button>
+      </div>
+    </div>`;
+}
+
+function _renderTTDone() {
+  const subjects = state._ttSavedSubjects || [];
+  const returnTo = state._ttReturnTo;
+  const doneAction = returnTo === 'timetable-manage'
+    ? "state._ttReturnTo=null;state.currentScreen='timetable-manage';renderScreen(true);"
+    : "state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();";
+  const doneLabel = returnTo === 'timetable-manage' ? '시간표 관리로 돌아가기' : '시작하기';
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
+      <div style="font-size:64px;margin-bottom:24px">🎉</div>
+      <h2 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:12px">시간표 등록 완료!</h2>
+      <p style="color:var(--text-secondary);font-size:15px;margin-bottom:24px">
+        <strong>${subjects.length}개 과목</strong>이 등록되었습니다
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:32px">
+        ${subjects.map(s => `<span style="padding:6px 14px;background:var(--primary-light);color:white;border-radius:20px;font-size:13px;font-weight:500">${escapeHtml(s.name)}</span>`).join('')}
+      </div>
+      <button class="btn-primary btn-glow" onclick="${doneAction}" style="width:100%;max-width:320px">
+        ${doneLabel} <i class="fas fa-arrow-right" style="margin-left:8px"></i>
+      </button>
+    </div>`;
+}
+
 
 // ==================== PWA 설치 유도 + 업데이트 알림 ====================
 // (기존 로직과 완전 독립 — 이 블록은 추가만 되며 기존 함수를 수정하지 않음)
