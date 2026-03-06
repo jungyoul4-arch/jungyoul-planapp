@@ -318,6 +318,241 @@
 .records-module .history-tags { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 .records-module .history-xp { font-size: 11px; color: var(--xp-gold); font-weight: 600; }
 
+/* ==================== Bento Grid (.bento-) ==================== */
+
+/* Page-level gradient mesh background */
+.records-module .bento-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.records-module .bento-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 600px 400px at 8% 8%, rgba(99, 102, 241, 0.10), transparent),
+    radial-gradient(ellipse 500px 500px at 92% 85%, rgba(139, 92, 246, 0.07), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Page title & subtitle */
+.records-module .bento-page-title {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.records-module .bento-page-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+
+/* Body container — fills remaining height */
+.records-module .bento-body {
+  position: relative;
+  z-index: 1;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Grid layout — named areas, viewport-filling */
+.records-module .bento-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr auto;
+  grid-template-areas:
+    "club      club      career"
+    "club      club      autonomy"
+    "report    report    reading"
+    "volunteer .         .";
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Per-card grid area + stagger animation delay */
+.records-module .bento-card--report    { grid-area: club;      animation-delay: 0s; }
+.records-module .bento-card--career    { grid-area: career;    animation-delay: 0.06s; }
+.records-module .bento-card--autonomy  { grid-area: autonomy;  animation-delay: 0.12s; }
+.records-module .bento-card--reading   { grid-area: report;    animation-delay: 0.18s; }
+.records-module .bento-card--volunteer { grid-area: reading;   animation-delay: 0.24s; }
+.records-module .bento-card--club      { grid-area: volunteer; animation-delay: 0.30s; }
+
+/* Card — glassmorphism */
+.records-module .bento-card {
+  position: relative;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  animation: rm-bentoIn 0.55s ease both;
+}
+@keyframes rm-bentoIn {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Hover — lift + per-card glow */
+.records-module .bento-card:hover {
+  transform: translateY(-4px) scale(1.01);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.records-module .bento-card--club:hover      { box-shadow: 0 8px 36px rgba(99, 102, 241, 0.22); }
+.records-module .bento-card--career:hover    { box-shadow: 0 8px 36px rgba(16, 185, 129, 0.22); }
+.records-module .bento-card--autonomy:hover  { box-shadow: 0 8px 36px rgba(245, 158, 11, 0.22); }
+.records-module .bento-card--report:hover    { box-shadow: 0 8px 36px rgba(139, 92, 246, 0.22); }
+.records-module .bento-card--reading:hover   { box-shadow: 0 8px 36px rgba(236, 72, 153, 0.22); }
+.records-module .bento-card--volunteer:hover { box-shadow: 0 8px 36px rgba(6, 182, 212, 0.22); }
+
+/* Glow pseudo-element */
+.records-module .bento-card-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: 16px;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  background: radial-gradient(
+    160px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    var(--card-accent),
+    transparent 70%
+  );
+  z-index: 0;
+}
+.records-module .bento-card:hover .bento-card-glow {
+  opacity: 0.15;
+}
+
+/* Inner — vertical flex layout */
+.records-module .bento-card-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px;
+  gap: 0;
+}
+
+/* Top row: icon + badge */
+.records-module .bento-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+/* Icon */
+.records-module .bento-icon-wrap {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--icon-bg, rgba(99, 102, 241, 0.10));
+  color: var(--card-accent);
+}
+.records-module .bento-icon-wrap svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* Badge pill */
+.records-module .bento-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--card-accent);
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Middle: title + desc */
+.records-module .bento-card-mid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+}
+.records-module .bento-card-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.records-module .bento-card-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Progress bar (large cards only) */
+.records-module .bento-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.records-module .bento-progress-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.records-module .bento-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--card-accent);
+  transition: width 0.6s ease;
+}
+.records-module .bento-progress-text {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--card-accent);
+  min-width: 30px;
+  text-align: right;
+}
+
+/* Bottom stats row */
+.records-module .bento-card-bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: auto;
+}
+.records-module .bento-stat {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.records-module .bento-divider {
+  color: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+}
+
 /* ==================== Activity (.act-) ==================== */
 .records-module .act-summary-banner { display: flex; align-items: center; justify-content: center; background: rgba(108,92,231,.08); border: 1px solid rgba(108,92,231,.15); border-radius: 14px; padding: 14px 20px; margin-bottom: 12px; }
 .records-module .act-summary-item { text-align: center; flex: 1; }

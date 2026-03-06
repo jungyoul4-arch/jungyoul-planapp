@@ -9,6 +9,8 @@
   <link rel="stylesheet" href="records.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://unpkg.com/lucide@latest"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
   <style>
     :root {
       --bg: #0f1923;
@@ -76,9 +78,43 @@
     <div class="dev-banner">
       <span>DEV MODE — iPad Pro 11" (1194×834)</span>
       <button onclick="location.reload()">Reload</button>
+      <button onclick="testPrintView()">인쇄물 테스트</button>
     </div>
     <div id="records-root"></div>
   </div>
+
+  <script>
+    async function testPrintView() {
+      const { generateCreditLogPDF } = await import('./components/pdf-generator.js');
+      const mockLog = {
+        topic: '5-3. 원형 운동과 만유인력',
+        pages: '물리학I 교과서 p.112~118',
+        summary: '등속 원운동에서 구심력의 역할과 만유인력 법칙의 유도 과정을 학습했다. 케플러의 행성 운동 법칙에서 뉴턴의 만유인력 법칙으로 연결되는 과학사적 맥락을 이해하고, 구심 가속도 공식 a = v²/r 을 유도하는 과정을 다루었다.',
+        exam_connection: [
+          '구심력 공식 F = mv²/r 에서 각 변수의 의미와 단위 변환 문제가 자주 출제됨',
+          '인공위성의 궤도 속력 문제: 만유인력 = 구심력 등식에서 v를 구하는 유형',
+          '케플러 제3법칙 T² ∝ r³ 을 이용한 주기-궤도반지름 관계 계산',
+          '지표면 중력가속도 g와 만유인력 상수 G의 관계식 유도'
+        ],
+        highlights: '구심력은 "새로운 힘"이 아니라 원운동을 유지시키는 알짜힘의 역할\n만유인력 상수 G는 캐번디시 실험으로 측정 — 시험에 자주 나옴\n등속 원운동에서 속력은 일정하지만 속도는 계속 변한다 (방향 변화)\n인공위성은 자유낙하 중이지만 지구 곡률 때문에 떨어지지 않는다',
+        deep_dive: '등속 원운동에서 가속도가 존재하는 이유: 속도는 벡터량이므로 크기가 같아도 방향이 변하면 가속도가 발생한다. 이 가속도는 항상 원의 중심을 향하며(구심 가속도), 그 크기는 a = v²/r이다.\n\n만유인력 법칙 F = GMm/r²에서 역제곱 법칙의 의미: 거리가 2배가 되면 힘은 1/4로 줄어든다. 이는 케플러 제3법칙과 결합하면 타원 궤도의 역학적 에너지 보존으로 이어진다.',
+        questions: [
+          { original: '인공위성이 왜 안 떨어지는지 모르겠어요', improved: '인공위성의 자유낙하 운동과 지구 곡률의 관계에서, 궤도 속력이 특정 값 이하로 떨어지면 어떤 현상이 발생하며, 이것이 대기권 재진입과 어떻게 연결되나요?' },
+          { original: '구심력이랑 원심력 차이가 뭔가요?', improved: '관성 좌표계와 비관성 좌표계에서 원운동을 분석할 때, 구심력과 원심력의 존재 여부가 달라지는 이유를 뉴턴의 운동법칙 관점에서 설명해주실 수 있나요?' },
+          { original: '만유인력이 왜 역제곱인가요?', improved: '만유인력이 거리의 역제곱에 비례하는 것이 3차원 공간의 기하학적 특성(구의 표면적 ∝ r²)과 어떤 관련이 있는지, 가우스 법칙의 관점에서 설명 가능한가요?' }
+        ],
+        active_recall: [
+          { question: '등속 원운동에서 속력이 일정한데 왜 가속도가 존재하는가?', answer: '속도는 벡터량이므로 방향이 변하면 가속도가 발생한다. 등속 원운동에서 속도의 방향은 매 순간 변하므로 구심 가속도 a = v²/r 이 존재한다.' },
+          { question: '만유인력 상수 G의 값은 어떻게 측정되었는가?', answer: '1798년 캐번디시가 비틀림 저울 실험으로 최초 측정했다. 두 납구 사이의 미세한 인력을 비틀림 각도로 환산하여 G = 6.674 × 10⁻¹¹ N·m²/kg² 을 얻었다.' },
+          { question: '정지위성의 궤도 높이가 약 36,000km인 이유는?', answer: '정지위성의 주기는 지구 자전 주기(24시간)와 같아야 한다. T² = (4π²/GM)r³ 에서 T = 86400s를 대입하면 r ≈ 42,164km, 지구 반지름을 빼면 약 35,786km이다.' }
+        ],
+        keywords: ['구심력', '만유인력', '케플러 법칙', '역제곱 법칙', '캐번디시'],
+        teacher_insight: '해당 학생은 구심력과 원심력의 개념적 차이에 대해 관성 좌표계의 관점에서 질문을 제기하였으며, 이는 고전역학의 기본 원리에 대한 깊이 있는 사고를 보여준다. 특히 만유인력의 역제곱 법칙을 3차원 기하학과 연결하려는 시도는 물리학적 직관과 수학적 추론 능력이 우수함을 나타낸다. 원형 운동의 에너지 보존과 인공위성 궤도 역학에 대한 추가 탐구를 권장한다.',
+        assignment: { title: '구심력 실험 보고서', description: '원형 운동 실험 결과를 분석하고 구심력 공식을 검증하는 보고서 작성', dueDate: '2026-03-13', dueDateRaw: '다음주 금요일' }
+      };
+      generateCreditLogPDF(mockLog, '물리학I', '2026-03-06', '곽정율');
+    }
+  </script>
 
   <script type="module">
     import RecordsModule from './records.js';

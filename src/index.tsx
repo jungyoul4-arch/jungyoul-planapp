@@ -2094,6 +2094,33 @@ app.post('/api/student/:studentId/activity-records', async (c) => {
   }
 });
 
+// 창체 영역별 activity_record 자동 생성 (없으면 생성, 있으면 기존 ID 반환)
+app.post('/api/student/:studentId/activity-records/find-or-create', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const { activityType, title } = await c.req.json();
+    if (!activityType) return c.json({ error: 'activityType은 필수입니다' }, 400);
+
+    // 기존 레코드 찾기
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM activity_records WHERE student_id = ? AND activity_type = ? LIMIT 1'
+    ).bind(studentId, activityType).first();
+
+    if (existing) {
+      return c.json({ success: true, recordId: existing.id, created: false });
+    }
+
+    // 없으면 새로 생성
+    const result = await c.env.DB.prepare(
+      'INSERT INTO activity_records (student_id, activity_type, title, status, progress) VALUES (?, ?, ?, ?, ?)'
+    ).bind(studentId, activityType, title || activityType, 'in-progress', 0).run();
+
+    return c.json({ success: true, recordId: result.meta.last_row_id, created: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 app.put('/api/student/activity-records/:recordId', async (c) => {
   try {
     const recordId = c.req.param('recordId');
@@ -2119,7 +2146,10 @@ app.get('/api/student/:studentId/activity-records', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const records = await c.env.DB.prepare(
-      'SELECT * FROM activity_records WHERE student_id = ? ORDER BY created_at DESC'
+      `SELECT ar.*,
+        (SELECT COUNT(*) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _logCount,
+        (SELECT MAX(al.date) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _lastLogDate
+       FROM activity_records ar WHERE ar.student_id = ? ORDER BY ar.created_at DESC`
     ).bind(studentId).all();
     return c.json({ records: records.results });
   } catch (e: any) {
@@ -2133,12 +2163,48 @@ app.get('/api/student/:studentId/activity-records', async (c) => {
 app.post('/api/student/:studentId/activity-logs', async (c) => {
   try {
     const studentId = c.req.param('studentId');
-    const { activityRecordId, date, content, reflection, duration, xpEarned } = await c.req.json();
+    const { activityRecordId, date, content, reflection, duration, xpEarned, photos, aiResult } = await c.req.json();
     if (!activityRecordId || !content) return c.json({ error: '활동 ID와 내용은 필수입니다' }, 400);
 
+    // 사진이 있으면 class_record_photos에 저장 후 ref:ID로 변환
+    let photoRefs = '[]';
+    if (photos && Array.isArray(photos) && photos.length > 0) {
+      const refs: string[] = [];
+      for (const photoData of photos) {
+        if (typeof photoData !== 'string' || photoData.length < 10) continue;
+        let r2Key = '';
+        let thumbnail = '';
+        const fileSize = Math.round(photoData.length * 0.75);
+        if (c.env.R2) {
+          try {
+            r2Key = `photos/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+            const match = photoData.match(/^data:(image\/\w+);base64,(.+)$/);
+            const rawBase64 = match ? match[2] : photoData.replace(/^data:image\/\w+;base64,/, '');
+            const binary = Uint8Array.from(atob(rawBase64), c => c.charCodeAt(0));
+            await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } });
+            thumbnail = `r2:${r2Key}`;
+          } catch (e) {
+            console.error('R2 upload failed, falling back to DB:', e);
+            r2Key = '';
+            thumbnail = photoData.slice(0, 200);
+          }
+        } else {
+          thumbnail = photoData.slice(0, 200);
+        }
+        const dataToStore = r2Key ? `r2:${r2Key}` : photoData;
+        const pr = await c.env.DB.prepare(
+          'INSERT INTO class_record_photos (student_id, class_record_id, photo_data, thumbnail, file_size, tag) VALUES (?, NULL, ?, ?, ?, ?)'
+        ).bind(studentId, dataToStore, thumbnail, fileSize, 'activity').run();
+        refs.push(`ref:${pr.meta.last_row_id}`);
+      }
+      photoRefs = JSON.stringify(refs);
+    }
+
+    const aiResultStr = aiResult ? (typeof aiResult === 'string' ? aiResult : JSON.stringify(aiResult)) : '';
+
     const result = await c.env.DB.prepare(
-      'INSERT INTO activity_logs (activity_record_id, student_id, date, content, reflection, duration, xp_earned) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(activityRecordId, studentId, date || getKSTDate(), content, reflection || '', duration || '', xpEarned || 20).run();
+      'INSERT INTO activity_logs (activity_record_id, student_id, date, content, reflection, duration, xp_earned, photos, ai_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(activityRecordId, studentId, date || getKSTDate(), content, reflection || '', duration || '', xpEarned || 20, photoRefs, aiResultStr).run();
 
     if (xpEarned) {
       await c.env.DB.prepare('UPDATE students SET xp = xp + ? WHERE id = ?').bind(xpEarned || 20, studentId).run();
@@ -3375,6 +3441,9 @@ app.get('/api/migrate', async (c) => {
       `ALTER TABLE mentors ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
       `ALTER TABLE groups ADD COLUMN external_class_id INTEGER DEFAULT NULL`,
       `ALTER TABLE students ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
+      // ===== 창체 활동 로그에 사진/AI분석 컬럼 추가 =====
+      `ALTER TABLE activity_logs ADD COLUMN photos TEXT DEFAULT '[]'`,
+      `ALTER TABLE activity_logs ADD COLUMN ai_result TEXT DEFAULT ''`,
       // 시간표 저장 테이블
       `CREATE TABLE IF NOT EXISTS student_timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_data TEXT DEFAULT '[]', teachers_data TEXT DEFAULT '{}', period_times TEXT DEFAULT '[]', subject_colors TEXT DEFAULT '{}', academy_data TEXT DEFAULT '[]', updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       // ===== 시간표 사진 → 과목 자동 등록 (학기/과목/시간표슬롯/시험과목) =====
@@ -4116,6 +4185,203 @@ app.delete('/api/mentor/feedback/:feedbackId', async (c) => {
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
+
+// ==================== 창체 활동 AI 분석 (진로/동아리/자율/봉사/독서) ====================
+
+const ACTIVITY_PROMPTS: Record<string, string> = {
+  career: `당신은 고교학점제 전문가이자 진로 멘토입니다.
+학생이 작성한 "진로활동 성찰일지" 사진을 OCR 인식하여 구조화합니다.
+
+[양식 구조]
+- 헤더: 이름, 학년·반, 날짜, 활동명
+- 활동 유형: 진로검사/진로상담/진로특강/진로체험/진로수업/자율탐구/학습 특색활동 중 체크된 항목
+- 활동 내용 요약: 무엇을 했나요?
+- 알게 된 점: 새롭게 알게 된 개념이나 정보
+- 느낀 점 / 성찰: 이 활동이 나에게 어떤 의미였나요?
+- 변화된 점: 생각·태도의 변화
+- 후속 계획: 앞으로 무엇을 할 건가요?
+- 생긴 질문: 더 알고 싶어진 것 (1, 2)
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+- 내용이 없는 섹션은 빈값 유지 (임의 생성 금지)
+
+[추가 분석: 세특 관찰 코멘트]
+- 진로 탐색의 자기주도성, 진로 성숙도, 활동과 진로 연결 수준을 분석
+- 학교생활기록부 진로활동 세특에 직접 참고할 수 있는 관찰 코멘트 (200~300자)
+- 객관적이고 전문적인 톤, 구체적인 활동 내용을 근거로 작성
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "student_name": "인식된 학생 이름",
+  "grade_class": "인식된 학년·반",
+  "date": "인식된 날짜",
+  "activity_name": "활동명",
+  "activity_subtype": "체크된 활동 유형",
+  "summary": "활동 내용 요약",
+  "learned": "알게 된 점",
+  "reflection": "느낀 점 / 성찰",
+  "changed": "변화된 점",
+  "next_plan": "후속 계획",
+  "questions": ["생긴 질문 1", "생긴 질문 2"],
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`,
+
+  club: `당신은 고교학점제 전문가이자 동아리 활동 멘토입니다.
+학생이 작성한 "동아리 활동일지" 사진을 OCR 인식하여 구조화합니다.
+
+[양식 구조]
+- 헤더: 동아리명, 회차, 활동일자, 활동시간, 활동장소, 지도교사, 대표학생, 활동주제, 참석인원/참석자
+- 활동 내용: 활동 과정, 각 구성원의 역할, 사용한 자료 등을 구체적으로 기록
+- 활동 결과: 활동을 통해 얻은 결과물, 발견한 사실, 새롭게 알게 된 점 등
+- 활동 소감 및 성찰: 느낀 점, 배운 점, 개선할 점, 진로와의 연계성 등
+- 궁금한 점: 더 탐구하고 싶은 것 — 세특 소재로 연결됩니다 (1, 2)
+- 차기 활동 계획: 다음 활동 주제, 준비사항 등
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+- 내용이 없는 섹션은 빈값 유지 (임의 생성 금지)
+
+[추가 분석: 세특 관찰 코멘트]
+- 동아리 활동에서 보이는 자기주도성, 협업 역량, 탐구 태도를 분석
+- 학교생활기록부 동아리활동 세특에 직접 참고할 수 있는 관찰 코멘트 (200~300자)
+- 객관적이고 전문적인 톤, 구체적인 활동 내용을 근거로 작성
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "club_name": "동아리명",
+  "session_number": "회차",
+  "activity_date": "활동일자",
+  "activity_time": "활동시간",
+  "activity_place": "활동장소",
+  "advisor": "지도교사",
+  "representative": "대표학생",
+  "topic": "활동주제",
+  "attendance": "참석인원/참석자",
+  "content": "활동 내용",
+  "result": "활동 결과",
+  "reflection": "활동 소감 및 성찰",
+  "questions": ["궁금한 점 1", "궁금한 점 2"],
+  "next_plan": "차기 활동 계획",
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`,
+
+  general: `당신은 고교학점제 전문가이자 학생 활동 멘토입니다.
+학생이 촬영한 활동 사진을 분석하여 구조화합니다.
+
+[작업]
+1. 사진에서 보이는 활동 내용을 상세히 분석 (손글씨가 있으면 OCR 인식)
+2. 활동의 핵심 내용과 학생의 역할을 파악
+3. 세특 기록에 활용할 수 있는 관찰 코멘트 생성
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "student_name": "인식된 학생 이름 (없으면 빈값)",
+  "date": "인식된 날짜 (없으면 빈값)",
+  "activity_name": "활동명 (없으면 빈값)",
+  "summary": "활동 내용 요약",
+  "reflection": "활동 소감/성찰 (인식된 경우)",
+  "questions": ["활동에서 생긴 질문"],
+  "next_plan": "후속 계획 (인식된 경우)",
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`
+}
+
+app.post('/api/ai/activity-analyze', async (c) => {
+  try {
+    const geminiKey = c.env.GEMINI_API_KEY
+    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
+
+    const { photos, activityType, comment } = await c.req.json<{
+      photos: string[],
+      activityType: string,
+      comment?: string
+    }>()
+
+    if (!photos || photos.length === 0) return c.json({ error: '사진이 필요합니다.' }, 400)
+
+    const promptTemplate = ACTIVITY_PROMPTS[activityType] || ACTIVITY_PROMPTS.general
+    const promptText = `${promptTemplate}\n\n---\n활동 유형: ${activityType}\n${comment ? `학생 소감: ${comment}\n` : ''}위 JSON 형식으로만 응답하세요.`
+
+    const parts: any[] = [{ text: promptText }]
+    const imageDataList: { mime_type: string, data: string }[] = []
+
+    for (const photo of photos) {
+      const match = photo.match(/^data:(image\/\w+);base64,(.+)$/)
+      if (match) {
+        imageDataList.push({ mime_type: match[1], data: match[2] })
+        parts.push({ inline_data: { mime_type: match[1], data: match[2] } })
+      }
+    }
+
+    let rawText = '{}'
+    let aiSource = 'gemini'
+
+    // Step 1: Gemini
+    try {
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
+          })
+        }
+      )
+      if (geminiRes.ok) {
+        const data: any = await geminiRes.json()
+        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+      } else {
+        throw new Error(`Gemini ${geminiRes.status}`)
+      }
+    } catch (geminiErr) {
+      // Step 2: OpenAI 폴백
+      console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
+      aiSource = 'openai'
+      const openaiKey = c.env.OPENAI_API_KEY
+      if (!openaiKey) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
+
+      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+      for (const img of imageDataList) {
+        openaiContent.push({ type: 'image_url', image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' } })
+      }
+
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: openaiContent }], temperature: 0.2, response_format: { type: 'json_object' } })
+      })
+      if (!openaiRes.ok) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
+      const openaiData: any = await openaiRes.json()
+      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+    }
+
+    let result: any
+    try { result = JSON.parse(rawText) } catch {
+      return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
+    }
+
+    return c.json({ success: true, activityType, aiSource, ...result })
+  } catch (e: any) {
+    console.log('Activity AI error:', e)
+    return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
+  }
+})
+
 
 // ==================== 아하 리포트 v2 AI 분석 (5섹션: SA/PA/DA/POA/PPA) ====================
 app.post('/api/aha-report/analyze-v2', async (c) => {
