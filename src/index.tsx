@@ -1023,7 +1023,7 @@ app.post('/api/auth/mentor/login', async (c) => {
 
     // 멘토의 그룹 목록 조회
     const groups = await c.env.DB.prepare(
-      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ? AND is_active = 1'
+      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
     ).bind(mentor.id).all();
 
     const token = generateToken();
@@ -1152,18 +1152,28 @@ app.get('/api/auth/external-login', async (c) => {
         } catch (_) { /* 원격 DB 연결 실패 시 기본 반 생성으로 진행 */ }
 
         if (studentsData.success && studentsData.classes) {
-          // 그룹만 배치로 생성 (학생은 별도 API에서 비동기 처리)
-          const groupStmts: any[] = [];
           for (const cls of studentsData.classes) {
+            // 반 생성
             const inviteCode = generateInviteCode();
-            groupStmts.push(
-              c.env.DB.prepare(
-                'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
-              ).bind(mentorId, cls.class_name || `반${cls.class_id}`, inviteCode, '', cls.class_id)
-            );
-          }
-          if (groupStmts.length > 0) {
-            await c.env.DB.batch(groupStmts);
+            const groupResult = await c.env.DB.prepare(
+              'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
+            ).bind(mentorId, cls.class_name || `반${cls.class_id}`, inviteCode, '', cls.class_id).run();
+            const groupId = groupResult.meta.last_row_id;
+
+            // 학생들 자동 생성
+            for (const st of cls.students) {
+              const exists = await c.env.DB.prepare(
+                'SELECT id FROM students WHERE external_user_id = ?'
+              ).bind(st.user_id).first();
+              if (!exists) {
+                const stPwHash = await hashPassword(`ext_${st.user_id}_auto`);
+                const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+                const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+                await c.env.DB.prepare(
+                  'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(groupId, st.name, stPwHash, '', 0, emoji, st.user_id).run();
+              }
+            }
           }
         } else {
           // 반/학생 정보 없으면 기본 반 생성
@@ -1180,77 +1190,11 @@ app.get('/api/auth/external-login', async (c) => {
           await c.env.DB.prepare('UPDATE mentors SET name = ? WHERE id = ?').bind(name, mentor.id).run();
           mentor.name = name;
         }
-
-        // ===== 매 로그인 시 그룹 동기화 (최적화: 배치 쿼리, 학생은 별도 API) =====
-        try {
-          const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${remoteUserId}&key=${jyskApiKey}`);
-          const ct = studentsRes.headers.get('content-type') || '';
-          if (ct.includes('json')) {
-            const studentsData: any = await studentsRes.json();
-            if (studentsData.success && studentsData.classes) {
-              const remoteClassIds = new Set(studentsData.classes.map((cls: any) => Number(cls.class_id)));
-
-              // 로컬 기존 그룹 조회 (1 쿼리)
-              const localGroups: any = await c.env.DB.prepare(
-                'SELECT id, name, external_class_id, is_active FROM groups WHERE mentor_id = ?'
-              ).bind(mentor.id).all();
-
-              const localClassMap = new Map<number, any>();
-              for (const g of (localGroups.results || [])) {
-                if (g.external_class_id) localClassMap.set(Number(g.external_class_id), g);
-              }
-
-              // 배치 쿼리 수집
-              const batchStmts: any[] = [];
-
-              // 1) 원격에 없는 로컬 그룹 → 비활성화
-              for (const g of (localGroups.results || [])) {
-                if (g.external_class_id && !remoteClassIds.has(Number(g.external_class_id)) && g.is_active === 1) {
-                  batchStmts.push(
-                    c.env.DB.prepare('UPDATE groups SET is_active = 0, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?').bind(g.id)
-                  );
-                }
-              }
-
-              // 2) 원격에 있는 클래스 → 로컬에 없으면 생성, 있으면 이름/활성상태 업데이트
-              const newGroups: { cls: any, inviteCode: string }[] = [];
-              for (const cls of studentsData.classes) {
-                const extClassId = Number(cls.class_id);
-                const existingGroup = localClassMap.get(extClassId);
-
-                if (!existingGroup) {
-                  const inviteCode = generateInviteCode();
-                  newGroups.push({ cls, inviteCode });
-                  batchStmts.push(
-                    c.env.DB.prepare(
-                      'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
-                    ).bind(mentor.id, cls.class_name || `반${cls.class_id}`, inviteCode, '', extClassId)
-                  );
-                } else {
-                  if (existingGroup.name !== cls.class_name || existingGroup.is_active !== 1) {
-                    batchStmts.push(
-                      c.env.DB.prepare(
-                        'UPDATE groups SET name = ?, is_active = 1, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?'
-                      ).bind(cls.class_name || existingGroup.name, existingGroup.id)
-                    );
-                  }
-                }
-              }
-
-              // 배치 실행 (그룹 동기화만, 학생은 별도)
-              if (batchStmts.length > 0) {
-                await c.env.DB.batch(batchStmts);
-              }
-            }
-          }
-        } catch (syncErr: any) {
-          console.log('Mentor group sync error (non-fatal):', syncErr.message);
-        }
       }
 
-      // 멘토 그룹 목록 조회 (활성 그룹만)
+      // 멘토 그룹 목록 조회
       const groups = await c.env.DB.prepare(
-        'SELECT id, name, invite_code, description, max_students, is_active, external_class_id FROM groups WHERE mentor_id = ? AND is_active = 1'
+        'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
       ).bind(mentor.id).all();
 
       const token = generateToken();
@@ -1493,104 +1437,11 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
     const groups = await c.env.DB.prepare(`
       SELECT g.*, 
         (SELECT COUNT(*) FROM students s WHERE s.group_id = g.id AND s.is_active = 1) as student_count
-      FROM groups g WHERE g.mentor_id = ? AND g.is_active = 1 ORDER BY student_count DESC, g.created_at DESC
+      FROM groups g WHERE g.mentor_id = ? ORDER BY student_count DESC, g.created_at DESC
     `).bind(mentorId).all();
 
     return c.json({ groups: groups.results });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
-// 멘토 학생 동기화 (로그인 후 비동기 호출)
-app.post('/api/mentor/:mentorId/sync-students', async (c) => {
-  try {
-    const mentorId = c.req.param('mentorId');
-    const body: any = await c.req.json().catch(() => ({}));
-    const externalUserId = body.externalUserId;
-    if (!externalUserId) return c.json({ error: 'externalUserId required' }, 400);
-
-    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php';
-    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026';
-
-    const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${externalUserId}&key=${jyskApiKey}`);
-    const ct = studentsRes.headers.get('content-type') || '';
-    if (!ct.includes('json')) return c.json({ error: 'Remote API error' }, 502);
-
-    const studentsData: any = await studentsRes.json();
-    if (!studentsData.success || !studentsData.classes) return c.json({ success: true, synced: 0 });
-
-    // 로컬 그룹 목록 조회
-    const localGroups: any = await c.env.DB.prepare(
-      'SELECT id, external_class_id FROM groups WHERE mentor_id = ? AND is_active = 1'
-    ).bind(mentorId).all();
-
-    const classToGroupMap = new Map<number, number>();
-    for (const g of (localGroups.results || [])) {
-      if (g.external_class_id) classToGroupMap.set(Number(g.external_class_id), g.id);
-    }
-
-    // 모든 학생의 external_user_id를 한 번에 수집
-    const allStudentIds: number[] = [];
-    const studentClassMap = new Map<number, { name: string, groupId: number }>();
-    for (const cls of studentsData.classes) {
-      const groupId = classToGroupMap.get(Number(cls.class_id));
-      if (!groupId) continue;
-      for (const st of cls.students) {
-        allStudentIds.push(st.user_id);
-        studentClassMap.set(st.user_id, { name: st.name, groupId });
-      }
-    }
-
-    if (allStudentIds.length === 0) return c.json({ success: true, synced: 0 });
-
-    // 기존 학생 일괄 조회 (D1 바인드 변수 제한 때문에 청크로)
-    const existingMap = new Map<number, any>();
-    for (let i = 0; i < allStudentIds.length; i += 80) {
-      const chunk = allStudentIds.slice(i, i + 80);
-      const placeholders = chunk.map(() => '?').join(',');
-      const existingStudents: any = await c.env.DB.prepare(
-        `SELECT id, external_user_id, group_id, name FROM students WHERE external_user_id IN (${placeholders})`
-      ).bind(...chunk).all();
-      for (const s of (existingStudents.results || [])) {
-        existingMap.set(Number(s.external_user_id), s);
-      }
-    }
-
-    // 배치 쿼리 수집
-    const batchStmts: any[] = [];
-    const defaultPwHash = await hashPassword('ext_student_auto');
-    const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
-
-    for (const [extUserId, info] of studentClassMap) {
-      const existing = existingMap.get(extUserId);
-      if (!existing) {
-        const emoji = emojis[Math.floor(Math.random() * emojis.length)];
-        batchStmts.push(
-          c.env.DB.prepare(
-            'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(info.groupId, info.name, defaultPwHash, '', 0, emoji, extUserId)
-        );
-      } else if (existing.group_id !== info.groupId || existing.name !== info.name) {
-        batchStmts.push(
-          c.env.DB.prepare(
-            'UPDATE students SET group_id = ?, name = ? WHERE id = ?'
-          ).bind(info.groupId, info.name, existing.id)
-        );
-      }
-    }
-
-    // D1 batch는 최대 ~100개 정도가 안전, 청크로 나눠서 실행
-    let synced = 0;
-    for (let i = 0; i < batchStmts.length; i += 50) {
-      const chunk = batchStmts.slice(i, i + 50);
-      await c.env.DB.batch(chunk);
-      synced += chunk.length;
-    }
-
-    return c.json({ success: true, synced });
-  } catch (e: any) {
-    console.log('Student sync error:', e.message);
     return c.json({ error: e.message }, 500);
   }
 });
@@ -2094,6 +1945,33 @@ app.post('/api/student/:studentId/activity-records', async (c) => {
   }
 });
 
+// 창체 영역별 activity_record 자동 생성 (없으면 생성, 있으면 기존 ID 반환)
+app.post('/api/student/:studentId/activity-records/find-or-create', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const { activityType, title } = await c.req.json();
+    if (!activityType) return c.json({ error: 'activityType은 필수입니다' }, 400);
+
+    // 기존 레코드 찾기
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM activity_records WHERE student_id = ? AND activity_type = ? LIMIT 1'
+    ).bind(studentId, activityType).first();
+
+    if (existing) {
+      return c.json({ success: true, recordId: existing.id, created: false });
+    }
+
+    // 없으면 새로 생성
+    const result = await c.env.DB.prepare(
+      'INSERT INTO activity_records (student_id, activity_type, title, status, progress) VALUES (?, ?, ?, ?, ?)'
+    ).bind(studentId, activityType, title || activityType, 'in-progress', 0).run();
+
+    return c.json({ success: true, recordId: result.meta.last_row_id, created: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 app.put('/api/student/activity-records/:recordId', async (c) => {
   try {
     const recordId = c.req.param('recordId');
@@ -2119,7 +1997,10 @@ app.get('/api/student/:studentId/activity-records', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const records = await c.env.DB.prepare(
-      'SELECT * FROM activity_records WHERE student_id = ? ORDER BY created_at DESC'
+      `SELECT ar.*,
+        (SELECT COUNT(*) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _logCount,
+        (SELECT MAX(al.date) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _lastLogDate
+       FROM activity_records ar WHERE ar.student_id = ? ORDER BY ar.created_at DESC`
     ).bind(studentId).all();
     return c.json({ records: records.results });
   } catch (e: any) {
@@ -2133,12 +2014,48 @@ app.get('/api/student/:studentId/activity-records', async (c) => {
 app.post('/api/student/:studentId/activity-logs', async (c) => {
   try {
     const studentId = c.req.param('studentId');
-    const { activityRecordId, date, content, reflection, duration, xpEarned } = await c.req.json();
+    const { activityRecordId, date, content, reflection, duration, xpEarned, photos, aiResult } = await c.req.json();
     if (!activityRecordId || !content) return c.json({ error: '활동 ID와 내용은 필수입니다' }, 400);
 
+    // 사진이 있으면 class_record_photos에 저장 후 ref:ID로 변환
+    let photoRefs = '[]';
+    if (photos && Array.isArray(photos) && photos.length > 0) {
+      const refs: string[] = [];
+      for (const photoData of photos) {
+        if (typeof photoData !== 'string' || photoData.length < 10) continue;
+        let r2Key = '';
+        let thumbnail = '';
+        const fileSize = Math.round(photoData.length * 0.75);
+        if (c.env.R2) {
+          try {
+            r2Key = `photos/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+            const match = photoData.match(/^data:(image\/\w+);base64,(.+)$/);
+            const rawBase64 = match ? match[2] : photoData.replace(/^data:image\/\w+;base64,/, '');
+            const binary = Uint8Array.from(atob(rawBase64), c => c.charCodeAt(0));
+            await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } });
+            thumbnail = `r2:${r2Key}`;
+          } catch (e) {
+            console.error('R2 upload failed, falling back to DB:', e);
+            r2Key = '';
+            thumbnail = photoData.slice(0, 200);
+          }
+        } else {
+          thumbnail = photoData.slice(0, 200);
+        }
+        const dataToStore = r2Key ? `r2:${r2Key}` : photoData;
+        const pr = await c.env.DB.prepare(
+          'INSERT INTO class_record_photos (student_id, class_record_id, photo_data, thumbnail, file_size, tag) VALUES (?, NULL, ?, ?, ?, ?)'
+        ).bind(studentId, dataToStore, thumbnail, fileSize, 'activity').run();
+        refs.push(`ref:${pr.meta.last_row_id}`);
+      }
+      photoRefs = JSON.stringify(refs);
+    }
+
+    const aiResultStr = aiResult ? (typeof aiResult === 'string' ? aiResult : JSON.stringify(aiResult)) : '';
+
     const result = await c.env.DB.prepare(
-      'INSERT INTO activity_logs (activity_record_id, student_id, date, content, reflection, duration, xp_earned) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(activityRecordId, studentId, date || getKSTDate(), content, reflection || '', duration || '', xpEarned || 20).run();
+      'INSERT INTO activity_logs (activity_record_id, student_id, date, content, reflection, duration, xp_earned, photos, ai_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(activityRecordId, studentId, date || getKSTDate(), content, reflection || '', duration || '', xpEarned || 20, photoRefs, aiResultStr).run();
 
     if (xpEarned) {
       await c.env.DB.prepare('UPDATE students SET xp = xp + ? WHERE id = ?').bind(xpEarned || 20, studentId).run();
@@ -3375,23 +3292,11 @@ app.get('/api/migrate', async (c) => {
       `ALTER TABLE mentors ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
       `ALTER TABLE groups ADD COLUMN external_class_id INTEGER DEFAULT NULL`,
       `ALTER TABLE students ADD COLUMN external_user_id INTEGER DEFAULT NULL`,
+      // ===== 창체 활동 로그에 사진/AI분석 컬럼 추가 =====
+      `ALTER TABLE activity_logs ADD COLUMN photos TEXT DEFAULT '[]'`,
+      `ALTER TABLE activity_logs ADD COLUMN ai_result TEXT DEFAULT ''`,
       // 시간표 저장 테이블
       `CREATE TABLE IF NOT EXISTS student_timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_data TEXT DEFAULT '[]', teachers_data TEXT DEFAULT '{}', period_times TEXT DEFAULT '[]', subject_colors TEXT DEFAULT '{}', academy_data TEXT DEFAULT '[]', updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
-      // ===== 시간표 사진 → 과목 자동 등록 (학기/과목/시간표슬롯/시험과목) =====
-      `CREATE TABLE IF NOT EXISTS semesters (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, year INTEGER NOT NULL, term INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_semesters_unique ON semesters(student_id, year, term)`,
-      `CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, name TEXT NOT NULL, teacher TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE)`,
-      `CREATE INDEX IF NOT EXISTS idx_subjects_semester ON subjects(semester_id)`,
-      `CREATE TABLE IF NOT EXISTS timetable_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, day_of_week INTEGER NOT NULL, period INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
-      `CREATE INDEX IF NOT EXISTS idx_timetable_slots_semester ON timetable_slots(semester_id)`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_slots_unique ON timetable_slots(semester_id, day_of_week, period)`,
-      `CREATE TABLE IF NOT EXISTS exam_subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, exam_date TEXT NOT NULL, period INTEGER, scope TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
-      `CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam ON exam_subjects(exam_id)`,
-      // ===== 릴레이단어장 =====
-      `CREATE TABLE IF NOT EXISTS relay_wordbooks (id INTEGER PRIMARY KEY AUTOINCREMENT, class_id INTEGER NOT NULL, date TEXT NOT NULL, words TEXT NOT NULL DEFAULT '[]', is_ready INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_wordbooks_unique ON relay_wordbooks(class_id, date)`,
-      `CREATE TABLE IF NOT EXISTS relay_word_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, wordbook_id INTEGER NOT NULL, student_user_id INTEGER NOT NULL, student_name TEXT NOT NULL DEFAULT '', entries TEXT NOT NULL DEFAULT '[]', is_finished INTEGER NOT NULL DEFAULT 0, finished_at DATETIME DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (wordbook_id) REFERENCES relay_wordbooks(id) ON DELETE CASCADE)`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_entries_unique ON relay_word_entries(wordbook_id, student_user_id)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
@@ -3431,195 +3336,6 @@ app.get('/api/migrate', async (c) => {
   }
 });
 
-
-// ==================== 시간표 사진 → 과목 자동 등록 API ====================
-
-// GET /api/student/:id/semesters — 전체 학기 목록
-app.get('/api/student/:id/semesters', async (c) => {
-  const studentId = Number(c.req.param('id'))
-  try {
-    const { results } = await c.env.DB.prepare(
-      'SELECT id, year, term, created_at FROM semesters WHERE student_id = ? ORDER BY year DESC, term DESC'
-    ).bind(studentId).all()
-    return c.json({ success: true, data: results || [] })
-  } catch (e: any) {
-    return c.json({ success: false, error: e.message }, 500)
-  }
-})
-
-// GET /api/student/:id/subjects?year=2026&term=1 — 해당 학기 과목 목록
-app.get('/api/student/:id/subjects', async (c) => {
-  const studentId = Number(c.req.param('id'))
-  const year = Number(c.req.query('year'))
-  const term = Number(c.req.query('term'))
-  try {
-    const semester: any = await c.env.DB.prepare(
-      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
-    ).bind(studentId, year, term).first()
-    if (!semester) return c.json({ success: true, data: { subjects: [], slots: [] } })
-
-    const { results: subjects } = await c.env.DB.prepare(
-      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
-    ).bind(semester.id).all()
-
-    const { results: slots } = await c.env.DB.prepare(
-      'SELECT id, subject_id, day_of_week, period FROM timetable_slots WHERE semester_id = ? ORDER BY day_of_week, period'
-    ).bind(semester.id).all()
-
-    return c.json({ success: true, data: { semesterId: semester.id, subjects: subjects || [], slots: slots || [] } })
-  } catch (e: any) {
-    return c.json({ success: false, error: e.message }, 500)
-  }
-})
-
-// POST /api/student/:id/timetable/photo — 시간표 사진 분석 (Gemini Vision)
-app.post('/api/student/:id/timetable/photo', async (c) => {
-  const studentId = Number(c.req.param('id'))
-  try {
-    const body = await c.req.json()
-    const { imageBase64, mimeType = 'image/jpeg', year, term } = body
-    if (!imageBase64) return c.json({ success: false, error: '이미지가 없습니다' }, 400)
-
-    const currentYear = year || new Date(Date.now() + 9 * 3600000).getFullYear()
-    const currentTerm = term || (new Date(Date.now() + 9 * 3600000).getMonth() < 7 ? 1 : 2)
-
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
-
-    const prompt = `당신은 한국 고등학교 시간표 분석 전문가입니다.
-
-이 시간표 사진을 분석하여 아래 JSON 형식으로 정확히 추출해주세요.
-
-처리 규칙:
-1. 과목명, 요일(1=월~5=금), 교시(1~7), 담당 교사명을 추출
-2. 고교학점제 특성상 학생마다 과목이 다름 — 보이는 그대로 추출
-3. 교사명이 없는 칸은 teacher: null
-4. 빈 칸(자습/공강)은 포함하지 말 것
-5. 과목명은 정확히 (예: "생명과학Ⅱ", "미적분", "화학Ⅰ")
-
-반드시 아래 JSON만 출력:
-{
-  "slots": [
-    { "subject": "과목명", "teacher": "교사명 또는 null", "day_of_week": 1, "period": 1 }
-  ]
-}`
-
-    // Gemini 3.1 Flash Vision으로 시간표 분석
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: cleanBase64 } }
-          ] }],
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
-        })
-      }
-    )
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text()
-      console.error('Gemini Vision error:', errText)
-      return c.json({ success: false, error: 'AI 분석 실패: ' + geminiRes.status }, 500)
-    }
-    const geminiData: any = await geminiRes.json()
-    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-
-    // JSON 파싱 (```json 블록 제거)
-    let parsed: any
-    try {
-      const jsonStr = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
-      parsed = JSON.parse(jsonStr)
-    } catch {
-      return c.json({ success: false, error: 'AI 응답 파싱 실패', raw: aiText }, 500)
-    }
-
-    const slots = parsed.slots || []
-    if (!slots.length) return c.json({ success: false, error: '시간표에서 과목을 찾지 못했습니다' }, 400)
-
-    // 분석 결과만 반환 (저장은 confirm API에서)
-    return c.json({
-      success: true,
-      data: {
-        year: currentYear,
-        term: currentTerm,
-        slots,
-        subjectList: [...new Set(slots.map((s: any) => s.subject))]
-      }
-    })
-  } catch (e: any) {
-    console.error('Timetable photo error:', e)
-    return c.json({ success: false, error: e.message }, 500)
-  }
-})
-
-// POST /api/student/:id/timetable/confirm — 분석 결과 확인 후 DB 저장
-app.post('/api/student/:id/timetable/confirm', async (c) => {
-  const studentId = Number(c.req.param('id'))
-  try {
-    const body = await c.req.json()
-    const { year, term, slots } = body
-    if (!year || !term || !slots?.length) return c.json({ success: false, error: '필수 데이터 누락' }, 400)
-
-    const DB = c.env.DB
-
-    // 1) semester upsert (동일 학기 있으면 기존 데이터 삭제 후 재등록)
-    let semester: any = await DB.prepare(
-      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
-    ).bind(studentId, year, term).first()
-
-    if (semester) {
-      await DB.prepare('DELETE FROM timetable_slots WHERE semester_id = ?').bind(semester.id).run()
-      await DB.prepare('DELETE FROM subjects WHERE semester_id = ?').bind(semester.id).run()
-    } else {
-      const ins = await DB.prepare(
-        'INSERT INTO semesters (student_id, year, term) VALUES (?, ?, ?)'
-      ).bind(studentId, year, term).run()
-      semester = { id: ins.meta.last_row_id }
-    }
-
-    const semesterId = semester.id
-
-    // 2) 고유 과목 추출 및 저장
-    const uniqueSubjects = new Map<string, string | null>()
-    for (const s of slots) {
-      if (!uniqueSubjects.has(s.subject)) {
-        uniqueSubjects.set(s.subject, s.teacher || null)
-      }
-    }
-
-    const subjectIdMap = new Map<string, number>()
-    for (const [name, teacher] of uniqueSubjects) {
-      const res = await DB.prepare(
-        'INSERT INTO subjects (semester_id, name, teacher) VALUES (?, ?, ?)'
-      ).bind(semesterId, name, teacher).run()
-      subjectIdMap.set(name, res.meta.last_row_id as number)
-    }
-
-    // 3) 시간표 슬롯 저장
-    for (const s of slots) {
-      const subjectId = subjectIdMap.get(s.subject)
-      if (!subjectId) continue
-      await DB.prepare(
-        'INSERT OR REPLACE INTO timetable_slots (semester_id, subject_id, day_of_week, period) VALUES (?, ?, ?, ?)'
-      ).bind(semesterId, subjectId, s.day_of_week, s.period).run()
-    }
-
-    // 4) 저장된 과목 목록 반환
-    const { results: savedSubjects } = await DB.prepare(
-      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
-    ).bind(semesterId).all()
-
-    return c.json({
-      success: true,
-      data: { semesterId, year, term, subjects: savedSubjects || [], slotCount: slots.length }
-    })
-  } catch (e: any) {
-    console.error('Timetable confirm error:', e)
-    return c.json({ success: false, error: e.message }, 500)
-  }
-})
 
 // ==================== 크로켓 포인트 API ====================
 
@@ -4116,6 +3832,203 @@ app.delete('/api/mentor/feedback/:feedbackId', async (c) => {
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
+
+// ==================== 창체 활동 AI 분석 (진로/동아리/자율/봉사/독서) ====================
+
+const ACTIVITY_PROMPTS: Record<string, string> = {
+  career: `당신은 고교학점제 전문가이자 진로 멘토입니다.
+학생이 작성한 "진로활동 성찰일지" 사진을 OCR 인식하여 구조화합니다.
+
+[양식 구조]
+- 헤더: 이름, 학년·반, 날짜, 활동명
+- 활동 유형: 진로검사/진로상담/진로특강/진로체험/진로수업/자율탐구/학습 특색활동 중 체크된 항목
+- 활동 내용 요약: 무엇을 했나요?
+- 알게 된 점: 새롭게 알게 된 개념이나 정보
+- 느낀 점 / 성찰: 이 활동이 나에게 어떤 의미였나요?
+- 변화된 점: 생각·태도의 변화
+- 후속 계획: 앞으로 무엇을 할 건가요?
+- 생긴 질문: 더 알고 싶어진 것 (1, 2)
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+- 내용이 없는 섹션은 빈값 유지 (임의 생성 금지)
+
+[추가 분석: 세특 관찰 코멘트]
+- 진로 탐색의 자기주도성, 진로 성숙도, 활동과 진로 연결 수준을 분석
+- 학교생활기록부 진로활동 세특에 직접 참고할 수 있는 관찰 코멘트 (200~300자)
+- 객관적이고 전문적인 톤, 구체적인 활동 내용을 근거로 작성
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "student_name": "인식된 학생 이름",
+  "grade_class": "인식된 학년·반",
+  "date": "인식된 날짜",
+  "activity_name": "활동명",
+  "activity_subtype": "체크된 활동 유형",
+  "summary": "활동 내용 요약",
+  "learned": "알게 된 점",
+  "reflection": "느낀 점 / 성찰",
+  "changed": "변화된 점",
+  "next_plan": "후속 계획",
+  "questions": ["생긴 질문 1", "생긴 질문 2"],
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`,
+
+  club: `당신은 고교학점제 전문가이자 동아리 활동 멘토입니다.
+학생이 작성한 "동아리 활동일지" 사진을 OCR 인식하여 구조화합니다.
+
+[양식 구조]
+- 헤더: 동아리명, 회차, 활동일자, 활동시간, 활동장소, 지도교사, 대표학생, 활동주제, 참석인원/참석자
+- 활동 내용: 활동 과정, 각 구성원의 역할, 사용한 자료 등을 구체적으로 기록
+- 활동 결과: 활동을 통해 얻은 결과물, 발견한 사실, 새롭게 알게 된 점 등
+- 활동 소감 및 성찰: 느낀 점, 배운 점, 개선할 점, 진로와의 연계성 등
+- 궁금한 점: 더 탐구하고 싶은 것 — 세특 소재로 연결됩니다 (1, 2)
+- 차기 활동 계획: 다음 활동 주제, 준비사항 등
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+- 내용이 없는 섹션은 빈값 유지 (임의 생성 금지)
+
+[추가 분석: 세특 관찰 코멘트]
+- 동아리 활동에서 보이는 자기주도성, 협업 역량, 탐구 태도를 분석
+- 학교생활기록부 동아리활동 세특에 직접 참고할 수 있는 관찰 코멘트 (200~300자)
+- 객관적이고 전문적인 톤, 구체적인 활동 내용을 근거로 작성
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "club_name": "동아리명",
+  "session_number": "회차",
+  "activity_date": "활동일자",
+  "activity_time": "활동시간",
+  "activity_place": "활동장소",
+  "advisor": "지도교사",
+  "representative": "대표학생",
+  "topic": "활동주제",
+  "attendance": "참석인원/참석자",
+  "content": "활동 내용",
+  "result": "활동 결과",
+  "reflection": "활동 소감 및 성찰",
+  "questions": ["궁금한 점 1", "궁금한 점 2"],
+  "next_plan": "차기 활동 계획",
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`,
+
+  general: `당신은 고교학점제 전문가이자 학생 활동 멘토입니다.
+학생이 촬영한 활동 사진을 분석하여 구조화합니다.
+
+[작업]
+1. 사진에서 보이는 활동 내용을 상세히 분석 (손글씨가 있으면 OCR 인식)
+2. 활동의 핵심 내용과 학생의 역할을 파악
+3. 세특 기록에 활용할 수 있는 관찰 코멘트 생성
+
+[OCR 규칙]
+- 학생의 원문 내용을 최대한 살리되, 읽기 쉽게 문장을 정돈
+- 내용을 임의로 추가하거나 변경하지 말 것
+- 인식이 어려운 부분은 [판독 불가] 표시
+
+반드시 아래 JSON 형식으로만 응답:
+{
+  "student_name": "인식된 학생 이름 (없으면 빈값)",
+  "date": "인식된 날짜 (없으면 빈값)",
+  "activity_name": "활동명 (없으면 빈값)",
+  "summary": "활동 내용 요약",
+  "reflection": "활동 소감/성찰 (인식된 경우)",
+  "questions": ["활동에서 생긴 질문"],
+  "next_plan": "후속 계획 (인식된 경우)",
+  "teacher_insight": "세특 관찰 코멘트 (200~300자)",
+  "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
+}`
+}
+
+app.post('/api/ai/activity-analyze', async (c) => {
+  try {
+    const geminiKey = c.env.GEMINI_API_KEY
+    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
+
+    const { photos, activityType, comment } = await c.req.json<{
+      photos: string[],
+      activityType: string,
+      comment?: string
+    }>()
+
+    if (!photos || photos.length === 0) return c.json({ error: '사진이 필요합니다.' }, 400)
+
+    const promptTemplate = ACTIVITY_PROMPTS[activityType] || ACTIVITY_PROMPTS.general
+    const promptText = `${promptTemplate}\n\n---\n활동 유형: ${activityType}\n${comment ? `학생 소감: ${comment}\n` : ''}위 JSON 형식으로만 응답하세요.`
+
+    const parts: any[] = [{ text: promptText }]
+    const imageDataList: { mime_type: string, data: string }[] = []
+
+    for (const photo of photos) {
+      const match = photo.match(/^data:(image\/\w+);base64,(.+)$/)
+      if (match) {
+        imageDataList.push({ mime_type: match[1], data: match[2] })
+        parts.push({ inline_data: { mime_type: match[1], data: match[2] } })
+      }
+    }
+
+    let rawText = '{}'
+    let aiSource = 'gemini'
+
+    // Step 1: Gemini
+    try {
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
+          })
+        }
+      )
+      if (geminiRes.ok) {
+        const data: any = await geminiRes.json()
+        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+      } else {
+        throw new Error(`Gemini ${geminiRes.status}`)
+      }
+    } catch (geminiErr) {
+      // Step 2: OpenAI 폴백
+      console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
+      aiSource = 'openai'
+      const openaiKey = c.env.OPENAI_API_KEY
+      if (!openaiKey) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
+
+      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+      for (const img of imageDataList) {
+        openaiContent.push({ type: 'image_url', image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' } })
+      }
+
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: openaiContent }], temperature: 0.2, response_format: { type: 'json_object' } })
+      })
+      if (!openaiRes.ok) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
+      const openaiData: any = await openaiRes.json()
+      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+    }
+
+    let result: any
+    try { result = JSON.parse(rawText) } catch {
+      return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
+    }
+
+    return c.json({ success: true, activityType, aiSource, ...result })
+  } catch (e: any) {
+    console.log('Activity AI error:', e)
+    return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
+  }
+})
+
 
 // ==================== 아하 리포트 v2 AI 분석 (5섹션: SA/PA/DA/POA/PPA) ====================
 app.post('/api/aha-report/analyze-v2', async (c) => {
@@ -4765,189 +4678,6 @@ app.get('/api/aha-report/:reportId', async (c) => {
   }
 })
 
-// ==================== 릴레이단어장 API ====================
-
-// 릴레이 자격 확인: 사용자(멘토/학생)의 영어 클래스 중 멤버 16명 이상인 클래스 목록
-app.get('/api/relay/classes', async (c) => {
-  try {
-    const userId = c.req.query('user_id')
-    if (!userId) return c.json({ error: 'user_id 필요' }, 400)
-
-    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php'
-    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026'
-
-    const res = await fetch(`${jyskApiUrl}?action=get_relay_classes&user_id=${userId}&key=${jyskApiKey}`)
-    const data: any = await res.json()
-    if (!data.success) return c.json({ success: false, classes: [] })
-    return c.json({ success: true, classes: data.classes || [] })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 클래스의 학생 목록 (원격 DB)
-app.get('/api/relay/class-students', async (c) => {
-  try {
-    const classId = c.req.query('class_id')
-    if (!classId) return c.json({ error: 'class_id 필요' }, 400)
-
-    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php'
-    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026'
-
-    const res = await fetch(`${jyskApiUrl}?action=get_relay_class_students&class_id=${classId}&key=${jyskApiKey}`)
-    const data: any = await res.json()
-    if (!data.success) return c.json({ success: false, students: [] })
-    return c.json({ success: true, students: data.students || [] })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 멘토: 오늘의 단어장 조회 (클래스별)
-app.get('/api/relay/wordbook', async (c) => {
-  try {
-    const classId = c.req.query('class_id')
-    const date = c.req.query('date') || getKSTDate()
-    if (!classId) return c.json({ error: 'class_id 필요' }, 400)
-
-    const wb: any = await c.env.DB.prepare(
-      'SELECT * FROM relay_wordbooks WHERE class_id = ? AND date = ?'
-    ).bind(Number(classId), date).first()
-
-    if (!wb) return c.json({ success: true, wordbook: null })
-
-    // 학생 제출 현황
-    const entries: any = await c.env.DB.prepare(
-      'SELECT student_user_id, student_name, is_finished, finished_at, entries FROM relay_word_entries WHERE wordbook_id = ? ORDER BY finished_at ASC'
-    ).bind(wb.id).all()
-
-    return c.json({ success: true, wordbook: wb, entries: entries.results || [] })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 멘토: 단어장 저장 (생성 또는 업데이트)
-app.post('/api/relay/wordbook', async (c) => {
-  try {
-    const { class_id, date, words, is_ready, created_by } = await c.req.json()
-    if (!class_id || !words || !created_by) return c.json({ error: '필수 필드 누락' }, 400)
-
-    const dateStr = date || getKSTDate()
-    const wordsJson = JSON.stringify(words)
-
-    // UPSERT: 이미 있으면 업데이트, 없으면 생성
-    const existing: any = await c.env.DB.prepare(
-      'SELECT id FROM relay_wordbooks WHERE class_id = ? AND date = ?'
-    ).bind(class_id, dateStr).first()
-
-    if (existing) {
-      await c.env.DB.prepare(
-        'UPDATE relay_wordbooks SET words = ?, is_ready = ?, updated_at = ? WHERE id = ?'
-      ).bind(wordsJson, is_ready ? 1 : 0, getKSTString(), existing.id).run()
-      return c.json({ success: true, id: existing.id, updated: true })
-    } else {
-      const result = await c.env.DB.prepare(
-        'INSERT INTO relay_wordbooks (class_id, date, words, is_ready, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).bind(class_id, dateStr, wordsJson, is_ready ? 1 : 0, created_by, getKSTString(), getKSTString()).run()
-      return c.json({ success: true, id: result.meta.last_row_id, created: true })
-    }
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 학생: 오늘의 단어장 + 본인 엔트리 조회
-app.get('/api/relay/student-wordbook', async (c) => {
-  try {
-    const classId = c.req.query('class_id')
-    const studentUserId = c.req.query('student_user_id')
-    const date = c.req.query('date') || getKSTDate()
-    if (!classId || !studentUserId) return c.json({ error: 'class_id, student_user_id 필요' }, 400)
-
-    const wb: any = await c.env.DB.prepare(
-      'SELECT * FROM relay_wordbooks WHERE class_id = ? AND date = ? AND is_ready = 1'
-    ).bind(Number(classId), date).first()
-
-    if (!wb) return c.json({ success: true, wordbook: null, myEntry: null, finishedStudents: [] })
-
-    // 완료된 학생 목록 (완료순)
-    const finished: any = await c.env.DB.prepare(
-      'SELECT student_user_id, student_name, finished_at FROM relay_word_entries WHERE wordbook_id = ? AND is_finished = 1 ORDER BY finished_at ASC'
-    ).bind(wb.id).all()
-
-    // 본인 엔트리
-    const myEntry: any = await c.env.DB.prepare(
-      'SELECT * FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
-    ).bind(wb.id, Number(studentUserId)).first()
-
-    return c.json({
-      success: true,
-      wordbook: { id: wb.id, class_id: wb.class_id, date: wb.date, words: wb.words, is_ready: wb.is_ready },
-      myEntry: myEntry || null,
-      finishedStudents: finished.results || []
-    })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 학생: 단어 뜻 저장 (임시 저장 또는 완료 제출)
-app.post('/api/relay/student-entry', async (c) => {
-  try {
-    const { wordbook_id, student_user_id, student_name, entries, is_finished } = await c.req.json()
-    if (!wordbook_id || !student_user_id) return c.json({ error: '필수 필드 누락' }, 400)
-
-    const entriesJson = JSON.stringify(entries || [])
-    const now = getKSTString()
-
-    const existing: any = await c.env.DB.prepare(
-      'SELECT id FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
-    ).bind(wordbook_id, student_user_id).first()
-
-    if (existing) {
-      if (is_finished) {
-        await c.env.DB.prepare(
-          'UPDATE relay_word_entries SET entries = ?, is_finished = 1, finished_at = ?, updated_at = ? WHERE id = ?'
-        ).bind(entriesJson, now, now, existing.id).run()
-      } else {
-        await c.env.DB.prepare(
-          'UPDATE relay_word_entries SET entries = ?, updated_at = ? WHERE id = ?'
-        ).bind(entriesJson, now, existing.id).run()
-      }
-      return c.json({ success: true, id: existing.id, updated: true })
-    } else {
-      const result = await c.env.DB.prepare(
-        'INSERT INTO relay_word_entries (wordbook_id, student_user_id, student_name, entries, is_finished, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(wordbook_id, student_user_id, student_name || '', entriesJson, is_finished ? 1 : 0, is_finished ? now : null, now, now).run()
-      return c.json({ success: true, id: result.meta.last_row_id, created: true })
-    }
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
-// 멘토: 특정 학생의 제출 상세 조회
-app.get('/api/relay/student-entry-detail', async (c) => {
-  try {
-    const wordbookId = c.req.query('wordbook_id')
-    const studentUserId = c.req.query('student_user_id')
-    if (!wordbookId || !studentUserId) return c.json({ error: '필수 파라미터 누락' }, 400)
-
-    const entry: any = await c.env.DB.prepare(
-      'SELECT * FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
-    ).bind(Number(wordbookId), Number(studentUserId)).first()
-
-    const wb: any = await c.env.DB.prepare(
-      'SELECT words FROM relay_wordbooks WHERE id = ?'
-    ).bind(Number(wordbookId)).first()
-
-    return c.json({ success: true, entry: entry || null, words: wb?.words || '[]' })
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500)
-  }
-})
-
 // ==================== 헬스체크 ====================
 app.get('/api/health', (c) => {
   return c.json({
@@ -4989,6 +4719,13 @@ app.get('/', (c) => {
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
   <link href="/static/app.css" rel="stylesheet">
+  <!-- Archive Module -->
+  <link rel="stylesheet" href="/styles/skill-premium-card.css">
+  <link rel="stylesheet" href="/modules/records/records.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://unpkg.com/lucide@latest"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
   <style>
     @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.95)} }
     #initial-loader, #initial-loader-tablet, #initial-loader-desktop {
@@ -5042,6 +4779,7 @@ app.get('/', (c) => {
               <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
             </div>
           </div>
+          <div id="archive-container-phone" class="archive-module" style="display:none;flex:1;overflow-y:auto;height:100%"></div>
         </div>
       </div>
       <div id="tablet-container" style="display:none">
@@ -5063,6 +4801,7 @@ app.get('/', (c) => {
               <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
             </div>
           </div>
+          <div id="archive-container-tablet" class="archive-module" style="display:none;flex:1;overflow-y:auto"></div>
           <div id="mobile-bottom-tab"></div>
         </div>
       </div>
@@ -5078,6 +4817,12 @@ app.get('/', (c) => {
   </div>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/static/app.js"></script>
+  <script type="module">
+    import ArchiveModule from '/modules/records/records.js';
+    window.ArchiveModule = ArchiveModule;
+    window._archiveModuleReady = true;
+    console.log('[ArchiveModule] Loaded and ready');
+  </script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
