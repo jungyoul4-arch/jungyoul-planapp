@@ -188,7 +188,7 @@ function _registerAllHandlers() {
 }
 
 // ── Public API ──
-const RecordsModule = {
+const ArchiveModule = {
   /**
    * 초기화
    * @param {Object} config
@@ -219,13 +219,13 @@ const RecordsModule = {
       : container;
 
     if (!el) {
-      console.error('[RecordsModule] Container not found:', container);
+      console.error('[ArchiveModule] Container not found:', container);
       return;
     }
 
-    // .records-module 클래스 보장 (CSS 스코핑)
-    if (!el.classList.contains('records-module')) {
-      el.classList.add('records-module');
+    // .archive-module 클래스 보장 (CSS 스코핑)
+    if (!el.classList.contains('archive-module')) {
+      el.classList.add('archive-module');
     }
 
     setContainer(el);
@@ -275,14 +275,14 @@ const RecordsModule = {
         events.emit(EVENTS.DATA_LOADED);
         render();
       }).catch(err => {
-        console.error('[RecordsModule] loadAll failed:', err);
+        console.error('[ArchiveModule] loadAll failed:', err);
         render();
       });
     } else {
       render();
     }
 
-    console.log('[RecordsModule] Initialized', standalone ? '(standalone)' : '(embedded)');
+    console.log('[ArchiveModule] Initialized', standalone ? '(standalone)' : '(embedded)');
   },
 
   /** 해제 및 정리 */
@@ -293,7 +293,7 @@ const RecordsModule = {
     if (window._RM === RM) {
       delete window._RM;
     }
-    console.log('[RecordsModule] Destroyed');
+    console.log('[ArchiveModule] Destroyed');
   },
 
   /** 특정 화면으로 이동 */
@@ -326,6 +326,6 @@ const RecordsModule = {
 };
 
 // 글로벌 노출
-window.RecordsModule = RecordsModule;
+window.ArchiveModule = ArchiveModule;
 
-export default RecordsModule;
+export default ArchiveModule;

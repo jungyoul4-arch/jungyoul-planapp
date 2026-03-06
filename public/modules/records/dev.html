@@ -6,6 +6,7 @@
   <title>기록 모듈 — Dev</title>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../../styles/skill-premium-card.css">
   <link rel="stylesheet" href="records.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -117,7 +118,7 @@
   </script>
 
   <script type="module">
-    import RecordsModule from './records.js';
+    import ArchiveModule from './records.js';
 
     // 테스트용 시간표 데이터
     const testTimetable = {
@@ -150,7 +151,7 @@
     };
 
     // 학생 ID 1(곽정율)로 초기화
-    RecordsModule.init({
+    ArchiveModule.init({
       container: '#records-root',
       studentId: 1,
       studentName: '곽정율',

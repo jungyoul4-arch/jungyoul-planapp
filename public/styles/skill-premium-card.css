@@ -1,0 +1,246 @@
+/* =============================================
+   Premium Card Skill — Design Tokens & Components
+   Extracted from Creative Activities Bento Grid
+   Shared across Records dashboard + Activity screens
+   ============================================= */
+
+/* ==================== Color Tokens ==================== */
+:root {
+  /* Accent Colors */
+  --skill-accent-1: #6366f1; /* Indigo */
+  --skill-accent-2: #10b981; /* Emerald */
+  --skill-accent-3: #f59e0b; /* Amber */
+  --skill-accent-4: #8b5cf6; /* Purple */
+  --skill-accent-5: #ec4899; /* Pink */
+  --skill-accent-6: #06b6d4; /* Cyan */
+
+  /* Card Surface */
+  --skill-card-bg: rgba(255, 255, 255, 0.04);
+  --skill-card-bg-hover: rgba(255, 255, 255, 0.06);
+  --skill-card-border: rgba(255, 255, 255, 0.08);
+  --skill-card-border-hover: rgba(255, 255, 255, 0.14);
+  --skill-card-blur: 20px;
+
+  /* Spacing */
+  --skill-grid-gap: 14px;
+  --skill-card-padding: 18px;
+  --skill-card-radius: 16px;
+
+  /* Animation */
+  --skill-transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+  --skill-hover-y: -4px;
+  --skill-hover-scale: 1.01;
+  --skill-anim-duration: 0.55s;
+  --skill-stagger-interval: 0.06s;
+}
+
+/* ==================== Card Grid ==================== */
+.archive-module .skill-card-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--skill-grid-gap);
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+/* ==================== Card Base (Glassmorphism) ==================== */
+.archive-module .skill-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: var(--skill-card-padding);
+  border-radius: var(--skill-card-radius);
+  background: var(--skill-card-bg);
+  border: 1px solid var(--skill-card-border);
+  cursor: pointer;
+  overflow: hidden;
+  transition: var(--skill-transition);
+  -webkit-backdrop-filter: blur(var(--skill-card-blur));
+  backdrop-filter: blur(var(--skill-card-blur));
+  /* CSS fallback animation (overridden by GSAP when available) */
+  animation: skill-cardIn var(--skill-anim-duration) ease both;
+}
+
+/* ==================== Card Hover ==================== */
+.archive-module .skill-card:hover {
+  transform: translateY(var(--skill-hover-y)) scale(var(--skill-hover-scale));
+  background: var(--skill-card-bg-hover);
+  border-color: var(--skill-card-border-hover);
+  box-shadow: 0 8px 36px rgba(var(--glow-rgb, 99,102,241), 0.22);
+}
+.archive-module .skill-card:active {
+  transform: scale(0.98);
+}
+
+/* ==================== Glow Effect (radial gradient follows center) ==================== */
+.archive-module .skill-card-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: var(--skill-card-radius);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  background: radial-gradient(
+    160px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    var(--glow-color, #6366f1),
+    transparent 70%
+  );
+  z-index: 0;
+}
+.archive-module .skill-card:hover .skill-card-glow {
+  opacity: 0.15;
+}
+
+/* ==================== Icon Wrapper ==================== */
+.archive-module .skill-icon-wrap {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--icon-bg, rgba(99, 102, 241, 0.10));
+  color: var(--glow-color, #6366f1);
+}
+.archive-module .skill-icon-wrap svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ==================== Card Info ==================== */
+.archive-module .skill-card-info {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+}
+.archive-module .skill-card-info h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary, #F0F6FC);
+  margin: 0 0 2px;
+}
+.archive-module .skill-card-info p {
+  font-size: 12px;
+  color: var(--text-muted, #484F58);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==================== Badge (XP pill) ==================== */
+.archive-module .skill-badge {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: rgba(255, 215, 0, 0.08);
+  color: #fbbf24;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 215, 0, 0.12);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ==================== Count Badge ==================== */
+.archive-module .skill-count {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--glow-color, var(--skill-accent-1));
+  flex-shrink: 0;
+}
+
+/* ==================== Entry Animation (CSS fallback) ==================== */
+@keyframes skill-cardIn {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Stagger delays via inline style: animation-delay: calc(N * 0.06s) */
+
+/* ==================== Tablet: 3-column vertical cards ==================== */
+#archive-container-tablet .skill-card-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, 1fr) !important;
+  gap: var(--skill-grid-gap) !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 16px !important;
+}
+#archive-container-tablet .skill-card {
+  flex-direction: column !important;
+  text-align: center !important;
+  padding: 24px 16px !important;
+  gap: 0 !important;
+}
+#archive-container-tablet .skill-icon-wrap {
+  width: 56px !important;
+  height: 56px !important;
+  margin: 0 auto 10px !important;
+}
+#archive-container-tablet .skill-icon-wrap svg {
+  width: 26px !important;
+  height: 26px !important;
+}
+#archive-container-tablet .skill-card-info {
+  margin-bottom: 8px !important;
+}
+#archive-container-tablet .skill-card-info h3 {
+  font-size: 15px !important;
+}
+#archive-container-tablet .skill-card-info p {
+  white-space: normal !important;
+}
+#archive-container-tablet .skill-badge {
+  margin: 0 auto !important;
+}
+
+/* ==================== Wide Card (col-span-2) — Tablet Only ==================== */
+#archive-container-tablet .skill-card-wide {
+  grid-column: span 2 !important;
+  flex-direction: row !important;
+  text-align: left !important;
+  align-items: center !important;
+  gap: 16px !important;
+  padding: 20px 24px !important;
+}
+#archive-container-tablet .skill-card-wide .skill-icon-wrap {
+  margin: 0 !important;
+  width: 52px !important;
+  height: 52px !important;
+}
+#archive-container-tablet .skill-card-wide .skill-card-info {
+  margin-bottom: 0 !important;
+  flex: 1 !important;
+  min-width: 0 !important;
+}
+#archive-container-tablet .skill-card-wide .skill-card-info h3 {
+  font-size: 16px !important;
+}
+#archive-container-tablet .skill-card-wide .skill-badge {
+  margin: 0 !important;
+}
+
+/* ==================== Phone: horizontal list (default, no overrides needed) ==================== */
+
+/* ==================== GSAP Animation Parameters (reference) ==================== */
+/*
+  gsap.from('.skill-card', {
+    duration: 0.55,
+    y: 24,
+    opacity: 0,
+    stagger: 0.06,
+    ease: 'power2.out',
+    clearProps: 'all'
+  });
+*/

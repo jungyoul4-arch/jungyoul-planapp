@@ -5255,7 +5255,8 @@ app.get('/', (c) => {
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
   <link href="/static/app.css" rel="stylesheet">
-  <!-- Records Module -->
+  <!-- Archive Module -->
+  <link rel="stylesheet" href="/styles/skill-premium-card.css">
   <link rel="stylesheet" href="/modules/records/records.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -5314,7 +5315,7 @@ app.get('/', (c) => {
               <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
             </div>
           </div>
-          <div id="records-container-phone" class="records-module" style="display:none;flex:1;overflow-y:auto;height:100%"></div>
+          <div id="archive-container-phone" class="archive-module" style="display:none;flex:1;overflow-y:auto;height:100%"></div>
         </div>
       </div>
       <div id="tablet-container" style="display:none">
@@ -5336,7 +5337,7 @@ app.get('/', (c) => {
               <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
             </div>
           </div>
-          <div id="records-container-tablet" class="records-module" style="display:none;flex:1;overflow-y:auto"></div>
+          <div id="archive-container-tablet" class="archive-module" style="display:none;flex:1;overflow-y:auto"></div>
           <div id="mobile-bottom-tab"></div>
         </div>
       </div>
@@ -5353,10 +5354,10 @@ app.get('/', (c) => {
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/static/app.js"></script>
   <script type="module">
-    import RecordsModule from '/modules/records/records.js';
-    window.RecordsModule = RecordsModule;
-    window._recordsModuleReady = true;
-    console.log('[RecordsModule] Loaded and ready');
+    import ArchiveModule from '/modules/records/records.js';
+    window.ArchiveModule = ArchiveModule;
+    window._archiveModuleReady = true;
+    console.log('[ArchiveModule] Loaded and ready');
   </script>
   <script>
     if ('serviceWorker' in navigator) {
