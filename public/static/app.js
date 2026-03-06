@@ -153,6 +153,8 @@ const state = {
   // 질문 코칭 과목 선택 상태
   _questionSubject: '수학', // 기본 선택 과목
   _questionText: '', // 사용자 입력 질문 텍스트 유지
+  // 릴레이단어장
+  _relay: { classId: null, className: '', checked: false, wordbook: null, myEntry: null, finishedStudents: [], loading: false },
 };
 
 // ==================== MAIN RENDER ====================
@@ -448,6 +450,7 @@ function renderStudentApp() {
   if (state.currentScreen === 'aha-list') return renderAhaReportList(); // 아하 리포트 목록 → 기존 함수 연결
   if (state.currentScreen === 'mentor-feedback') return renderStudentFeedbackScreen();
   if (state.currentScreen === 'timetable-onboarding') return renderTimetableOnboarding();
+  if (state.currentScreen === 'relay-wordbook') return renderRelayWordbookScreen();
 
   let content = '';
   content += renderXpBar();
@@ -3468,6 +3471,228 @@ function saveClassRecordEdit(idx) {
   showXpPopup(0, '수업 기록이 수정되었어요! ✏️');
 }
 
+// ==================== 릴레이단어장 (학생) ====================
+
+// 릴레이 상태 초기화
+if (!state._relay) state._relay = { classId: null, className: '', checked: false, wordbook: null, myEntry: null, finishedStudents: [], loading: false };
+
+// 학생의 릴레이 자격 확인 (영어 클래스 + 16명 이상)
+async function _studentCheckRelay() {
+  if (state._relay.checked) return;
+  state._relay.checked = true;
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  if (!extUserId) return;
+  try {
+    const res = await fetch(`/api/relay/classes?user_id=${extUserId}`);
+    const data = await res.json();
+    if (data.success && data.classes && data.classes.length > 0) {
+      state._relay.classId = Number(data.classes[0].class_id);
+      state._relay.className = data.classes[0].class_name;
+      await _studentLoadRelayWordbook();
+    }
+  } catch (e) { console.error('studentCheckRelay:', e); }
+}
+
+// 학생의 오늘 단어장 로드
+async function _studentLoadRelayWordbook() {
+  if (!state._relay.classId) return;
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  if (!extUserId) return;
+  try {
+    const res = await fetch(`/api/relay/student-wordbook?class_id=${state._relay.classId}&student_user_id=${extUserId}`);
+    const data = await res.json();
+    state._relay.wordbook = data.wordbook || null;
+    state._relay.myEntry = data.myEntry || null;
+    state._relay.finishedStudents = data.finishedStudents || [];
+  } catch (e) { console.error('studentLoadRelayWordbook:', e); }
+}
+
+// 릴레이단어장 위젯 (홈 화면)
+function renderRelayWordbookWidget() {
+  // 비동기 자격 확인 시작
+  if (!state._relay.checked) {
+    _studentCheckRelay().then(() => { if (state._relay.classId) refreshDataWidgets(); });
+    return '';
+  }
+  if (!state._relay.classId) return '';
+
+  const wb = state._relay.wordbook;
+  const myEntry = state._relay.myEntry;
+  const finished = state._relay.finishedStudents || [];
+
+  // 상태 판별
+  let statusLabel, statusColor, statusIcon, clickAction;
+  if (!wb) {
+    statusLabel = '단어장 준비중';
+    statusColor = 'var(--text-muted)';
+    statusIcon = '⏳';
+    clickAction = '';
+  } else if (myEntry && myEntry.is_finished) {
+    statusLabel = '제출 완료';
+    statusColor = 'var(--success)';
+    statusIcon = '✅';
+    clickAction = "goScreen('relay-wordbook')";
+  } else {
+    statusLabel = '단어장 입력';
+    statusColor = 'var(--primary-light)';
+    statusIcon = '✍️';
+    clickAction = "goScreen('relay-wordbook')";
+  }
+
+  return `
+    <div class="card stagger-3b animate-in" ${clickAction ? `onclick="${clickAction}" style="cursor:pointer"` : ''}>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:24px">📚</span>
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-main)">릴레이단어장</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${state._relay.className}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:16px">${statusIcon}</span>
+          <span style="font-size:13px;font-weight:700;color:${statusColor}">${statusLabel}</span>
+          ${wb && finished.length > 0 ? `<span style="font-size:11px;color:var(--text-muted);margin-left:4px">(${finished.length}명 완료)</span>` : ''}
+          ${clickAction ? '<i class="fas fa-chevron-right" style="font-size:11px;color:var(--text-muted);margin-left:4px"></i>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 릴레이단어장 전체 화면 (학생)
+function renderRelayWordbookScreen() {
+  const wb = state._relay.wordbook;
+  const myEntry = state._relay.myEntry;
+  const finished = state._relay.finishedStudents || [];
+
+  if (!wb) {
+    return `
+      <div class="tab-content animate-in">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+          <button onclick="goScreen('main')" style="background:none;border:none;color:var(--text-secondary);font-size:18px;cursor:pointer;padding:8px"><i class="fas fa-arrow-left"></i></button>
+          <h1 style="font-size:20px;font-weight:800;margin:0">📚 릴레이단어장</h1>
+        </div>
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px;opacity:0.3">⏳</div>
+          <p style="font-size:16px">오늘은 단어장이 없습니다</p>
+          <p style="font-size:13px;margin-top:8px">선생님이 단어장을 등록하면 여기에 나타납니다</p>
+        </div>
+      </div>`;
+  }
+
+  const words = typeof wb.words === 'string' ? JSON.parse(wb.words) : wb.words;
+  const myEntries = myEntry ? (typeof myEntry.entries === 'string' ? JSON.parse(myEntry.entries) : myEntry.entries) : [];
+  const isFinished = myEntry && myEntry.is_finished;
+
+  let html = `
+    <div class="tab-content animate-in">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <button onclick="goScreen('main')" style="background:none;border:none;color:var(--text-secondary);font-size:18px;cursor:pointer;padding:8px"><i class="fas fa-arrow-left"></i></button>
+        <div>
+          <h1 style="font-size:20px;font-weight:800;margin:0">📚 릴레이단어장</h1>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:2px">${state._relay.className} · ${wb.date}</p>
+        </div>
+      </div>
+  `;
+
+  // 제출 완료 학생 목록
+  if (finished.length > 0) {
+    html += `
+      <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:var(--radius-md);padding:12px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--success);margin-bottom:8px">
+          <i class="fas fa-check-circle" style="margin-right:4px"></i>완료한 친구들 (${finished.length}명)
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${finished.map((s, i) => `
+            <span style="padding:4px 8px;background:rgba(34,197,94,0.12);border-radius:6px;font-size:12px;color:var(--text-main)">
+              ${i+1}. ${s.student_name}
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // 단어장 입력 영역
+  html += `<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:var(--text-main)">
+    ${isFinished ? '✅ 나의 제출 내용' : '✍️ 한글 뜻을 입력하세요'}
+  </div>`;
+
+  html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  words.forEach((w, i) => {
+    const val = myEntries[i] || '';
+    html += `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg-input);border-radius:8px">
+        <span style="font-size:11px;color:var(--text-muted);min-width:24px;text-align:right;font-weight:600">${i+1}</span>
+        <span style="font-size:14px;font-weight:600;color:var(--primary-light);min-width:120px">${w}</span>
+        <input class="relay-meaning-input" type="text" value="${val.replace(/"/g, '&quot;')}" placeholder="한글 뜻" 
+          ${isFinished ? 'disabled' : ''}
+          style="flex:1;background:${isFinished ? 'transparent' : 'var(--bg-card)'};border:${isFinished ? 'none' : '1px solid var(--border-color)'};color:var(--text-main);font-size:13px;outline:none;padding:6px 8px;border-radius:6px">
+      </div>
+    `;
+  });
+  html += '</div>';
+
+  // 제출 버튼
+  if (!isFinished) {
+    html += `
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button onclick="_studentSaveRelay(false)" class="btn-secondary" style="flex:1;padding:12px;font-size:14px;border-radius:10px">
+          <i class="fas fa-save" style="margin-right:4px"></i>임시저장
+        </button>
+        <button onclick="_studentSaveRelay(true)" class="btn-primary" style="flex:1;padding:12px;font-size:14px;border-radius:10px">
+          <i class="fas fa-paper-plane" style="margin-right:4px"></i>제출하기
+        </button>
+      </div>
+    `;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// 학생 단어 뜻 저장
+async function _studentSaveRelay(isFinished) {
+  const inputs = document.querySelectorAll('.relay-meaning-input');
+  const entries = [];
+  inputs.forEach(inp => entries.push(inp.value.trim()));
+
+  if (isFinished) {
+    const emptyCount = entries.filter(e => !e).length;
+    if (emptyCount > 0) {
+      if (!confirm(`아직 비어있는 항목이 ${emptyCount}개 있습니다. 그래도 제출하시겠습니까?`)) return;
+    }
+  }
+
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  const extUserName = state._externalUserName || state._authUser?.name || '';
+  
+  try {
+    const res = await fetch('/api/relay/student-entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wordbook_id: state._relay.wordbook.id,
+        student_user_id: extUserId,
+        student_name: extUserName,
+        entries: entries,
+        is_finished: isFinished
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (isFinished) {
+        showXpPopup(0, '릴레이단어장 제출 완료! 📚');
+      }
+      await _studentLoadRelayWordbook();
+      renderScreen(true);
+    } else {
+      alert('저장 실패: ' + (data.error || ''));
+    }
+  } catch (e) { alert('저장 실패: ' + e.message); }
+}
+
 // ==================== HOME TAB (H-01~H-05) ====================
 
 function renderHomeTab() {
@@ -3774,6 +3999,9 @@ function renderHomeTab() {
             </div>
           `).join('')}
         </div>
+
+        <!-- 릴레이단어장 위젯 (영어 클래스 + 16명 이상일 때만 표시) -->
+        ${renderRelayWordbookWidget()}
 
         <!-- Weekly Mini Chart -->
         <div class="card stagger-4 animate-in">
@@ -13762,8 +13990,10 @@ function initMentorEvents() {
   });
   // 반(그룹) 전환
   document.querySelectorAll('[data-mgroup]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       _mentor.selectedGroupId = parseInt(btn.dataset.mgroup);
+      _mentor._relayLoaded = false;
+      if (typeof _checkRelayEligibility === 'function') await _checkRelayEligibility();
       mentorLoadGroupSummary();
     });
   });
