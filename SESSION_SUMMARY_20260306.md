@@ -1,56 +1,87 @@
-# 세션 요약 — 2026-03-06
+# Session Summary — 2026-03-06
 
 ## 완료 사항
 
-### 1. DB 마이그레이션 (4개 테이블 추가)
-- `semesters` (id, student_id, year, term, created_at)
-- `subjects` (id, semester_id, name, teacher, created_at)
-- `timetable_slots` (id, semester_id, subject_id, day_of_week, period, created_at)
-- `exam_subjects` (id, exam_id, subject_id, exam_date, period, scope, created_at)
+### 1. MY CREDIT LOG AI 파이프라인 완성
+- OCR: Gemini 3 Flash Preview (병렬 처리)
+- 분석: Claude Sonnet 4.6 (system/user prompt 분리)
+- 폴백: Gemini -> OpenAI
+- 7개 섹션: summary, exam_connection, deep_dive, questions, active_recall, teacher_insight, assignment
+- Student_Comment(수업 소감) 입력 지원
+- 필기 노트 없이 참고 사진만으로도 AI 분석 가능
 
-### 2. 백엔드 API (4개 엔드포인트)
-- `GET /api/student/:id/semesters` — 학생 학기 목록
-- `GET /api/student/:id/subjects?year=&term=` — 학기별 과목+시간표 슬롯
-- `POST /api/student/:id/timetable/photo` — 시간표 사진 AI 분석 (Gemini 3 Flash Preview)
-- `POST /api/student/:id/timetable/confirm` — 분석 결과 확인 후 DB 저장
+### 2. 로딩 화면 개선
+- 단계별 메시지 + 이모지 + 프로그레스 바 (수업 기록, 아하 리포트 양쪽)
+- CLASS_LOADING_STEPS / AHA_LOADING_STEPS 배열로 관리
 
-### 3. 프론트엔드 — 시간표 온보딩 플로우
-- 로그인 후 semesters가 비어있으면 자동으로 `timetable-onboarding` 화면 이동
-- 5단계 흐름: intro → photo → loading → confirm → done
-- 인라인 onclick + 전역 함수 패턴 사용 (initStudentEvents 방식은 동작 안 함)
-- 모든 `renderScreen()` 호출을 `renderScreen(true)`로 변경 (skipFullRender 우회)
+### 3. 폰트 계층 정리
+- Section header 16px > body 15px > subtitle 14px > badge 13px
 
-### 4. 시간표 관리 화면 연동
-- AI 분석 저장 시 `state.timetable.school`, `teachers`, `subjectColors` 동기화
-- `DB.saveTimetable()` 호출로 localStorage/API 저장
-- "시간표 사진으로 자동 입력" 버튼 추가 (시간표 관리 화면에서 바로 사진 촬영 가능)
-- 완료 후 시간표 관리 화면으로 자동 복귀
+### 4. todayRecords 리셋 버그 수정
+- `_buildTodayRecords()`가 DB 레코드 확인하여 done 상태 복원
+- `_rebuildRecordsForDate()`도 동일하게 DB 확인하도록 수정
 
-### 5. 편집/완료 버튼 수정
-- `selectTtCell`, `setTtSubject`, 편집/완료 토글 → `renderScreen(true)` 적용
+### 5. 수업 기록 저장/조회 버그 수정 (Critical)
+- `saveCreditLog()`: `record._dbRecordId = recordId` 설정 추가
+- `_getDbRecordForPeriod()`: `_dbRecordId`로 ID 직접 조회 우선, 없으면 `{ id, _fromId: true }` 반환
+- `saveClassRecord()`: base64 사진을 메인 테이블에 저장하지 않음 -> `ref:ID` 참조만 저장
+- `photo_count` 컬럼 추가 (migration + INSERT + SELECT)
 
-## 핵심 버그 및 해결
+### 6. 사진 앨범 ref:ID 해석
+- `photo-album.js`: `ref:ID` 사진을 `/api/photos/:id`로 비동기 해석
+- `class-detail.js`: `_resolvePhotosAsync()` 추가하여 상세 보기에서도 ref 사진 해석
+- `DB.resolvePhotos()`, `DB.loadClassRecordPhotos()` API 메서드 추가
 
-| 문제 | 원인 | 해결 |
-|------|------|------|
-| 온보딩 버튼 클릭 무반응 | `renderScreen()`의 `skipFullRender` 최적화. `renderKey`에 서브상태(`_ttOnboardingStep` 등) 미포함 → DOM 업데이트 스킵 | `renderScreen(true)` (force) 사용 |
-| 라우터 충돌 (undefined 표시) | `startsWith('onboarding')`이 `'timetable-onboarding'`도 매칭 | 구체적 매칭을 앞에 배치 |
-| AI 분석 502 에러 | `.dev.vars`에 `ANTHROPIC_API_KEY` 미설정 | Claude Vision → Gemini Vision 전환 |
-| AI 분석 404 에러 | `gemini-3-flash` 모델명 오류 | `gemini-3-flash-preview`로 수정 |
-| 시간표 관리에 반영 안 됨 | DB 저장만 하고 `state.timetable.school` 미업데이트 | 저장 시 state 동기화 + `DB.saveTimetable()` 추가 |
+### 7. 아하 리포트 5섹션 구현
+- aha-report-input.js, aha-report-result.js, aha-report-list.js 뷰 생성
+- 백엔드: analyze-v2, feedback, save API
+- SA/PA/DA/POA/PPA 5섹션 구조
 
-## 변경 파일
-- `src/index.tsx` — DB 마이그레이션, API 4개, Gemini Vision 연동
-- `public/static/app.js` — 온보딩 플로우, 시간표 관리 연동, renderScreen(true) 수정
-- `CLAUDE.md` — 실수 노트 업데이트
-- `.dev.vars` — GEMINI_API_KEY 추가
+---
 
-## 미완료 / 다음 할 일
-- 프로덕션 배포 (wrangler pages deploy)
-- 프로덕션 환경변수 설정 (GEMINI_API_KEY)
-- 실제 학생 시간표 사진으로 AI 분석 정확도 테스트
-- 온보딩 완료 후 재진입 방지 (이미 semesters 있으면 스킵)
-- 학원 시간표 사진 분석 기능 (현재 수동 입력만 가능)
+## 미완료 / 확인 필요
 
-## 브랜치
-- `feature/timetable-subjects`
+### 1. 사진 앨범 ref:ID 해석 동작 확인
+- `_resolveRefPhotos()` 비동기 로드 -> render() 재호출 흐름 브라우저 테스트 필요
+- 대량 ref 사진 동시 해석 시 성능 확인 필요
+
+### 2. class-history.js 사진 썸네일
+- 기록 히스토리 갤러리 뷰에서 ref:ID 사진은 깨진 이미지로 표시될 수 있음
+- `_buildPhotoList` 패턴과 동일하게 비동기 해석 적용 필요할 수 있음
+
+### 3. 프로덕션 배포
+- 로컬 D1에서 테스트 완료 후 `wrangler pages deploy` 필요
+- 프로덕션 D1에 `/api/migrate` 호출하여 photo_count 컬럼 추가 필수
+
+### 4. 기존 레코드의 base64 사진 마이그레이션
+- id 1~3 레코드: photos 컬럼에 여전히 base64 존재 (레거시)
+- 새 레코드(id 4+): ref:ID 형식
+- 기존 base64 -> R2 업로드 + ref:ID 변환하는 일회성 마이그레이션 스크립트 고려
+
+### 5. 나의 질문함 / 과제 연동
+- saveCreditLog에서 questions -> saveMyQuestion, assignment -> saveAssignment 로직은 코드에 있음
+- 실제 동작 여부 브라우저 테스트 필요
+
+---
+
+## 주요 변경 파일
+
+| 파일 | 변경 |
+|------|------|
+| `src/index.tsx` | Gemini OCR + Sonnet 분석 파이프라인, photo_count 컬럼, 아하 리포트 API |
+| `public/modules/records/core/api.js` | saveClassRecord ref 방식, resolvePhotos, loadClassRecordPhotos |
+| `public/modules/records/views/ai-credit-log.js` | 7섹션 렌더링, 로딩 단계, _dbRecordId 설정 |
+| `public/modules/records/views/period-select.js` | _rebuildRecordsForDate DB 확인, _getDbRecordForPeriod _dbRecordId 우선 |
+| `public/modules/records/views/class-detail.js` | ref 사진 비동기 해석, photo_count 표시 |
+| `public/modules/records/views/photo-album.js` | ref:ID 비동기 해석 + 캐시 |
+| `public/modules/records/views/photo-upload-v2.js` | Student Comment, 필기 optional |
+| `public/modules/records/records.js` | 아하 리포트 뷰 등록, _buildTodayRecords DB 확인 |
+| `public/modules/records/records.css` | 새 섹션 스타일, 로딩 애니메이션, 폰트 계층 |
+
+---
+
+## 주의사항
+- Gemini 모델: `gemini-3-flash-preview` (다른 버전 404)
+- Sonnet 모델: `claude-sonnet-4-6`
+- 새 컬럼 추가 후 반드시 `/api/migrate` 호출
+- 사진 데이터 형식: 새 레코드는 `ref:ID`, 기존은 base64 (양쪽 호환 필요)

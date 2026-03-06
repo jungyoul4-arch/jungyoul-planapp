@@ -164,6 +164,8 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 ### D1/SQLite 관련
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-05] ALTER TABLE 마이그레이션 후 SELECT * 확인: 컬럼 추가(parent_id 등) 후 `SELECT *`는 자동 포함되지만, 명시적 SELECT 필드 목록을 쓰는 쿼리가 있으면 새 컬럼 누락됨. 마이그레이션 후 관련 SELECT 쿼리 전수 점검
+- [2026-03-06] 새 컬럼 추가 후 INSERT/SELECT 동기화 + 마이그레이션 실행 필수: `photo_count` 컬럼을 INSERT에 추가했지만, 로컬 D1에 마이그레이션(`/api/migrate`)을 실행하지 않아 INSERT 자체가 실패. 새 컬럼 추가 시 반드시: ① ALTER TABLE 마이그레이션 코드 추가 → ② INSERT/SELECT 쿼리에 새 컬럼 반영 → ③ `/api/migrate` 호출하여 로컬 DB 스키마 적용 → ④ 동작 확인. 이 순서를 건너뛰면 저장 자체가 실패함
+- [2026-03-06] base64 사진을 메인 테이블에 저장하면 안됨: `class_records.photos`에 7장의 base64 사진(각 500KB~1MB)을 JSON으로 저장하면 단일 행이 수 MB. `loadClassRecords`로 200건 조회 시 응답이 거대해져 silent failure. 사진은 반드시 별도 테이블(class_record_photos) + R2에 저장하고, 메인 테이블에는 `ref:ID` 참조만 저장할 것
 
 
 ### API 관련
@@ -198,22 +200,18 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 - [2026-03-05] 인라인 onclick에 문자열 전달 시 XSS/파싱 위험: `onclick="_RM.fn(${JSON.stringify(content)})"` 패턴은 content에 `"` 등이 포함되면 HTML attribute가 깨짐. 대신 `data-content="${htmlEncode(content)}"` + `this.dataset.content`로 안전하게 전달할 것
 - [2026-03-05] 변수 중복 선언: 함수 앞부분에 검증 로직을 추가할 때, 아래쪽에 동일 이름의 `const` 변수가 있으면 SyntaxError 발생. 추가 전 함수 전체에서 같은 변수명이 있는지 확인할 것 (예: `const photo` 중복)
 - [2026-03-05] 렌더 함수 내 조건 분기 누락: `_renderChain`에서 자식이 0개면 바로 카드만 반환하면서 체인 입력 폼을 렌더링하지 않는 버그. 상태(`_chainInputParentId`)에 따라 입력 폼이 필요한 경우를 조건에 포함해야 함
-- [2026-03-06] 라우터 우선순위 충돌: `renderStudentApp()`에서 `startsWith('onboarding')` 체크가 `'timetable-onboarding'`도 매칭하여 `renderOnboarding()`(기존 온보딩)으로 빠짐 → `undefined` 반환. 새 화면 추가 시 반드시 기존 라우터의 `startsWith` 같은 와일드카드 패턴과 충돌 여부를 먼저 확인하고, 구체적 매칭을 앞에 배치할 것
-- [2026-03-06] 이벤트 바인딩 패턴: 이 앱은 `document` 이벤트 위임이 아니라 `initStudentEvents(container)` 방식으로 렌더 후 container 기반 직접 바인딩. 새 화면 추가 시 반드시 `initStudentEvents` 안에서 `root.querySelector('#btn-id')?.addEventListener(...)` 패턴으로 바인딩할 것. document 레벨 위임은 작동하지 않음
-- [2026-03-06] app.js에 코드 추가 시 스코프 확인: app.js 끝에 `cat >>`로 코드 추가하면 IIFE/PWA 블록 바깥에 들어갈 수 있음. 새 함수가 기존 코드에서 호출되려면 반드시 같은 스코프(최상위 또는 같은 IIFE) 안에 위치해야 함. 추가 전 파일 끝 구조(`})();` 등) 확인 필수
-- [2026-03-06] renderScreen() skipFullRender 최적화 함정: `renderScreen()`은 `renderKey` 비교로 동일 화면이면 DOM 업데이트를 건너뜀. `renderKey`에는 `state.currentScreen`, `state.studentTab` 등만 포함되고, `state._ttOnboardingStep` 같은 커스텀 서브상태는 포함 안 됨. 같은 `currentScreen` 내에서 서브상태만 바뀌는 경우 **반드시 `renderScreen(true)`** (force) 사용해야 DOM이 갱신됨. 이것 때문에 인트로 버튼, 파일 선택 등 모든 onclick이 작동하지 않는 것처럼 보였음 (실제로는 state는 바뀌는데 화면만 안 바뀐 것)
-
-### API/백엔드 관련
-<!-- 실수 발생 시 아래에 추가 -->
-- [2026-03-06] .dev.vars 누락: git clone 후 새 프로젝트에 `.dev.vars`가 없으면 API 키가 undefined → 외부 API 호출 시 502 에러. clone 직후 원본 프로젝트에서 `.dev.vars` 복사 필수. 서버 재시작도 필요
-- [2026-03-06] Gemini 모델명 정확히 확인: `gemini-3-flash`가 아니라 `gemini-3-flash-preview`가 정확한 모델명. 모델명이 틀리면 404 에러 발생. 새 모델 사용 시 `https://generativelanguage.googleapis.com/v1beta/models?key=KEY`로 사용 가능한 모델 목록을 먼저 확인할 것
-- [2026-03-06] Claude Vision → Gemini Vision 전환: ANTHROPIC_API_KEY가 없는 환경에서 Claude Vision API를 쓰면 502. 이미 GEMINI_API_KEY가 설정되어 있으므로 Gemini Vision 사용이 더 안정적. `callGeminiWithFallback` 헬퍼는 `gemini-2.0-flash` 하드코딩이므로, 특정 모델이 필요하면 직접 fetch 호출
+- [2026-03-06] saveCreditLog 후 todayRecords에 _dbRecordId 미설정: `record.done = true`만 하고 `record._dbRecordId`를 설정하지 않으면, 이후 `_getDbRecordForPeriod()`가 DB에서 레코드를 못 찾을 때 `{ _virtual: true }` 반환 → 기록완료인데 빈 photo-upload로 이동하는 버그. 저장 후 반드시 `record._dbRecordId = recordId` 설정
+- [2026-03-06] _rebuildRecordsForDate()와 _buildTodayRecords() 로직 동기화: period-select.js의 `_rebuildRecordsForDate()`는 날짜별 시간표를 재구축하는데, records.js의 `_buildTodayRecords()`와 달리 DB 레코드를 확인하지 않아 항상 `done: false`. 같은 역할의 함수가 두 곳에 있으면 반드시 동일한 DB 조회 로직을 포함해야 함
+- [2026-03-06] 사진 저장 형식 변경 시 소비 뷰 전수 점검: `class_records.photos`를 base64 → `ref:ID` 참조로 변경했을 때, 사진을 직접 `<img src>`로 쓰는 모든 뷰(photo-album.js, class-detail.js, class-history.js)를 반드시 업데이트. `ref:ID`는 유효한 URL이 아니므로 깨진 이미지 표시됨. 데이터 형식 변경 시 해당 필드를 읽는 모든 파일을 Grep으로 찾아 전수 수정할 것
 
 ### 개발 서버 관련
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-05] 개발 서버 실행: `wrangler pages dev public`이 아니라 `npm run dev` (Vite)가 올바른 로컬 개발 서버. Vite가 src/index.tsx를 Functions로 처리함. `wrangler pages dev public`은 Functions shimming 없이 정적 파일만 서빙하므로 API 404 발생
 - [2026-03-05] 기록 모듈 테스트: 메인 앱(`/`)이 아니라 `/modules/records/dev.html`에서 기록 모듈 독립 테스트. 로그인 없이 바로 모듈 확인 가능. 경로를 `/dev.html`로 착각하지 말 것
-
+- [2026-03-06] Gemini 모델명 혼동 주의:
+  정확한 모델명: gemini-3.0-flash
+  잘못된 모델명: gemini-3.1-flash, gemini-3.2-flash, gemini-2.5-flash
+  → 3.0 이외 버전은 404 오류 발생. 절대 임의로 버전 변경 금지.
 ### 배포/설정 관련
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-04] `.dev.vars` 키 범위: 로컬 개발 시 `.dev.vars`에 필요한 API 키가 모두 있는지 확인. `callGeminiMultiImage`는 `GEMINI_API_KEY` + `OPENAI_API_KEY` 둘 다 필요 (Gemini 실패 시 OpenAI 폴백). 프로덕션은 `wrangler pages secret put`으로 별도 설정
