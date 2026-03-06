@@ -177,6 +177,43 @@ function getDevicePreviewClass() {
 }
 
 // renderScreen debounce: 연속 호출 시 마지막 1회만 실행 (깜빡임 방지)
+// ==================== Records Module 통합 ====================
+let _recordsModuleActive = false;
+
+function _showRecordsModule(isTablet) {
+  const containerId = isTablet ? 'records-container-tablet' : 'records-container-phone';
+  const contentId = isTablet ? 'tablet-content' : 'app-content';
+  const recEl = document.getElementById(containerId);
+  const contentEl = document.getElementById(contentId);
+  if (!recEl || !contentEl) return;
+
+  contentEl.style.display = 'none';
+  recEl.style.display = 'flex';
+
+  if (!_recordsModuleActive && window.RecordsModule) {
+    window.RecordsModule.init({
+      container: recEl,
+      studentId: state._authUser?.id,
+      studentName: state._authUser?.name || '',
+      timetable: state.timetable || {},
+      classmates: state.classmates || [],
+    });
+    _recordsModuleActive = true;
+  }
+}
+
+function _hideRecordsModule() {
+  const phoneRec = document.getElementById('records-container-phone');
+  const tabletRec = document.getElementById('records-container-tablet');
+  const phoneContent = document.getElementById('app-content');
+  const tabletContent = document.getElementById('tablet-content');
+  if (phoneRec) phoneRec.style.display = 'none';
+  if (tabletRec) tabletRec.style.display = 'none';
+  if (phoneContent) phoneContent.style.display = '';
+  if (tabletContent) tabletContent.style.display = '';
+  // _recordsModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
+}
+
 let _renderTimer = null;
 let _renderForced = false;
 // 이전 렌더링 상태 추적 - 같은 화면이면 innerHTML 교체 스킵
@@ -293,24 +330,37 @@ function _renderScreenImpl(forced) {
           });
         }
       }
-      tabletContent.innerHTML = renderStudentApp();
-      initStudentEvents(tabletContent);
-      initAuthEvents(tabletContent);
-      initMobileBottomTab();
-      setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
-      setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
-      setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
-      setTimeout(() => smartScrollTimetable(), 80);
+      // Records 모듈 탭 전환
+      if (state.studentTab === 'record' && state.currentScreen === 'main' && state._authUser) {
+        _showRecordsModule(true);
+        initMobileBottomTab();
+      } else {
+        _hideRecordsModule();
+        tabletContent.innerHTML = renderStudentApp();
+        initStudentEvents(tabletContent);
+        initAuthEvents(tabletContent);
+        initMobileBottomTab();
+        setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
+        setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
+        setTimeout(() => smartScrollTimetable(), 80);
+      }
     } else {
       phoneContainer.style.display = 'flex';
       tabletContainer.style.display = 'none';
-      container.innerHTML = renderStudentApp();
-      initStudentEvents(container);
-      initAuthEvents(container);
-      setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
-      setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
-      setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
-      setTimeout(() => smartScrollTimetable(), 80);
+      // Records 모듈 탭 전환
+      if (state.studentTab === 'record' && state.currentScreen === 'main' && state._authUser) {
+        _showRecordsModule(false);
+      } else {
+        _hideRecordsModule();
+        container.innerHTML = renderStudentApp();
+        initStudentEvents(container);
+        initAuthEvents(container);
+        setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
+        setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
+        setTimeout(() => smartScrollTimetable(), 80);
+      }
     }
   } else if (state.mode === 'mentor') {
     phoneContainer.style.display = 'none';
@@ -1202,6 +1252,8 @@ function logout() {
   state._authMentorGroups = null;
   state._loginError = '';
   localStorage.removeItem('cp_auth');
+  _recordsModuleActive = false;
+  _hideRecordsModule();
   state.currentScreen = 'login';
   state.mode = 'student';
   renderScreen();
