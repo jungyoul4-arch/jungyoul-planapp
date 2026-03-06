@@ -1023,7 +1023,7 @@ app.post('/api/auth/mentor/login', async (c) => {
 
     // 멘토의 그룹 목록 조회
     const groups = await c.env.DB.prepare(
-      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
+      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ? AND is_active = 1'
     ).bind(mentor.id).all();
 
     const token = generateToken();
@@ -1190,11 +1190,89 @@ app.get('/api/auth/external-login', async (c) => {
           await c.env.DB.prepare('UPDATE mentors SET name = ? WHERE id = ?').bind(name, mentor.id).run();
           mentor.name = name;
         }
+
+        // ===== 매 로그인 시 그룹/학생 동기화 =====
+        try {
+          const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${remoteUserId}&key=${jyskApiKey}`);
+          const ct = studentsRes.headers.get('content-type') || '';
+          if (ct.includes('json')) {
+            const studentsData: any = await studentsRes.json();
+            if (studentsData.success && studentsData.classes) {
+              // 원격에서 넘어온 활성 class_id 목록
+              const remoteClassIds = new Set(studentsData.classes.map((cls: any) => Number(cls.class_id)));
+
+              // 로컬 기존 그룹 조회
+              const localGroups: any = await c.env.DB.prepare(
+                'SELECT id, name, external_class_id, is_active FROM groups WHERE mentor_id = ?'
+              ).bind(mentor.id).all();
+
+              const localClassMap = new Map<number, any>();
+              for (const g of (localGroups.results || [])) {
+                if (g.external_class_id) localClassMap.set(Number(g.external_class_id), g);
+              }
+
+              // 1) 원격에 없는 로컬 그룹 → 비활성화
+              for (const g of (localGroups.results || [])) {
+                if (g.external_class_id && !remoteClassIds.has(Number(g.external_class_id)) && g.is_active === 1) {
+                  await c.env.DB.prepare('UPDATE groups SET is_active = 0, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?').bind(g.id).run();
+                }
+              }
+
+              // 2) 원격에 있는 클래스 → 로컬에 없으면 생성, 있으면 이름/활성상태 업데이트
+              for (const cls of studentsData.classes) {
+                const extClassId = Number(cls.class_id);
+                const existingGroup = localClassMap.get(extClassId);
+
+                let groupId: number;
+                if (!existingGroup) {
+                  // 새 그룹 생성
+                  const inviteCode = generateInviteCode();
+                  const gr = await c.env.DB.prepare(
+                    'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
+                  ).bind(mentor.id, cls.class_name || `반${cls.class_id}`, inviteCode, '', extClassId).run();
+                  groupId = gr.meta.last_row_id as number;
+                } else {
+                  groupId = existingGroup.id;
+                  // 이름 업데이트 및 재활성화
+                  if (existingGroup.name !== cls.class_name || existingGroup.is_active !== 1) {
+                    await c.env.DB.prepare(
+                      'UPDATE groups SET name = ?, is_active = 1, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?'
+                    ).bind(cls.class_name || existingGroup.name, groupId).run();
+                  }
+                }
+
+                // 3) 학생 동기화
+                for (const st of cls.students) {
+                  const exists: any = await c.env.DB.prepare(
+                    'SELECT id, group_id, name FROM students WHERE external_user_id = ?'
+                  ).bind(st.user_id).first();
+                  if (!exists) {
+                    const stPwHash = await hashPassword(`ext_${st.user_id}_auto`);
+                    const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+                    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+                    await c.env.DB.prepare(
+                      'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                    ).bind(groupId, st.name, stPwHash, '', 0, emoji, st.user_id).run();
+                  } else {
+                    // 그룹 이동 또는 이름 변경 반영
+                    if (exists.group_id !== groupId || exists.name !== st.name) {
+                      await c.env.DB.prepare(
+                        'UPDATE students SET group_id = ?, name = ? WHERE id = ?'
+                      ).bind(groupId, st.name, exists.id).run();
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (syncErr: any) {
+          console.log('Mentor sync error (non-fatal):', syncErr.message);
+        }
       }
 
-      // 멘토 그룹 목록 조회
+      // 멘토 그룹 목록 조회 (활성 그룹만)
       const groups = await c.env.DB.prepare(
-        'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
+        'SELECT id, name, invite_code, description, max_students, is_active, external_class_id FROM groups WHERE mentor_id = ? AND is_active = 1'
       ).bind(mentor.id).all();
 
       const token = generateToken();
@@ -1437,7 +1515,7 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
     const groups = await c.env.DB.prepare(`
       SELECT g.*, 
         (SELECT COUNT(*) FROM students s WHERE s.group_id = g.id AND s.is_active = 1) as student_count
-      FROM groups g WHERE g.mentor_id = ? ORDER BY student_count DESC, g.created_at DESC
+      FROM groups g WHERE g.mentor_id = ? AND g.is_active = 1 ORDER BY student_count DESC, g.created_at DESC
     `).bind(mentorId).all();
 
     return c.json({ groups: groups.results });

@@ -82,10 +82,11 @@ switch ($action) {
             WHERE cm.class_id IN (
                 SELECT cm3.class_id FROM ClassMember cm3
                 JOIN Class c3 ON cm3.class_id = c3.class_id
-                WHERE cm3.user_id = ? AND c3.is_active = 1
+                WHERE cm3.user_id = ? AND c3.is_active = 1 AND cm3.active_flag = 1
             )
             AND u.kind = 2
             AND u.active_flag = 1
+            AND cm.active_flag = 1
             AND c.is_active = 1
             ORDER BY c.class_name, u.name
         ');
@@ -130,7 +131,7 @@ switch ($action) {
             FROM User u
             JOIN ClassMember cm ON u.user_id = cm.user_id
             JOIN Class c ON cm.class_id = c.class_id
-            WHERE cm.class_id = ? AND u.active_flag = 1 AND c.is_active = 1
+            WHERE cm.class_id = ? AND u.active_flag = 1 AND cm.active_flag = 1 AND c.is_active = 1
             ORDER BY u.kind, u.name
         ');
         $stmt->execute([$class_id]);
@@ -147,10 +148,11 @@ switch ($action) {
         }
         $stmt = $pdo->prepare('
             SELECT c.class_id, c.class_name, c.genre_id,
-                   (SELECT COUNT(*) FROM ClassMember cm2 WHERE cm2.class_id = c.class_id) as member_count
+                   (SELECT COUNT(*) FROM ClassMember cm2 WHERE cm2.class_id = c.class_id AND cm2.active_flag = 1) as member_count
             FROM Class c
             JOIN ClassMember cm ON c.class_id = cm.class_id
             WHERE cm.user_id = ?
+              AND cm.active_flag = 1
               AND c.genre_id = 3
               AND c.is_active = 1
             HAVING member_count >= 16
@@ -173,7 +175,7 @@ switch ($action) {
             FROM User u
             JOIN ClassMember cm ON u.user_id = cm.user_id
             JOIN Class c ON cm.class_id = c.class_id
-            WHERE cm.class_id = ? AND u.kind = 2 AND u.active_flag = 1 AND c.is_active = 1
+            WHERE cm.class_id = ? AND u.kind = 2 AND u.active_flag = 1 AND cm.active_flag = 1 AND c.is_active = 1
             ORDER BY u.name
         ');
         $stmt->execute([$class_id]);
