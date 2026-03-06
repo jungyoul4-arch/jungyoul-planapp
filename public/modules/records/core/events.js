@@ -22,7 +22,7 @@ class EventBus {
   emit(event, data) {
     if (this._listeners[event]) {
       this._listeners[event].forEach(fn => {
-        try { fn(data); } catch (e) { console.error(`[RecordsModule] Event '${event}' handler error:`, e); }
+        try { fn(data); } catch (e) { console.error(`[ArchiveModule] Event '${event}' handler error:`, e); }
       });
     }
   }

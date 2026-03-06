@@ -148,6 +148,33 @@ export function generatePlanSteps(dueDate) {
 /**
  * assignment 필드에서 표시용 텍스트를 추출 (object / string 둘 다 처리)
  */
+/**
+ * 이미지 리사이즈 (최대 너비 제한)
+ */
+export function resizeImage(file, maxWidth = 1200) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) {
+          resolve(e.target.result);
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        const ratio = maxWidth / img.width;
+        canvas.width = maxWidth;
+        canvas.height = Math.round(img.height * ratio);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export function getAssignmentDisplayText(assignment) {
   if (!assignment) return '';
   if (typeof assignment === 'string') return assignment;

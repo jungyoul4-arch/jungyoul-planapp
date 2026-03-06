@@ -743,6 +743,7 @@ function _renderSidebar() {
 function _renderHeader() {
   return `
     <div class="qb-header">
+      <button class="back-btn" onclick="_RM.back()" style="margin-right:4px"><i class="fas fa-arrow-left"></i></button>
       <button class="qb-hamburger" onclick="_RM.toggleQbSidebar()">
         <i class="fas fa-bars"></i>
       </button>

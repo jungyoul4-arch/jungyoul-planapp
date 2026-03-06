@@ -235,7 +235,7 @@ function downloadPDF() {
   const record = state.todayRecords[state._selectedPeriodIdx];
   const log = state._aiCreditLog;
   if (!log) return;
-  generateCreditLogPDF(log, record?.subject || '', kstToday());
+  generateCreditLogPDF(log, record?.subject || '', state._backfillDate || kstToday(), state.studentName || '');
 }
 
 // === 단계별 로딩 메시지 ===
@@ -571,7 +571,7 @@ export function renderAiResult() {
             ${editing ? '수정 완료' : '수정하기'}
           </button>
           <button class="cl-pdf-btn" onclick="_RM.downloadCreditLogPDF()">
-            <i class="fas fa-file-pdf" style="margin-right:6px"></i>PDF로 저장
+            <i class="fas fa-print" style="margin-right:6px"></i>인쇄물 보기
           </button>
         </div>
 
