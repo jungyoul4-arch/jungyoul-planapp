@@ -108,6 +108,19 @@ const _initialState = {
   _ahaDetail: null,
   _ahaDetailLoading: false,
 
+  // 창체 활동별 사진 업로드
+  _clubPhotos: [], _clubPhotoTags: [], _clubComment: '',
+  _careerPhotos: [], _careerPhotoTags: [], _careerComment: '',
+  _autonomyPhotos: [], _autonomyPhotoTags: [], _autonomyComment: '',
+  _readingPhotos: [], _readingPhotoTags: [], _readingComment: '',
+  _volPhotos: [], _volPhotoTags: [], _volComment: '',
+
+  // 창체 AI 분석 상태
+  _activityAnalyzing: false,
+  _activityAnalysisStep: '',
+  _activityAiResult: null,
+  _activityAiType: '',
+
   // 소급 기록
   _backfillDate: null,
   _backfillPeriod: null,

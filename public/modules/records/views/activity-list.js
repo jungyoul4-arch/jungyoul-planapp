@@ -1,125 +1,120 @@
 /* ================================================================
    Records Module — views/activity-list.js
-   활동 목록
+   창의적 체험활동 — Premium Bento Grid
    ================================================================ */
 
 import { state } from '../core/state.js';
-import { getSubjectColor } from '../core/utils.js';
+
+/* ── 카드 정의 (DB에서 recordCount/lastDate를 주입) ── */
+const BENTO_CARD_DEFS = [
+  { id: 'club',      activityType: 'club',      label: '동아리',     desc: '교내 동아리 활동 기록과 성장 과정을 관리하세요', icon: 'users',           color: '#6366f1', size: 'large',  badge: '자율동아리', screen: 'club-upload' },
+  { id: 'career',    activityType: 'career',    label: '진로',       desc: '진로 탐색과 체험 활동을 기록하세요',             icon: 'compass',         color: '#10b981', size: 'normal', badge: '진로탐색',   screen: 'career-upload' },
+  { id: 'autonomy',  activityType: 'autonomy',  label: '자율 · 자치', desc: '학생 자율 활동과 자치 활동을 기록하세요',         icon: 'shield',          color: '#f59e0b', size: 'normal', badge: '자율활동',   screen: 'autonomy-upload' },
+  { id: 'report',    activityType: null,         label: '탐구보고서', desc: '교과별 탐구 보고서를 체계적으로 작성하고 관리하세요', icon: 'file-search',  color: '#8b5cf6', size: 'large',  badge: '보고서',     screen: 'report-project' },
+  { id: 'reading',   activityType: 'reading',   label: '독서활동',   desc: '독서 기록과 서평을 남기세요',                     icon: 'book-open',       color: '#ec4899', size: 'normal', badge: '독서',       screen: 'reading-upload' },
+  { id: 'volunteer', activityType: 'volunteer', label: '봉사활동',   desc: '봉사활동 시간과 내용을 기록하세요',               icon: 'heart-handshake', color: '#06b6d4', size: 'normal', badge: '봉사',       screen: 'volunteer-upload' },
+];
+
+function _buildBentoCards() {
+  const records = state._dbActivityRecords || [];
+  return BENTO_CARD_DEFS.map(def => {
+    let recordCount = 0;
+    let lastDate = '';
+    let progress = 0;
+
+    if (def.activityType) {
+      // activity_records에서 해당 type 찾기
+      const ar = records.find(r => r.activity_type === def.activityType);
+      if (ar) {
+        recordCount = ar._logCount || 0;
+        lastDate = ar._lastLogDate || '';
+        progress = ar.progress || 0;
+      }
+    } else if (def.id === 'report') {
+      const reports = state._dbReportRecords || [];
+      recordCount = reports.length;
+      if (reports.length > 0) lastDate = (reports[0].created_at || '').slice(0, 10);
+      progress = reports.length > 0 ? (reports[0].status === 'completed' ? 100 : 30) : 0;
+    }
+
+    return { ...def, recordCount, lastDate, progress };
+  });
+}
 
 export function registerHandlers(RM) {
   RM.setActivityFilter = (filter) => {
     state._activityFilter = filter;
     RM.render();
   };
+
+  RM.onBentoCard = (cardId) => {
+    const card = BENTO_CARD_DEFS.find(c => c.id === cardId);
+    if (!card) return;
+    if (card.screen) RM.nav(card.screen);
+  };
 }
 
-function getFilterKey(type, subType) {
-  if (type === 'report') return '탐구보고서';
-  if (type === 'reading') return '독서';
-  if (subType === 'career') return '진로';
-  if (subType === 'self') return '자율자치';
-  return '동아리';
+/* ── Bento 카드 HTML 생성 ── */
+function renderBentoCards(data) {
+  return data.map(card => {
+    const isLarge = card.size === 'large';
+    const lastText = card.lastDate || '기록 없음';
+
+    return `
+    <div class="bento-card bento-card--${card.id}"
+         style="--card-accent: ${card.color}"
+         onclick="_RM.onBentoCard('${card.id}')">
+      <div class="bento-card-glow"></div>
+      <div class="bento-card-inner">
+        <div class="bento-card-top">
+          <div class="bento-icon-wrap" style="--icon-bg: ${card.color}1A">
+            <i data-lucide="${card.icon}"></i>
+          </div>
+          <span class="bento-badge">${card.badge}</span>
+        </div>
+        <div class="bento-card-mid">
+          <h3 class="bento-card-title">${card.label}</h3>
+          <p class="bento-card-desc">${card.desc}</p>
+        </div>
+        ${isLarge ? `
+        <div class="bento-progress-wrap">
+          <div class="bento-progress-bar">
+            <div class="bento-progress-fill" style="width: ${card.progress}%"></div>
+          </div>
+          <span class="bento-progress-text">${card.progress}%</span>
+        </div>` : ''}
+        <div class="bento-card-bottom">
+          <span class="bento-stat">기록 ${card.recordCount}건</span>
+          <span class="bento-divider">|</span>
+          <span class="bento-stat">${lastText}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
-function getTypeIcon(type, subType) {
-  if (type === 'report') return '📄';
-  if (type === 'reading') return '📖';
-  if (subType === 'career') return '🎯';
-  if (subType === 'self') return '🧠';
-  return '🎭';
-}
-
+/* ── 메인 렌더러 ── */
 export function renderRecordActivity() {
-  const ec = state.extracurriculars || [];
-  const currentFilter = state._activityFilter || '전체';
-  const filters = ['전체', '동아리', '진로', '자율자치', '탐구보고서', '독서'];
-
-  const filtered = currentFilter === '전체' ? ec : ec.filter(e => getFilterKey(e.type, e.subType) === currentFilter);
-
-  const inProgress = ec.filter(e => e.status !== 'completed').length;
-  const completed = ec.filter(e => e.status === 'completed').length;
-  const totalXp = ec.reduce((sum, e) => sum + (e.xpEarned || 0), 0);
+  setTimeout(() => {
+    if (window.lucide) window.lucide.createIcons();
+  }, 0);
 
   return `
-    <div class="full-screen animate-slide">
+    <div class="full-screen bento-page animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="_RM.nav('dashboard')"><i class="fas fa-arrow-left"></i></button>
-        <h1>🏫 창의적 체험활동</h1>
-      </div>
-      <div class="form-body">
-        <!-- 요약 배너 -->
-        <div class="act-summary-banner">
-          <div class="act-summary-item">
-            <span class="act-summary-num" style="color:var(--primary-light)">${inProgress}</span>
-            <span class="act-summary-label">진행중</span>
-          </div>
-          <div class="act-summary-divider"></div>
-          <div class="act-summary-item">
-            <span class="act-summary-num" style="color:#00B894">${completed}</span>
-            <span class="act-summary-label">완료</span>
-          </div>
-          <div class="act-summary-divider"></div>
-          <div class="act-summary-item">
-            <span class="act-summary-num" style="color:var(--xp-gold)">${totalXp}</span>
-            <span class="act-summary-label">총 XP</span>
-          </div>
-        </div>
-
-        <!-- 필터 탭 -->
-        <div class="act-filter-tabs">
-          ${filters.map(f => {
-            const count = f === '전체' ? ec.length : ec.filter(e => getFilterKey(e.type, e.subType) === f).length;
-            return `<button class="act-filter-tab ${f === currentFilter ? 'active' : ''}" onclick="_RM.setActivityFilter('${f}')">
-              ${f}<span class="act-filter-count">${count}</span>
-            </button>`;
-          }).join('')}
-        </div>
-
-        <!-- 활동 카드 목록 -->
-        ${filtered.length === 0 ? `
-        <div class="act-empty">
-          <div class="act-empty-icon">🏫</div>
-          <div class="act-empty-text">등록된 활동이 없어요</div>
-          <div class="act-empty-sub">새 활동을 추가해보세요!</div>
-          <button class="btn-primary" style="margin-top:16px;padding:10px 24px" onclick="_RM.nav('activity-add')">
-            + 활동 추가하기
-          </button>
-        </div>
-        ` : filtered.map(e => {
-          const typeIcon = getTypeIcon(e.type, e.subType);
-          const typeLabel = getFilterKey(e.type, e.subType);
-          const statusClass = e.status === 'completed' ? 'completed' : e.status === 'in-progress' ? 'in-progress' : 'pending';
-          const statusLabel = e.status === 'completed' ? '완료' : e.status === 'in-progress' ? '진행중' : '예정';
-          const color = e.color || getSubjectColor(e.subject || '기타');
-          const onclick = e.type === 'report' && e.report
-            ? `state.viewingReport='${e.id}';state.reportPhaseTab=${e.report?.currentPhase || 0};_RM.nav('report-project')`
-            : `state.viewingActivity='${e.id}';_RM.nav('activity-detail')`;
-          return `
-          <div class="act-card" onclick="${onclick}">
-            <div class="act-card-left">
-              <div class="act-card-type-badge" style="background:${color}15">${typeIcon}</div>
-            </div>
-            <div class="act-card-body">
-              <div class="act-card-top">
-                <span class="act-card-type-label" style="color:${color}">${typeLabel}</span>
-                <span class="act-card-subject">${e.subject || ''}</span>
-                <span class="act-card-status ${statusClass}">${statusLabel}</span>
-              </div>
-              <div class="act-card-title">${e.title}</div>
-              ${e.description ? `<div class="act-card-desc">${e.description}</div>` : ''}
-              <div class="act-card-footer">
-                <span class="act-card-date">${e.startDate || ''}</span>
-                <div class="act-card-progress"><div class="act-card-progress-fill" style="width:${e.progress || 0}%;background:${color}"></div></div>
-                <span class="act-card-progress-text">${e.progress || 0}%</span>
-              </div>
-            </div>
-          </div>`;
-        }).join('')}
-
-        <!-- 활동 추가 버튼 -->
-        <button class="act-add-float-btn" onclick="_RM.nav('activity-add')">
-          + 새 활동 추가하기
+        <button class="back-btn" onclick="_RM.nav('dashboard')">
+          <i class="fas fa-arrow-left"></i>
         </button>
+        <h1 class="bento-page-title">Creative Activities</h1>
+      </div>
+
+      <div class="bento-body">
+        <p class="bento-page-subtitle">
+          창의적 체험활동 영역을 선택하세요
+        </p>
+        <div class="bento-grid">
+          ${renderBentoCards(_buildBentoCards())}
+        </div>
       </div>
     </div>
   `;

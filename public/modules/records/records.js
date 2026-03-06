@@ -8,7 +8,7 @@ import { state, getState, setState, resetState } from './core/state.js';
 import { events, EVENTS } from './core/events.js';
 import { DB } from './core/api.js';
 import { setContainer, registerView, navigate, goBack, render, setOnNavigate } from './core/router.js';
-import { kstNow, kstToday } from './core/utils.js';
+import { kstToday } from './core/utils.js';
 
 // ── Views ──
 import { registerHandlers as dashboardHandlers, renderDashboard } from './views/dashboard.js';
@@ -40,6 +40,12 @@ import { registerHandlers as photoAlbumHandlers, renderPhotoAlbum } from './view
 import { registerHandlers as ahaInputHandlers, renderAhaInput } from './views/aha-report-input.js';
 import { registerHandlers as ahaResultHandlers, renderAhaLoading as renderAhaLoadingV2, renderAhaResult as renderAhaResultV2 } from './views/aha-report-result.js';
 import { registerHandlers as ahaListHandlers, renderAhaList, renderAhaDetail } from './views/aha-report-list.js';
+import { registerHandlers as clubUploadHandlers, renderClubUpload } from './views/club-upload.js';
+import { registerHandlers as careerUploadHandlers, renderCareerUpload } from './views/career-upload.js';
+import { registerHandlers as autonomyUploadHandlers, renderAutonomyUpload } from './views/autonomy-upload.js';
+import { registerHandlers as readingUploadHandlers, renderReadingUpload } from './views/reading-upload.js';
+import { registerHandlers as volunteerUploadHandlers, renderVolunteerUpload } from './views/volunteer-upload.js';
+import { registerHandlers as activityResultHandlers, renderActivityLoading, renderActivityResult } from './views/activity-result.js';
 
 // ── Components ──
 import { initCarousel, initDetailGalleryScroll } from './components/photo-upload.js';
@@ -80,6 +86,13 @@ const SCREEN_MAP = {
   'aha-result':            renderAhaResultV2,
   'aha-list':              renderAhaList,
   'aha-detail':            renderAhaDetail,
+  'club-upload':           renderClubUpload,
+  'career-upload':         renderCareerUpload,
+  'autonomy-upload':       renderAutonomyUpload,
+  'reading-upload':        renderReadingUpload,
+  'volunteer-upload':      renderVolunteerUpload,
+  'activity-loading':      renderActivityLoading,
+  'activity-result':       renderActivityResult,
 };
 
 // ── _RM 글로벌 네임스페이스 (인라인 onclick 핸들러) ──
@@ -107,15 +120,14 @@ const RM = {
 
 // 오늘의 시간표 → todayRecords 빌드
 function _buildTodayRecords() {
-  const now = kstNow();
-  const dayIdx = now.getDay() - 1; // 0=월 ~ 4=금
+  const today = kstToday(); // 'YYYY-MM-DD'
+  const dayIdx = new Date(today + 'T00:00:00').getDay() - 1; // 0=월 ~ 4=금
   if (dayIdx < 0 || dayIdx > 4) {
     state.todayRecords = [];
     return;
   }
   const tt = state.timetable || {};
   const daySchedule = (tt.school || [])[dayIdx] || [];
-  const today = kstToday();
   const dbRecords = state._dbClassRecords || [];
 
   state.todayRecords = daySchedule.map((subject, i) => {
@@ -167,6 +179,12 @@ function _registerAllHandlers() {
   ahaInputHandlers(RM);
   ahaResultHandlers(RM);
   ahaListHandlers(RM);
+  clubUploadHandlers(RM);
+  careerUploadHandlers(RM);
+  autonomyUploadHandlers(RM);
+  readingUploadHandlers(RM);
+  volunteerUploadHandlers(RM);
+  activityResultHandlers(RM);
 }
 
 // ── Public API ──

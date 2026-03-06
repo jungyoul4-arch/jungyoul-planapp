@@ -269,6 +269,71 @@ export const DB = {
     } catch (e) { console.error('loadActivityRecords:', e); }
   },
 
+  // 창체 활동 AI 분석
+  async analyzeActivity(photos, activityType, comment) {
+    try {
+      const res = await fetch('/api/ai/activity-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photos, activityType, comment: comment || '' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.success ? data : null;
+      }
+    } catch (e) { console.error('analyzeActivity:', e); }
+    return null;
+  },
+
+  // 창체 영역별 activity_record 자동 생성 (find or create)
+  async findOrCreateActivityRecord(activityType, title) {
+    const sid = studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/activity-records/find-or-create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activityType, title })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.recordId;
+      }
+    } catch (e) { console.error('findOrCreateActivityRecord:', e); }
+    return null;
+  },
+
+  // 창체 활동 로그 저장 (사진 + AI분석 결과 포함)
+  async saveActivityLogWithPhotos(activityType, title, photos, comment, date, aiResult) {
+    const sid = studentId();
+    if (!sid) return null;
+    try {
+      // 1. activity_record find or create
+      const recordId = await this.findOrCreateActivityRecord(activityType, title);
+      if (!recordId) throw new Error('activity_record 생성 실패');
+
+      // 2. activity_log 저장 (사진 + 소감 + AI 분석 결과)
+      const res = await fetch(`/api/student/${sid}/activity-logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activityRecordId: recordId,
+          date: date || new Date().toISOString().slice(0, 10),
+          content: comment || '활동 기록',
+          photos: photos || [],
+          aiResult: aiResult || null,
+          xpEarned: 20
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        await this.loadActivityRecords();
+        return data.logId;
+      }
+    } catch (e) { console.error('saveActivityLogWithPhotos:', e); }
+    return null;
+  },
+
   // === 활동 로그 (날짜별 기록) ===
   async saveActivityLog(activityRecordId, logData) {
     const sid = studentId();
