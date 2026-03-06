@@ -218,6 +218,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 ### 프론트엔드 관련
 <!-- 실수 발생 시 아래에 추가 -->
+- [2026-03-06] 모듈 임베드 시 CSS 셀렉터 스코프 불일치: Records 모듈을 `#records-container-tablet`에 마운트하면, 메인앱 `app.css`의 `#tablet-content .xxx` 셀렉터가 매칭되지 않아 레이아웃이 깨짐. 모듈을 별도 컨테이너에 넣을 때는 반드시 새 컨테이너 ID를 타겟하는 CSS 룰을 추가할 것. 미디어쿼리보다 ID 셀렉터 + `!important`가 확실. 코드만 보고 "완료" 선언하지 말고 반드시 브라우저에서 시각적 확인 필수
 - [2026-03-05] 모듈 init 시 파생 상태 빌드 누락: `state.timetable`을 저장했지만 `state.todayRecords`를 빌드하지 않아 "오늘은 수업이 없습니다" 표시. config 데이터를 state에 넣을 때, 그 데이터에서 파생되는 상태(todayRecords 등)도 반드시 init 시점에 빌드해야 함
 - [2026-03-05] class-record-edit vs class-record-detail 상태 키 차이: `class-record-detail`은 `state._viewingDbRecord` (DB id) 사용, `class-record-edit`는 `state._editingClassRecordIdx` (todayRecords 인덱스) + `todayRecords[idx]._dbRecordId` 사용. 수정 화면으로 이동 시 반드시 todayRecords에 DB 데이터를 로드하고 `_editingClassRecordIdx`를 설정해야 함
 - [2026-03-03] 프로젝트 경로: `/jungyoul/` ≠ `/jungyoul-planapp/` → 작업 전 반드시 `jungyoul-planapp` 경로인지 확인. 비슷한 이름의 다른 폴더에서 작업하면 시간 낭비
