@@ -20,6 +20,7 @@
   <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 
   <!-- Records Module CSS -->
+  <link rel="stylesheet" href="../../styles/skill-premium-card.css">
   <link rel="stylesheet" href="./records.css">
 
   <style>
@@ -162,7 +163,7 @@
     }
 
     /* 컨테이너 */
-    #records-container {
+    #archive-container {
       margin-top: 40px;
       min-height: calc(100vh - 40px);
     }
@@ -179,14 +180,14 @@
   </div>
 
   <!-- 메인 컨테이너 -->
-  <div id="records-container" class="records-module"></div>
+  <div id="archive-container" class="archive-module"></div>
 
   <!-- Records Module (ES Module) -->
   <script type="module">
-    import RecordsModule from './records.js';
+    import ArchiveModule from './records.js';
 
     // 글로벌 접근 (테스트용)
-    window._testRM = RecordsModule;
+    window._testRM = ArchiveModule;
 
     // 로그인 모달
     window.openLoginModal = function() {
@@ -321,9 +322,9 @@
             }
           } catch (_) {}
 
-          // RecordsModule 초기화
-          RecordsModule.init({
-            container: '#records-container',
+          // ArchiveModule 초기화
+          ArchiveModule.init({
+            container: '#archive-container',
             studentId: student.id,
             studentName: student.name,
             timetable,

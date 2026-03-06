@@ -177,11 +177,11 @@ function getDevicePreviewClass() {
 }
 
 // renderScreen debounce: 연속 호출 시 마지막 1회만 실행 (깜빡임 방지)
-// ==================== Records Module 통합 ====================
-let _recordsModuleActive = false;
+// ==================== Archive Module 통합 ====================
+let _archiveModuleActive = false;
 
-function _showRecordsModule(isTablet) {
-  const containerId = isTablet ? 'records-container-tablet' : 'records-container-phone';
+function _showArchiveModule(isTablet) {
+  const containerId = isTablet ? 'archive-container-tablet' : 'archive-container-phone';
   const contentId = isTablet ? 'tablet-content' : 'app-content';
   const recEl = document.getElementById(containerId);
   const contentEl = document.getElementById(contentId);
@@ -190,28 +190,28 @@ function _showRecordsModule(isTablet) {
   contentEl.style.display = 'none';
   recEl.style.display = 'flex';
 
-  if (!_recordsModuleActive && window.RecordsModule) {
-    window.RecordsModule.init({
+  if (!_archiveModuleActive && window.ArchiveModule) {
+    window.ArchiveModule.init({
       container: recEl,
       studentId: state._authUser?.id,
       studentName: state._authUser?.name || '',
       timetable: state.timetable || {},
       classmates: state.classmates || [],
     });
-    _recordsModuleActive = true;
+    _archiveModuleActive = true;
   }
 }
 
-function _hideRecordsModule() {
-  const phoneRec = document.getElementById('records-container-phone');
-  const tabletRec = document.getElementById('records-container-tablet');
+function _hideArchiveModule() {
+  const phoneRec = document.getElementById('archive-container-phone');
+  const tabletRec = document.getElementById('archive-container-tablet');
   const phoneContent = document.getElementById('app-content');
   const tabletContent = document.getElementById('tablet-content');
   if (phoneRec) phoneRec.style.display = 'none';
   if (tabletRec) tabletRec.style.display = 'none';
   if (phoneContent) phoneContent.style.display = '';
   if (tabletContent) tabletContent.style.display = '';
-  // _recordsModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
+  // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
 }
 
 let _renderTimer = null;
@@ -331,11 +331,11 @@ function _renderScreenImpl(forced) {
         }
       }
       // Records 모듈 탭 전환
-      if (state.studentTab === 'record' && state.currentScreen === 'main' && state._authUser) {
-        _showRecordsModule(true);
+      if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
+        _showArchiveModule(true);
         initMobileBottomTab();
       } else {
-        _hideRecordsModule();
+        _hideArchiveModule();
         tabletContent.innerHTML = renderStudentApp();
         initStudentEvents(tabletContent);
         initAuthEvents(tabletContent);
@@ -344,15 +344,24 @@ function _renderScreenImpl(forced) {
         setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
+        // Home tab GSAP stagger animation
+        setTimeout(() => {
+          if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
+            const cards = tabletContent.querySelectorAll('.home-row-top .card, .home-row-bottom .card, .home-bottom-col-left .card, .home-bottom-btn');
+            if (cards.length) {
+              window.gsap.from(cards, { duration: 0.55, y: 24, opacity: 0, stagger: 0.06, ease: 'power2.out', clearProps: 'all' });
+            }
+          }
+        }, 30);
       }
     } else {
       phoneContainer.style.display = 'flex';
       tabletContainer.style.display = 'none';
       // Records 모듈 탭 전환
-      if (state.studentTab === 'record' && state.currentScreen === 'main' && state._authUser) {
-        _showRecordsModule(false);
+      if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
+        _showArchiveModule(false);
       } else {
-        _hideRecordsModule();
+        _hideArchiveModule();
         container.innerHTML = renderStudentApp();
         initStudentEvents(container);
         initAuthEvents(container);
@@ -360,6 +369,15 @@ function _renderScreenImpl(forced) {
         setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') loadXpHistory(); }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
+        // Home tab GSAP stagger animation (phone)
+        setTimeout(() => {
+          if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
+            const cards = container.querySelectorAll('.home-row-top .card, .home-row-bottom .card, .home-bottom-col-left .card, .home-bottom-btn');
+            if (cards.length) {
+              window.gsap.from(cards, { duration: 0.55, y: 24, opacity: 0, stagger: 0.06, ease: 'power2.out', clearProps: 'all' });
+            }
+          }
+        }, 30);
       }
     }
   } else if (state.mode === 'mentor') {
@@ -496,7 +514,7 @@ function renderStudentApp() {
   content += renderXpBar();
   switch(state.studentTab) {
     case 'home': content += renderHomeTab(); break;
-    case 'record': content += renderRecordTab(); break;
+    case 'archive': content += renderRecordTab(); break;
     case 'planner': content += renderPlannerTab(); break;
     case 'growth': content += renderGrowthTab(); break;
     case 'myqa': content += '<div class="tab-content animate-in" style="display:flex;align-items:center;justify-content:center;min-height:60vh"><div style="text-align:center"><div style="font-size:48px;margin-bottom:16px">❓</div><div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:8px">질문/답변 사이트 열기</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">새 탭에서 질문/답변 사이트를 엽니다...</div></div></div>'; setTimeout(()=>{ openMyQaIframe(); state.studentTab='home'; renderScreen(); },100); break;
@@ -529,7 +547,7 @@ function renderXpBar() {
 function renderSidebar() {
   const tabs = [
     { id:'home', icon:'fa-house', label:'홈', emoji:'🏠' },
-    { id:'record', icon:'fa-pen-to-square', label:'기록', emoji:'✏️' },
+    { id:'archive', icon:'fa-pen-to-square', label:'아카이브', emoji:'✏️' },
     { id:'planner', icon:'fa-calendar-check', label:'플래너', emoji:'📅' },
     { id:'growth', icon:'fa-chart-line', label:'성장', emoji:'📈' },
     { id:'myqa', icon:'fa-circle-question', label:'내 질문', emoji:'❓' },
@@ -555,7 +573,7 @@ function renderSidebar() {
           <button class="sidebar-nav-item ${state.studentTab===t.id?'active':''}" data-tab="${t.id}">
             <i class="fas ${t.icon}"></i>
             <span class="sidebar-nav-label">${t.label}</span>
-            ${t.id === 'record' && unrecordedCount > 0 ? `<span class="sidebar-badge">${unrecordedCount}</span>` : ''}
+            ${t.id === 'archive' && unrecordedCount > 0 ? `<span class="sidebar-badge">${unrecordedCount}</span>` : ''}
             ${t.id === 'myqa' && state.myQaStats?.unanswered > 0 ? `<span class="sidebar-badge" style="background:var(--accent)">${state.myQaStats.unanswered}</span>` : ''}
           </button>
         `).join('')}
@@ -582,7 +600,7 @@ function renderSidebar() {
 function renderMobileBottomTab() {
   const tabs = [
     { id:'home', icon:'fa-house', label:'홈' },
-    { id:'record', icon:'fa-pen-to-square', label:'기록' },
+    { id:'archive', icon:'fa-pen-to-square', label:'아카이브' },
     { id:'planner', icon:'fa-calendar-check', label:'플래너' },
     { id:'growth', icon:'fa-chart-line', label:'성장' },
     { id:'myqa', icon:'fa-circle-question', label:'질문' },
@@ -618,7 +636,7 @@ function initMobileBottomTab() {
 
 function renderFab() {
   // 플래너 탭에서는 AI FAB가 대신 표시됨, 기록/내질문 탭에서는 이미 메뉴가 있으므로 불필요
-  if (state.studentTab === 'planner' || state.studentTab === 'record' || state.studentTab === 'myqa' || state.studentTab === 'community') return '';
+  if (state.studentTab === 'planner' || state.studentTab === 'archive' || state.studentTab === 'myqa' || state.studentTab === 'community') return '';
   return `<button class="fab" id="fab-btn"><i class="fas fa-plus"></i></button>`;
 }
 
@@ -1252,8 +1270,8 @@ function logout() {
   state._authMentorGroups = null;
   state._loginError = '';
   localStorage.removeItem('cp_auth');
-  _recordsModuleActive = false;
-  _hideRecordsModule();
+  _archiveModuleActive = false;
+  _hideArchiveModule();
   state.currentScreen = 'login';
   state.mode = 'student';
   renderScreen();
@@ -2504,7 +2522,7 @@ function renderRecordStatus() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
         <h1>📊 기록 관리 & 누락 체크</h1>
       </div>
       <div class="form-body">
@@ -3729,27 +3747,56 @@ function renderHomeTab() {
         </div>
       </div>
 
-      <!-- 2행: 미션 | 주간현황 | 과제 (3등분) -->
+      <!-- 2행: 미션+최근기록 | 주간현황 | 과제 (3등분) -->
       <div class="home-row-bottom">
-        <!-- Daily Missions -->
-        <div class="card stagger-3 animate-in">
-          <div class="card-header-row">
-            <span class="card-title">🎯 오늘의 미션</span>
-            <span class="xp-badge-sm">완료 시 +30 XP</span>
-          </div>
-          ${state.missions.map((m,i) => `
-            <div class="mission-row ${m.done?'done':''}">
-              <div class="mission-icon">${m.icon}</div>
-              <div class="mission-info">
-                <span class="mission-text">${m.text}</span>
-                <div class="mission-bar">
-                  <div class="mission-bar-fill" style="width:${Math.min(m.current/m.target*100,100)}%"></div>
-                </div>
-              </div>
-              <span class="mission-count">${m.current}/${m.target}</span>
-              ${m.done ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:18px"></i>' : ''}
+        <!-- 왼쪽 컬럼: 미션 + 최근 아카이브 -->
+        <div class="home-bottom-col-left">
+          <!-- Daily Missions -->
+          <div class="card stagger-3 animate-in">
+            <div class="card-header-row">
+              <span class="card-title">🎯 오늘의 미션</span>
+              <span class="xp-badge-sm">완료 시 +30 XP</span>
             </div>
-          `).join('')}
+            ${state.missions.map((m,i) => `
+              <div class="mission-row ${m.done?'done':''}">
+                <div class="mission-icon">${m.icon}</div>
+                <div class="mission-info">
+                  <span class="mission-text">${m.text}</span>
+                  <div class="mission-bar">
+                    <div class="mission-bar-fill" style="width:${Math.min(m.current/m.target*100,100)}%"></div>
+                  </div>
+                </div>
+                <span class="mission-count">${m.current}/${m.target}</span>
+                ${m.done ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:18px"></i>' : ''}
+              </div>
+            `).join('')}
+          </div>
+
+          <!-- 최근 아카이브 -->
+          <div class="card stagger-6 animate-in">
+            <div class="card-header-row">
+              <span class="card-title">📜 최근 아카이브</span>
+              <button class="card-link" onclick="state.studentTab='archive';state.currentScreen='main';renderScreen()">전체보기 →</button>
+            </div>
+            ${(() => {
+              const records = (state._dbClassRecords || []).slice(0, 4);
+              if (records.length === 0) {
+                return '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+              }
+              return '<div class="home-timeline">' + records.map(r =>
+                '<div class="home-timeline-item">' +
+                  '<div class="home-timeline-dot" style="background:var(--primary)"></div>' +
+                  '<div class="home-timeline-content">' +
+                    '<div class="home-timeline-header">' +
+                      '<span class="home-timeline-time">' + (r.date || '') + '</span>' +
+                      '<span class="home-timeline-subject">' + (r.subject || '') + '</span>' +
+                    '</div>' +
+                    '<p class="home-timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+                  '</div>' +
+                '</div>'
+              ).join('') + '</div>';
+            })()}
+          </div>
         </div>
 
         <!-- Weekly Mini Chart -->
@@ -3957,7 +4004,7 @@ function renderAhaReport() {
     return `
       <div class="full-screen animate-slide">
         <div class="screen-header">
-          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
           <h1>💡 아하 리포트</h1>
         </div>
         <div class="form-body">
@@ -4035,7 +4082,7 @@ function renderAhaReport() {
             `}
           </div>
 
-          <button onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='record'" class="btn-primary" style="width:100%;margin-top:8px">기록 탭으로 돌아가기</button>
+          <button onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'" class="btn-primary" style="width:100%;margin-top:8px">아카이브로 돌아가기</button>
         </div>
       </div>
     `;
@@ -4046,7 +4093,7 @@ function renderAhaReport() {
     return `
       <div class="full-screen animate-slide">
         <div class="screen-header">
-          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
           <h1>💡 아하 리포트</h1>
         </div>
         <div class="form-body">
@@ -4064,7 +4111,7 @@ function renderAhaReport() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
         <h1>💡 아하 리포트</h1>
       </div>
       <div class="form-body">
@@ -4510,7 +4557,7 @@ function renderAhaReportList() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="state._ahaReportList=null;goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="state._ahaReportList=null;goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
         <h1>📚 내 아하 리포트</h1>
       </div>
       
@@ -5121,7 +5168,7 @@ function renderRecordTab() {
       <!-- Recent Records Timeline -->
       <div class="card stagger-7 animate-in">
         <div class="card-header-row">
-          <span class="card-title">📜 최근 기록</span>
+          <span class="card-title">📜 최근 아카이브</span>
           <button class="card-link" onclick="goScreen('record-history')">전체보기 →</button>
         </div>
         
@@ -5226,7 +5273,7 @@ function renderExamList() {
   return `
     <div class="full-screen animate-in">
       <div class="screen-header">
-        <button class="back-btn" onclick="goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
         <h1>🎯 시험 관리</h1>
         <button class="header-action-btn" onclick="resetExamAddState();goScreen('exam-add')" title="시험 추가"><i class="fas fa-plus"></i></button>
       </div>
@@ -7240,7 +7287,7 @@ function renderPortfolio() {
   return `
     <div class="full-screen animate-in">
       <div class="screen-header">
-        <button class="back-btn" onclick="goScreen('main');state.studentTab='record'"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
         <h1>📊 나의 활동 기록부</h1>
       </div>
       <div class="form-body" style="padding-bottom:24px">
@@ -11193,7 +11240,7 @@ function renderRecordHistory() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="state.studentTab='record';goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="state.studentTab='archive';goScreen('main')"><i class="fas fa-arrow-left"></i></button>
         <h1>📜 기록 히스토리</h1>
       </div>
 
@@ -13406,7 +13453,7 @@ window.addEventListener('popstate', (e) => {
     if (prevScreen === 'main') {
       state.currentScreen = 'main';
       // 기본 홈 탭으로
-      if (!['home','record','planner','growth','my'].includes(state.studentTab)) {
+      if (!['home','archive','planner','growth','my'].includes(state.studentTab)) {
         state.studentTab = 'home';
       }
     } else {
@@ -13614,7 +13661,7 @@ function showXpPopup(amount, label, options) {
 function initStudentEvents(root) {
   // FAB
   const fab = document.getElementById('fab-btn');
-  if (fab) fab.addEventListener('click', () => { state.studentTab = 'record'; state.currentScreen = 'main'; renderScreen(); });
+  if (fab) fab.addEventListener('click', () => { state.studentTab = 'archive'; state.currentScreen = 'main'; renderScreen(); });
 
   // Mood buttons
   document.querySelectorAll('.mood-btn').forEach(btn => {
