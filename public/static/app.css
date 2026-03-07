@@ -206,17 +206,6 @@ body {
 #device-preview-frame.preview-phone #tablet-content .full-screen { max-width:100% !important; }
 #device-preview-frame.preview-phone #tablet-content .xp-bar-container { padding:8px 16px !important; }
 #device-preview-frame.preview-phone #tablet-content .planner-timeline { max-width:100% !important; }
-#device-preview-frame.preview-phone #tablet-content .planner-two-col {
-  grid-template-columns:1fr !important;
-}
-#device-preview-frame.preview-phone #tablet-content .planner-col-timeline {
-  border-right:none !important;
-  border-bottom:1px solid var(--border) !important;
-}
-#device-preview-frame.preview-phone #tablet-content .planner-col-todo {
-  position:static !important;
-  padding:12px !important;
-}
 #device-preview-frame.preview-phone #tablet-content .profile-card { max-width:100% !important; }
 
 /* Tablet preview mode */
@@ -2605,6 +2594,98 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   background: rgba(108,92,231,0.05);
 }
 
+/* ==================== HOME DAILY TODO LIST ==================== */
+.home-todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(108,92,231,0.2) transparent;
+}
+.home-todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.home-todo-item:hover { background: var(--bg-card-hover); }
+.home-todo-item.done { opacity: 0.4; }
+.home-todo-item.done .home-todo-text {
+  text-decoration: line-through;
+  text-decoration-color: rgba(255,255,255,0.3);
+}
+.home-todo-check {
+  cursor: pointer;
+  font-size: 15px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+}
+.home-todo-text {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-todo-del {
+  opacity: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px;
+  flex-shrink: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.home-todo-item:hover .home-todo-del { opacity: 1; }
+.home-todo-del:hover { color: var(--danger); }
+.home-todo-input-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.home-todo-input {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.2s;
+}
+.home-todo-input:focus { border-color: var(--primary); }
+.home-todo-input::placeholder { color: var(--text-muted); opacity: 0.5; }
+.home-todo-add-btn {
+  background: var(--primary);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+  transition: background 0.2s, transform 0.1s;
+}
+.home-todo-add-btn:hover { background: var(--primary-dark); }
+.home-todo-add-btn:active { transform: scale(0.95); }
+
 /* ==================== HOME AGENDA MINI LIST ==================== */
 .home-agenda-list {
   display: flex;
@@ -2985,6 +3066,9 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
 .pm-cell:hover { background:var(--bg-input); }
 .pm-cell.today { border-color:var(--primary); background:rgba(108,92,231,0.1); }
 .pm-cell.deadline .pm-day-num { color:var(--accent); font-weight:800; }
+.pm-cell.pm-dday { border-color:#EF4444; background:rgba(239,68,68,0.12); }
+.pm-cell.pm-dday .pm-day-num { color:#EF4444; font-weight:900; font-size:15px; }
+.pm-cell.pm-d7 .pm-day-num { color:#F59E0B; font-weight:700; }
 .pm-cell.empty { background:none; cursor:default; }
 .pm-day-num { font-size:13px; font-weight:600; color:var(--text-primary); }
 .pm-dots { display:flex; gap:2px; }

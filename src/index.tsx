@@ -1823,6 +1823,119 @@ app.delete('/api/student/assignments/:assignmentId', async (c) => {
 });
 
 
+// ==================== STUDENT DATA API: 오늘 할 일 (Daily Todos) ====================
+
+app.get('/api/student/:studentId/daily-todos', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const date = c.req.query('date') || new Date().toISOString().split('T')[0];
+    const todos = await c.env.DB.prepare(
+      'SELECT * FROM daily_todos WHERE student_id = ? AND date = ? ORDER BY is_completed ASC, sort_order ASC, id ASC'
+    ).bind(studentId, date).all();
+    return c.json({ success: true, data: todos.results });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.post('/api/student/:studentId/daily-todos', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const { content, date } = await c.req.json();
+    if (!content?.trim()) return c.json({ success: false, error: '내용을 입력하세요' }, 400);
+    const todoDate = date || new Date().toISOString().split('T')[0];
+    const result = await c.env.DB.prepare(
+      'INSERT INTO daily_todos (student_id, date, content, sort_order) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM daily_todos WHERE student_id = ? AND date = ?))'
+    ).bind(studentId, todoDate, content.trim(), studentId, todoDate).run();
+    return c.json({ success: true, data: { id: result.meta.last_row_id, content: content.trim(), date: todoDate, is_completed: 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.patch('/api/student/:studentId/daily-todos/:todoId', async (c) => {
+  try {
+    const todoId = c.req.param('todoId');
+    const body = await c.req.json();
+    const fields: string[] = [];
+    const values: any[] = [];
+    if (body.is_completed !== undefined) { fields.push('is_completed = ?'); values.push(body.is_completed ? 1 : 0); }
+    if (body.content !== undefined) { fields.push('content = ?'); values.push(body.content.trim()); }
+    if (fields.length === 0) return c.json({ success: false, error: '변경할 필드 없음' }, 400);
+    values.push(todoId);
+    await c.env.DB.prepare(`UPDATE daily_todos SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.delete('/api/student/:studentId/daily-todos/:todoId', async (c) => {
+  try {
+    const todoId = c.req.param('todoId');
+    await c.env.DB.prepare('DELETE FROM daily_todos WHERE id = ?').bind(todoId).run();
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== STUDENT DATA API: 플래너 통합 조회 ====================
+
+app.get('/api/student/:studentId/planner', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const month = c.req.query('month'); // YYYY-MM
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return c.json({ error: 'month 파라미터 필수 (YYYY-MM)' }, 400);
+    }
+    const monthPrefix = month + '%';
+
+    const [assignments, exams] = await Promise.all([
+      c.env.DB.prepare(
+        'SELECT id, subject, title, due_date, status, color FROM assignments WHERE student_id = ? AND due_date LIKE ?'
+      ).bind(studentId, monthPrefix).all(),
+      c.env.DB.prepare(
+        'SELECT id, name, type, start_date, subjects FROM exams WHERE student_id = ? AND start_date LIKE ?'
+      ).bind(studentId, monthPrefix).all(),
+    ]);
+
+    const events: any[] = [];
+
+    (assignments.results as any[]).forEach(a => {
+      events.push({
+        id: 'a-' + a.id,
+        date: a.due_date,
+        type: 'assignment',
+        subject: a.subject || '',
+        title: a.title,
+        color: a.color || '#3B82F6',
+        status: a.status,
+      });
+    });
+
+    (exams.results as any[]).forEach(e => {
+      const typeColorMap: Record<string, string> = {
+        midterm: '#EF4444', final: '#EF4444',
+        performance: '#F59E0B', mock: '#1D4ED8', quiz: '#10B981',
+      };
+      events.push({
+        id: 'e-' + e.id,
+        date: e.start_date,
+        type: e.type || 'midterm',
+        subject: '',
+        title: e.name,
+        color: typeColorMap[e.type] || '#EF4444',
+        subjects: e.subjects,
+      });
+    });
+
+    return c.json({ success: true, data: { events } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
 // ==================== STUDENT DATA API: 수업 기록 ====================
 
 app.get('/api/student/:studentId/class-records', async (c) => {
@@ -3456,6 +3569,9 @@ app.get('/api/migrate', async (c) => {
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_slots_unique ON timetable_slots(semester_id, day_of_week, period)`,
       `CREATE TABLE IF NOT EXISTS exam_subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, exam_date TEXT NOT NULL, period INTEGER, scope TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam ON exam_subjects(exam_id)`,
+      // ===== 오늘 할 일 (Daily Todos) =====
+      `CREATE TABLE IF NOT EXISTS daily_todos (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL, is_completed INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_daily_todos_student_date ON daily_todos(student_id, date)`,
       // ===== 릴레이단어장 =====
       `CREATE TABLE IF NOT EXISTS relay_wordbooks (id INTEGER PRIMARY KEY AUTOINCREMENT, class_id INTEGER NOT NULL, date TEXT NOT NULL, words TEXT NOT NULL DEFAULT '[]', is_ready INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_wordbooks_unique ON relay_wordbooks(class_id, date)`,
