@@ -1530,30 +1530,31 @@ app.post('/api/mentor/:mentorId/sync-students', async (c) => {
       if (g.external_class_id) classToGroupMap.set(Number(g.external_class_id), g.id);
     }
 
-    // 모든 학생의 external_user_id를 한 번에 수집
-    const allStudentIds: number[] = [];
-    const studentClassMap = new Map<number, { name: string, groupId: number }>();
+    // ★ 핵심: 한 학생이 여러 그룹에 속할 수 있으므로 (extUserId, groupId) 쌍으로 관리
+    const allEntries: { extUserId: number, groupId: number, name: string }[] = [];
+    const allGroupIds = new Set<number>();
     for (const cls of studentsData.classes) {
       const groupId = classToGroupMap.get(Number(cls.class_id));
       if (!groupId) continue;
+      allGroupIds.add(groupId);
       for (const st of cls.students) {
-        allStudentIds.push(st.user_id);
-        studentClassMap.set(st.user_id, { name: st.name, groupId });
+        allEntries.push({ extUserId: Number(st.user_id), groupId, name: st.name });
       }
     }
 
-    if (allStudentIds.length === 0) return c.json({ success: true, synced: 0 });
+    if (allEntries.length === 0) return c.json({ success: true, synced: 0 });
 
-    // 기존 학생 일괄 조회 (D1 바인드 변수 제한 때문에 청크로)
-    const existingMap = new Map<number, any>();
-    for (let i = 0; i < allStudentIds.length; i += 80) {
-      const chunk = allStudentIds.slice(i, i + 80);
+    // 해당 멘토의 모든 활성 그룹에서 기존 학생을 (external_user_id, group_id) 조합으로 조회
+    const existingMap = new Map<string, any>(); // key: "extUserId_groupId"
+    const groupIdArr = Array.from(allGroupIds);
+    for (let i = 0; i < groupIdArr.length; i += 80) {
+      const chunk = groupIdArr.slice(i, i + 80);
       const placeholders = chunk.map(() => '?').join(',');
       const existingStudents: any = await c.env.DB.prepare(
-        `SELECT id, external_user_id, group_id, name FROM students WHERE external_user_id IN (${placeholders})`
+        `SELECT id, external_user_id, group_id, name FROM students WHERE group_id IN (${placeholders}) AND external_user_id IS NOT NULL`
       ).bind(...chunk).all();
       for (const s of (existingStudents.results || [])) {
-        existingMap.set(Number(s.external_user_id), s);
+        existingMap.set(`${s.external_user_id}_${s.group_id}`, s);
       }
     }
 
@@ -1562,25 +1563,38 @@ app.post('/api/mentor/:mentorId/sync-students', async (c) => {
     const defaultPwHash = await hashPassword('ext_student_auto');
     const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
 
-    for (const [extUserId, info] of studentClassMap) {
-      const existing = existingMap.get(extUserId);
+    for (const entry of allEntries) {
+      const key = `${entry.extUserId}_${entry.groupId}`;
+      const existing = existingMap.get(key);
       if (!existing) {
+        // 해당 그룹에 이 학생이 없음 → INSERT (다른 그룹에 같은 학생이 있어도 별도 레코드)
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
         batchStmts.push(
           c.env.DB.prepare(
             'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(info.groupId, info.name, defaultPwHash, '', 0, emoji, extUserId)
+          ).bind(entry.groupId, entry.name, defaultPwHash, '', 0, emoji, entry.extUserId)
         );
-      } else if (existing.group_id !== info.groupId || existing.name !== info.name) {
+      } else if (existing.name !== entry.name) {
+        // 이름 변경 시 업데이트
         batchStmts.push(
           c.env.DB.prepare(
-            'UPDATE students SET group_id = ?, name = ? WHERE id = ?'
-          ).bind(info.groupId, info.name, existing.id)
+            'UPDATE students SET name = ? WHERE id = ?'
+          ).bind(entry.name, existing.id)
         );
       }
     }
 
-    // D1 batch는 최대 ~100개 정도가 안전, 청크로 나눠서 실행
+    // ★ 외부 API에 없는 학생 비활성화 (이전 잘못된 배정 정리)
+    const remoteKeys = new Set(allEntries.map(e => `${e.extUserId}_${e.groupId}`));
+    for (const [key, existing] of existingMap) {
+      if (!remoteKeys.has(key)) {
+        batchStmts.push(
+          c.env.DB.prepare('UPDATE students SET is_active = 0 WHERE id = ?').bind(existing.id)
+        );
+      }
+    }
+
+    // D1 batch 최대 ~100개, 청크로 나눠서 실행
     let synced = 0;
     for (let i = 0; i < batchStmts.length; i += 50) {
       const chunk = batchStmts.slice(i, i + 50);
