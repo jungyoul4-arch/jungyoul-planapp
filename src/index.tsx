@@ -1982,6 +1982,19 @@ app.post('/api/student/:studentId/class-records', async (c) => {
   }
 });
 
+// 수업 기록 삭제
+app.delete('/api/student/class-records/:recordId', async (c) => {
+  try {
+    const recordId = c.req.param('recordId')
+    // 관련 사진도 삭제
+    await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(recordId).run()
+    await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(recordId).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // 수업 기록 수정
 app.put('/api/student/class-records/:recordId', async (c) => {
   try {
