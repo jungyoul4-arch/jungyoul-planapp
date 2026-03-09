@@ -121,31 +121,37 @@ const RM = {
 // 오늘의 시간표 → todayRecords 빌드
 function _buildTodayRecords() {
   const today = kstToday(); // 'YYYY-MM-DD'
-  const dayIdx = new Date(today + 'T00:00:00').getDay() - 1; // 0=월 ~ 4=금
+  const todayDate = new Date(today + 'T00:00:00Z'); // UTC 기준 파싱
+  const jsDay = todayDate.getUTCDay(); // UTC 기준 요일 (0=일~6=토)
+  const dayIdx = jsDay === 0 ? -1 : jsDay - 1; // 월~금만
+
   if (dayIdx < 0 || dayIdx > 4) {
     state.todayRecords = [];
     return;
   }
   const tt = state.timetable || {};
-  const daySchedule = (tt.school || [])[dayIdx] || [];
+  const school = tt.school || [];
   const dbRecords = state._dbClassRecords || [];
+  const newRecords = [];
 
-  state.todayRecords = daySchedule.map((subject, i) => {
-    const period = i + 1;
-    // DB에서 오늘 날짜 + 같은 과목의 기록이 있으면 done 처리
+  // school[교시][요일] 형태: school[pi][dayIdx] = 해당 교시의 해당 요일 과목
+  for (let pi = 0; pi < school.length; pi++) {
+    const subject = (school[pi] || [])[dayIdx];
+    if (!subject) continue;
     const existing = dbRecords.find(r => r.date === today && r.subject === subject);
-    return {
-      period,
+    newRecords.push({
+      period: pi + 1,
       subject,
       teacher: (tt.teachers || {})[subject] || '',
       color: (tt.subjectColors || {})[subject] || '#636e72',
-      startTime: (tt.periodTimes || [])[i]?.start || '',
-      endTime: (tt.periodTimes || [])[i]?.end || '',
+      startTime: (tt.periodTimes || [])[pi]?.start || '',
+      endTime: (tt.periodTimes || [])[pi]?.end || '',
       done: !!existing,
       summary: existing ? (existing.topic || existing.content || '수업 기록 완료') : '',
       _dbRecordId: existing ? existing.id : null,
-    };
-  });
+    });
+  }
+  state.todayRecords = newRecords;
 }
 
 // 모든 뷰의 핸들러 등록

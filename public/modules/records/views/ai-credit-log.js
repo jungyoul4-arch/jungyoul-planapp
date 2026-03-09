@@ -122,6 +122,11 @@ async function saveCreditLog() {
   const record = state.todayRecords[state._selectedPeriodIdx];
   if (!record || !state._aiCreditLog) return;
 
+  // 중복 저장 방지
+  if (state._savingCreditLog) return;
+  state._savingCreditLog = true;
+
+  try {
   const log = state._aiCreditLog;
   const subject = record.subject;
   const period = record.period;
@@ -218,6 +223,7 @@ async function saveCreditLog() {
   }
 
   // 리셋
+  state._savingCreditLog = false;
   state._classPhotos = [];
   state._classPhotoTags = [];
   state._aiCreditLog = null;
@@ -229,6 +235,10 @@ async function saveCreditLog() {
   showXpPopup(15, xpLabel);
   events.emit(EVENTS.XP_EARNED, { amount: 15, label: xpLabel });
   navigate('dashboard');
+  } catch (e) {
+    console.error('saveCreditLog error:', e);
+    state._savingCreditLog = false;
+  }
 }
 
 function downloadPDF() {
