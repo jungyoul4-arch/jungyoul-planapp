@@ -222,6 +222,57 @@ function _hideArchiveModule() {
   // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
 }
 
+// ==================== 홈 → 아카이브 기록 플로우 브릿지 ====================
+// 아카이브 모듈이 준비될 때까지 대기 후 콜백 실행
+function _waitForArchiveReady(callback) {
+  const wasActive = _archiveModuleActive;
+  const isTablet = window.innerWidth >= 768;
+  
+  state.studentTab = 'archive';
+  state.currentScreen = 'main';
+  _showArchiveModule(isTablet);
+  renderScreen();
+  
+  if (wasActive && window._RM) {
+    // 이미 활성화됨 → 약간의 딜레이 후 실행 (DOM 업데이트 대기)
+    setTimeout(() => { if (window._RM) callback(); }, 50);
+  } else {
+    // 처음 초기화 → DB 로딩 완료까지 대기 (최대 3초)
+    let tries = 0;
+    const check = setInterval(() => {
+      tries++;
+      if (window._RM) {
+        clearInterval(check);
+        callback();
+      } else if (tries > 30) {
+        clearInterval(check);
+        console.warn('[Bridge] ArchiveModule not ready after 3s');
+      }
+    }, 100);
+  }
+}
+
+// 홈 시간표에서 '기록하기' 클릭 → 아카이브 모듈의 사진 업로드 플로우로 진입
+function openArchiveRecord(periodIdx) {
+  _waitForArchiveReady(() => {
+    window._RM.selectPeriod(periodIdx);
+  });
+}
+
+// 홈에서 기록 완료된 과목 클릭 → 아카이브 모듈의 상세 보기로 진입
+function viewRecordViaArchive(periodIdx) {
+  _waitForArchiveReady(() => {
+    window._RM.viewCompletedPeriod(periodIdx);
+  });
+}
+
+// 홈에서 미기록 수업 배너/수업종료 팝업 버튼 → 아카이브 오늘의 업(period-select)으로 진입
+function openArchivePeriodSelect() {
+  _waitForArchiveReady(() => {
+    window._RM.nav('period-select');
+  });
+}
+
 let _renderTimer = null;
 let _renderForced = false;
 // 이전 렌더링 상태 추적 - 같은 화면이면 innerHTML 교체 스킵
@@ -2587,7 +2638,7 @@ function showClassEndNotification(record) {
       <strong>${record.period}교시 ${record.subject}</strong> 수업 끝!
       <span>지금 바로 기록해보세요</span>
     </div>
-    <button class="ceb-btn" onclick="this.closest('.class-end-banner').remove();goScreen('class-end-popup')">기록하기</button>
+    <button class="ceb-btn" onclick="this.closest('.class-end-banner').remove();openArchivePeriodSelect()">기록하기</button>
     <button class="ceb-close" onclick="this.closest('.class-end-banner').remove()">✕</button>
   `;
   // 기존 배너 제거
@@ -3970,7 +4021,7 @@ function renderHomeTab() {
 
       ${hasUnrecordedEndedClass() ? `
       <!-- 미기록 수업 경고 배너 -->
-      <div class="unrecorded-warn-banner stagger-1 animate-in" onclick="goScreen('class-end-popup')" style="margin:0 16px 12px">
+      <div class="unrecorded-warn-banner stagger-1 animate-in" onclick="openArchivePeriodSelect()" style="margin:0 16px 12px">
         <span style="font-size:20px">🔔</span>
         <div style="flex:1">
           <div style="font-size:13px;font-weight:700;color:var(--accent)">미기록 수업 ${countUnrecordedEndedClasses()}개!</div>
@@ -4090,7 +4141,7 @@ function renderHomeTab() {
               </div>
             ` : ''}
             ${state.todayRecords.map((r, idx) => `
-              <div class="tt-row ${r.done?'done':''} ${idx === schoolDone && !r.done?'current':''} ${getClassEndStatus(r)==='just-ended'?'tt-just-ended':''}" data-tt-idx="${idx}" data-tt-start="${r.startTime||''}" data-tt-end="${r.endTime||''}" data-tt-done="${r.done?1:0}" ${r.done ? `onclick="viewTodayRecord(${idx})" style="cursor:pointer"` : ''}>
+              <div class="tt-row ${r.done?'done':''} ${idx === schoolDone && !r.done?'current':''} ${getClassEndStatus(r)==='just-ended'?'tt-just-ended':''}" data-tt-idx="${idx}" data-tt-start="${r.startTime||''}" data-tt-end="${r.endTime||''}" data-tt-done="${r.done?1:0}" ${r.done ? `onclick="viewRecordViaArchive(${idx})" style="cursor:pointer"` : ''}>
                 <div class="tt-period-badge ${r.done?'done':idx===schoolDone?'current':''}" style="${r.done?'':''}">
                   ${r.done ? '<i class="fas fa-check" style="font-size:10px"></i>' : r.period}
                 </div>
@@ -4107,7 +4158,7 @@ function renderHomeTab() {
                         <span class="tt-done-badge">✅</span>
                       </div>`
                     : (idx === schoolDone
-                      ? `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();goScreen('class-end-popup')">기록하기</button>`
+                      ? `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();openArchiveRecord(${idx})">기록하기</button>`
                       : `<span class="tt-locked"><i class="fas fa-lock" style="font-size:10px"></i></span>`
                     )
                   }
@@ -4300,7 +4351,7 @@ function renderHomeTab() {
           <i class="fas fa-moon"></i>
           <span>저녁 루틴</span>
         </button>
-        <button class="home-bottom-btn ${hasUnrecordedEndedClass()?'active':''}" onclick="goScreen('class-end-popup')">
+        <button class="home-bottom-btn ${hasUnrecordedEndedClass()?'active':''}" onclick="openArchivePeriodSelect()">
           <i class="fas fa-bell"></i>
           <span>수업종료 팝업</span>
           ${hasUnrecordedEndedClass()?`<span class="home-bottom-badge">${countUnrecordedEndedClasses()}</span>`:''}

@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'cp-20260308-v1';
+const CACHE_VERSION = 'cp-20260309-v1';
 
 // 오프라인에서만 사용할 기본 리소스
 const OFFLINE_ASSETS = [
