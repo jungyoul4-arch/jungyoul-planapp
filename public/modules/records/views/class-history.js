@@ -4,7 +4,7 @@
    ================================================================ */
 
 import { state } from '../core/state.js';
-import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP } from '../core/utils.js';
+import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP, skeletonCards } from '../core/utils.js';
 
 export function registerHandlers(RM) {
   RM.setGalleryFilter = (sub) => {
@@ -53,6 +53,34 @@ function _buildRecords() {
 }
 
 export function renderClassRecordHistory() {
+  // 데이터 아직 로딩 중이면 스켈레톤 표시
+  if (state._dbClassRecords === null) {
+    return `
+      <div class="full-screen animate-slide">
+        <div class="rg-header">
+          <button class="rg-back-btn" onclick="_RM.nav('dashboard')"><i class="fas fa-arrow-left"></i></button>
+          <h1 class="rg-title">나의 수업 다시보기</h1>
+        </div>
+        <div class="rg-body">
+          <div class="rg-summary-bar">
+            <div class="rg-stat"><div class="skeleton skeleton-text" style="width:24px;height:20px;margin:0 auto 4px"></div><span class="rg-stat-label">총 기록</span></div>
+            <div class="rg-stat-divider"></div>
+            <div class="rg-stat"><div class="skeleton skeleton-text" style="width:24px;height:20px;margin:0 auto 4px"></div><span class="rg-stat-label">첨부 사진</span></div>
+            <div class="rg-stat-divider"></div>
+            <div class="rg-stat"><div class="skeleton skeleton-text" style="width:24px;height:20px;margin:0 auto 4px"></div><span class="rg-stat-label">과목</span></div>
+            <div class="rg-stat-divider"></div>
+            <div class="rg-stat"><div class="skeleton skeleton-text" style="width:24px;height:20px;margin:0 auto 4px"></div><span class="rg-stat-label">기록일</span></div>
+          </div>
+          <div style="display:flex;gap:8px;padding:0 16px;margin-bottom:16px">
+            <div class="skeleton skeleton-chip" style="width:48px;height:32px;border-radius:16px"></div>
+            <div class="skeleton skeleton-chip" style="width:56px;height:32px;border-radius:16px"></div>
+            <div class="skeleton skeleton-chip" style="width:52px;height:32px;border-radius:16px"></div>
+          </div>
+          <div class="skeleton-grid">${skeletonCards(4)}</div>
+        </div>
+      </div>`;
+  }
+
   const allRecords = _buildRecords();
   const currentFilter = state._recordGalleryFilter || '전체';
   const currentSort = state._recordGallerySort || 'newest';

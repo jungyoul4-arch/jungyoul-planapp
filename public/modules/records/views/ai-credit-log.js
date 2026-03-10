@@ -8,7 +8,7 @@ import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
 import { navigate } from '../core/router.js';
 import { events, EVENTS } from '../core/events.js';
-import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, generatePlanSteps, SUBJECT_COLOR_MAP } from '../core/utils.js';
+import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, generatePlanSteps, SUBJECT_COLOR_MAP, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { showXpPopup } from '../components/xp-popup.js';
 
@@ -126,70 +126,103 @@ async function saveCreditLog() {
   if (state._savingCreditLog) return;
   state._savingCreditLog = true;
 
-  try {
+  // 저장 버튼 즉시 시각 피드백
+  const saveBtn = document.querySelector('.cl-save-btn');
+  if (saveBtn) {
+    saveBtn.classList.add('saving');
+    saveBtn.textContent = '저장 중...';
+  }
+
   const log = state._aiCreditLog;
   const subject = record.subject;
   const period = record.period;
   const date = state._backfillDate || kstToday();
-  const photos = state._classPhotos || [];
-  const tags = state._classPhotoTags || [];
-
-  // 태그 정규화: 기존 값도 필기/참고로 매핑
+  const photos = [...(state._classPhotos || [])]; // 사본 보관 (비동기 업로드용)
+  const tags = [...(state._classPhotoTags || [])];
   const normalizedTags = tags.map(t => t === '필기' ? '필기' : '참고');
+  const hasAssignment = log.assignment && typeof log.assignment === 'object' && log.assignment.title;
 
-  const recordId = await DB.saveClassRecord({
-    subject,
-    date,
-    content: log.topic || '',
-    keywords: log.keywords || [],
-    understanding: 3,
-    memo: JSON.stringify({ period, pages: log.pages || '', teacherNote: log.highlights || '', photoCount: photos.length }),
-    topic: log.topic || '',
-    pages: log.pages || '',
-    photos,
-    teacher_note: log.highlights || '',
-    ai_credit_log: log,
-    photo_tags: normalizedTags,
-  });
+  try {
+    // 1단계: 메인 레코드 저장 (사진 제외 — 빠름)
+    const recordId = await DB.saveClassRecord({
+      subject, date,
+      content: log.topic || '',
+      keywords: log.keywords || [],
+      understanding: 3,
+      memo: JSON.stringify({ period, pages: log.pages || '', teacherNote: log.highlights || '', photoCount: photos.length }),
+      topic: log.topic || '', pages: log.pages || '',
+      photos, teacher_note: log.highlights || '',
+      ai_credit_log: log, photo_tags: normalizedTags,
+    });
 
+    // 2단계: 낙관적 UI — 즉시 todayRecords 업데이트 + 대시보드 이동
+    record.done = true;
+    record._dbRecordId = recordId || null;
+    record.summary = log.topic || log.keywords?.join(', ') || '수업 기록 완료';
+
+    if (state.missions && state.missions[0]) {
+      state.missions[0].current = state.todayRecords.filter(r => r.done).length;
+      if (state.missions[0].current >= state.missions[0].target) state.missions[0].done = true;
+    }
+
+    // 리셋 + 즉시 대시보드 이동
+    state._savingCreditLog = false;
+    state._classPhotos = [];
+    state._classPhotoTags = [];
+    state._aiCreditLog = null;
+    state._aiCreditLogEditing = false;
+    state._studentComment = '';
+    state._selectedPeriodIdx = null;
+
+    const xpLabel = hasAssignment ? 'MY CREDIT LOG 완료! + 과제 자동 등록' : 'MY CREDIT LOG 완료!';
+    showXpPopup(15, xpLabel);
+    events.emit(EVENTS.XP_EARNED, { amount: 15, label: xpLabel });
+    navigate('dashboard');
+
+    // 3단계: 백그라운드에서 부가 작업 (과제 등록, 질문 등록)
+    // 사용자는 이미 대시보드에서 다른 작업 가능
+    _backgroundTasks(log, subject, period, date, record, recordId, hasAssignment).catch(e => {
+      console.error('backgroundTasks error:', e);
+    });
+
+  } catch (e) {
+    console.error('saveCreditLog error:', e);
+    state._savingCreditLog = false;
+    if (saveBtn) {
+      saveBtn.classList.remove('saving');
+      saveBtn.textContent = '기록 완료 +15 XP ✨';
+    }
+    showToast('⚠️', '저장에 실패했어요. 다시 시도해주세요.');
+  }
+}
+
+// 백그라운드 부가 작업 (과제/질문 등록)
+async function _backgroundTasks(log, subject, period, date, record, recordId, hasAssignment) {
   // 과제 자동 등록
-  let assignmentRegistered = false;
-  if (log.assignment && typeof log.assignment === 'object' && log.assignment.title) {
+  if (hasAssignment) {
     const asg = log.assignment;
-    const dueDate = asg.dueDate || kstDateOffset(7); // 날짜 없으면 7일 후
+    const dueDate = asg.dueDate || kstDateOffset(7);
     const color = SUBJECT_COLOR_MAP[subject] || '#636e72';
     const planData = generatePlanSteps(dueDate);
 
     const dbId = await DB.saveAssignment({
-      subject,
-      title: asg.title,
+      subject, title: asg.title,
       description: asg.description || '',
       teacherName: record.teacher || '',
-      dueDate,
-      color,
-      planData,
+      dueDate, color, planData,
     });
 
     if (dbId) {
-      // state.assignments에 로컬 추가
       const assignments = state.assignments || [];
-      const newId = String(dbId);
       assignments.push({
-        id: newId,
-        _dbId: dbId,
-        subject,
-        title: asg.title,
-        desc: asg.description || '',
-        teacher: record.teacher || '',
-        dueDate,
-        createdDate: state._backfillDate || kstToday(),
-        color,
-        status: 'pending',
-        progress: 0,
-        plan: planData,
+        id: String(dbId), _dbId: dbId, subject,
+        title: asg.title, desc: asg.description || '',
+        teacher: record.teacher || '', dueDate,
+        createdDate: date, color, status: 'pending',
+        progress: 0, plan: planData,
       });
       state.assignments = [...assignments];
-      assignmentRegistered = true;
+      showToast('📌', `과제 "${asg.title}" 자동 등록 완료!`);
     }
   }
 
@@ -199,45 +232,11 @@ async function saveCreditLog() {
     for (const q of questions) {
       if (!q.original || q.original.trim().length < 2) continue;
       await DB.saveMyQuestion({
-        subject,
-        source: '수업',
-        title: q.original,
-        aiImproved: q.improved || null,
-        classRecordId: recordId,
-        period,
-        date,
-        skipXp: true,
+        subject, source: '수업', title: q.original,
+        aiImproved: q.improved || null, classRecordId: recordId,
+        period, date, skipXp: true,
       });
     }
-  }
-
-  // todayRecords 업데이트
-  record.done = true;
-  record._dbRecordId = recordId || null;
-  record.summary = log.topic || log.keywords?.join(', ') || '수업 기록 완료';
-
-  // 미션 업데이트
-  if (state.missions && state.missions[0]) {
-    state.missions[0].current = state.todayRecords.filter(r => r.done).length;
-    if (state.missions[0].current >= state.missions[0].target) state.missions[0].done = true;
-  }
-
-  // 리셋
-  state._savingCreditLog = false;
-  state._classPhotos = [];
-  state._classPhotoTags = [];
-  state._aiCreditLog = null;
-  state._aiCreditLogEditing = false;
-  state._studentComment = '';
-  state._selectedPeriodIdx = null;
-
-  const xpLabel = assignmentRegistered ? 'MY CREDIT LOG 완료! + 과제 자동 등록' : 'MY CREDIT LOG 완료!';
-  showXpPopup(15, xpLabel);
-  events.emit(EVENTS.XP_EARNED, { amount: 15, label: xpLabel });
-  navigate('dashboard');
-  } catch (e) {
-    console.error('saveCreditLog error:', e);
-    state._savingCreditLog = false;
   }
 }
 

@@ -1610,8 +1610,7 @@ const DB = {
     const sid = this.studentId();
     if (!sid) return;
     try {
-      // DB 마이그레이션 먼저 실행 (테이블 없으면 생성)
-      await fetch('/api/migrate').catch(() => {});
+      // DB 마이그레이션은 배포 시 1회만 실행 (매 로딩마다 호출하면 40초+ 지연)
       // 즉시 필요한 데이터만 먼저 로딩 (홈탭 + 기록탭)
       await Promise.all([
         this.loadProfile(),
