@@ -4103,10 +4103,7 @@ function renderHomeTab() {
                         </button>
                         <span class="tt-done-badge">✅</span>
                       </div>`
-                    : (idx === schoolDone
-                      ? `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();goScreen('class-end-popup')">기록하기</button>`
-                      : `<span class="tt-locked"><i class="fas fa-lock" style="font-size:10px"></i></span>`
-                    )
+                    : `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();goScreen('class-end-popup')">기록하기</button>`
                   }
                 </div>
               </div>
@@ -4137,10 +4134,7 @@ function renderHomeTab() {
                         </button>
                         <span class="tt-done-badge">✅</span>
                       </div>`
-                    : (idx === acDone
-                      ? `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();openAcademyRecordPopup(${idx})">기록하기</button>`
-                      : `<span class="tt-locked"><i class="fas fa-lock" style="font-size:10px"></i></span>`
-                    )
+                    : `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();openAcademyRecordPopup(${idx})">기록하기</button>`
                   }
                 </div>
               </div>
