@@ -5134,7 +5134,7 @@ app.get('/api/student/:studentId/aha-reports', async (c) => {
     const studentId = Number(c.req.param('studentId'))
     const subject = c.req.query('subject') || ''
     
-    let query = 'SELECT id, subject, unit, section_topic, ai_feedback, croquet_given, created_at, student_name_detected, subject_detected, unit_detected, section_sa, section_pa, source, date, photos, photo_tags FROM aha_reports WHERE student_id = ?'
+    let query = 'SELECT id, subject, unit, section_topic, section_problem, section_research, section_self_feedback, ai_feedback, croquet_given, created_at, student_name_detected, subject_detected, unit_detected, section_sa, section_pa, section_da, section_poa, section_ppa, source, date, photos, photo_tags FROM aha_reports WHERE student_id = ?'
     const binds: any[] = [studentId]
     
     if (subject) {

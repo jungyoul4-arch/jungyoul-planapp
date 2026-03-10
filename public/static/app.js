@@ -4832,6 +4832,8 @@ async function ahaSubmit() {
     // DB에 리포트 저장
     if (state._authUser?.id) {
       try {
+        // 이전 형식(sections) → 새 형식(section_sa/pa/da/poa/ppa) 매핑
+        const sec = data.sections || {};
         const saveRes = await fetch('/api/aha-report/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4840,7 +4842,13 @@ async function ahaSubmit() {
             subject: aha.subject,
             unit: aha.unit,
             photos: aha.photos,
-            sections: data.sections || {},
+            sections: sec,
+            // 새 형식 필드로도 매핑 (목록/상세 조회 호환)
+            section_sa: data.sa || sec.problem || '',
+            section_pa: JSON.stringify(data.pa || []),
+            section_da: data.da || sec.research || '',
+            section_poa: data.poa || '',
+            section_ppa: JSON.stringify(data.ppa || {}),
             ai_feedback: data.ai_feedback || '',
             ai_source: data.ai_source || 'gemini',
             student_name_detected: data.student_name || '',
@@ -5061,7 +5069,9 @@ function renderAhaReportList() {
             ${reports.map(r => {
               const tc = thumbColors[r.subject] || thumbColors['기타'];
               const unitText = r.unit_detected || r.unit || '';
-              const topicPreview = (r.section_topic || '').substring(0, 50) + ((r.section_topic || '').length > 50 ? '...' : '');
+              // 이전 형식(section_topic/problem) + 새 형식(section_sa) 모두 지원
+              const rawPreview = r.section_sa || r.section_problem || r.section_topic || '';
+              const topicPreview = rawPreview.substring(0, 50) + (rawPreview.length > 50 ? '...' : '');
               const dateObj = r.created_at ? new Date(r.created_at) : null;
               const dateShort = dateObj ? `${dateObj.getMonth()+1}/${String(dateObj.getDate()).padStart(2,'0')}` : '';
               return `
