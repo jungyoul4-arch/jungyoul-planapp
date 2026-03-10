@@ -25,6 +25,17 @@ function kstDate(d) {
   const kd = new Date(d.getTime() + 9 * 3600000);
   return kd.toISOString().slice(0, 10);
 }
+// 심플 과제 판단 (키워드 기반)
+const _SIMPLE_KW = ['풀기','풀이','읽기','외우기','암기','제출','프린트','복습','정리','필기'];
+const _COMPLEX_KW = ['보고서','탐구','발표','제작','조사','만들기','프로젝트','실험','에세이','작문','감상문'];
+function isSimpleAssignment(title) {
+  if (!title) return true;
+  const t = title.toLowerCase();
+  if (_COMPLEX_KW.some(k => t.includes(k))) return false;
+  if (_SIMPLE_KW.some(k => t.includes(k))) return true;
+  return true;
+}
+
 function kstDateOffset(days) {
   // KST 기준 오늘로부터 N일 후 'YYYY-MM-DD'
   return kstDate(new Date(Date.now() + days * 86400000));
@@ -10447,6 +10458,19 @@ function saveTeachRecordFromForm() {
   showXpPopup(30, '교학상장 기록 완료! 🏅');
 }
 
+function toggleAssignmentPlanMode() {
+  state._assignmentUsePlan = !state._assignmentUsePlan;
+  renderScreen();
+}
+function autoDetectAssignmentPlan() {
+  const title = document.getElementById('assignment-title')?.value || '';
+  const shouldUsePlan = !isSimpleAssignment(title);
+  if (state._assignmentUsePlan !== shouldUsePlan) {
+    state._assignmentUsePlan = shouldUsePlan;
+    renderScreen();
+  }
+}
+
 function renderRecordAssignment() {
   const subjectColors = {
     '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
@@ -10455,11 +10479,16 @@ function renderRecordAssignment() {
   const editing = state.editingAssignment;
   const isEdit = editing !== null;
   const a = isEdit ? state.assignments.find(x => String(x.id) === String(editing)) : null;
-  
+
+  if (state._assignmentUsePlan === undefined) {
+    state._assignmentUsePlan = isEdit && a ? !a.simple : false;
+  }
+  const usePlan = state._assignmentUsePlan;
+
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="state.editingAssignment=null;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="state.editingAssignment=null;state._assignmentUsePlan=undefined;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
         <h1>${isEdit ? '과제 수정' : '📋 과제 기록'}</h1>
         <span class="xp-badge-sm">+15 XP</span>
       </div>
@@ -10476,21 +10505,37 @@ function renderRecordAssignment() {
         <div class="field-group">
           <label class="field-label">📚 과목</label>
           <div class="chip-row" id="assignment-subject-chips">
-            ${['국어','수학','영어','과학','한국사','기타'].map((s,i) => `<button class="chip ${(isEdit && a.subject===s) || (!isEdit && i===1) ? 'active' : ''}" data-subject="${s}">${s}</button>`).join('')}
+            ${['국어','수학','영어','과학','한국사','기타'].map((s,i) => `<button class="chip ${(isEdit && a && a.subject===s) || (!isEdit && i===1) ? 'active' : ''}" data-subject="${s}">${s}</button>`).join('')}
           </div>
         </div>
 
         <div class="field-group">
           <label class="field-label">📝 과제 제목</label>
-          <input class="input-field" id="assignment-title" placeholder="예: 치환적분 연습문제 풀이" value="${isEdit ? a.title : ''}">
+          <input class="input-field" id="assignment-title" placeholder="예: 수학 p.45~48 풀기" value="${isEdit && a ? a.title : ''}" oninput="autoDetectAssignmentPlan()">
         </div>
 
         <div class="field-group">
+          <label class="field-label">📅 마감일</label>
+          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : kstToday()}" style="color:var(--text-primary)">
+        </div>
+
+        <div class="plan-toggle-row" onclick="toggleAssignmentPlanMode()" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;margin:12px 0;background:rgba(30,34,40,0.6);border-radius:14px;border:1px solid var(--border);cursor:pointer">
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font-size:14px;font-weight:600;color:var(--text-primary)">${usePlan ? '📅 복잡 과제 모드' : '⚡ 심플 과제 모드'}</span>
+            <span style="font-size:11px;color:var(--text-muted)">${usePlan ? '상세 내용 + 유형 + 단계별 계획까지 기록해요' : '제목 + 마감일만! 빠르게 기록해요'}</span>
+          </div>
+          <div style="width:48px;height:28px;border-radius:14px;background:${usePlan ? 'var(--primary-light)' : 'rgba(80,80,90,0.5)'};position:relative;flex-shrink:0;transition:background 0.25s">
+            <div style="width:22px;height:22px;border-radius:50%;background:#fff;position:absolute;top:3px;left:3px;transition:transform 0.25s;box-shadow:0 1px 3px rgba(0,0,0,0.3);transform:translateX(${usePlan ? '20px' : '0'})"></div>
+          </div>
+        </div>
+
+        ${usePlan ? `
+        <div class="field-group animate-in">
           <label class="field-label">📄 상세 내용</label>
-          <textarea class="input-field" id="assignment-desc" rows="3" placeholder="과제의 구체적인 내용, 범위, 조건 등을 적어주세요">${isEdit ? a.desc : ''}</textarea>
+          <textarea class="input-field" id="assignment-desc" rows="3" placeholder="과제의 구체적인 내용, 범위, 조건 등을 적어주세요">${isEdit && a ? a.desc : ''}</textarea>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">📂 과제 유형</label>
           <div class="assignment-type-grid">
             ${[
@@ -10503,21 +10548,16 @@ function renderRecordAssignment() {
               {type:'실험/실습', icon:'🧪'},
               {type:'기타', icon:'📌'},
             ].map((t,i) => `
-              <button class="assignment-type-btn ${(isEdit && a.type===t.type) || (!isEdit && i===0) ? 'active' : ''}" data-atype="${t.type}">
+              <button class="assignment-type-btn ${(isEdit && a && a.type===t.type) || (!isEdit && i===0) ? 'active' : ''}" data-atype="${t.type}">
                 <span>${t.icon}</span><span>${t.type}</span>
               </button>
             `).join('')}
           </div>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">👨‍🏫 선생님</label>
-          <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit ? a.teacher : ''}">
-        </div>
-
-        <div class="field-group">
-          <label class="field-label">📅 마감일</label>
-          <input class="input-field" type="date" id="assignment-due" value="${isEdit ? a.dueDate : '2026-02-26'}" style="color:var(--text-primary)">
+          <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit && a ? a.teacher : ''}">
         </div>
 
         <div class="assignment-plan-cta animate-in" onclick="saveAssignment(true)">
@@ -10528,9 +10568,15 @@ function renderRecordAssignment() {
           </div>
           <i class="fas fa-chevron-right" style="color:var(--primary-light)"></i>
         </div>
+        ` : `
+        <div style="display:flex;align-items:center;gap:8px;padding:14px 16px;margin:8px 0;background:rgba(0,184,148,0.08);border-radius:12px;border:1px solid rgba(0,184,148,0.2);font-size:13px;color:var(--text-secondary)">
+          <span style="font-size:18px">⚡</span>
+          <span>과목 + 제목 + 마감일만 입력하면 끝!</span>
+        </div>
+        `}
 
         <button class="btn-primary" onclick="saveAssignment(false)">
-          ${isEdit ? '과제 수정 완료' : '과제 기록 완료 +15 XP ✨'}
+          ${isEdit ? '과제 수정 완료' : usePlan ? '과제 기록 완료 +15 XP ✨' : '과제 기록 완료 ✨'}
         </button>
       </div>
     </div>
@@ -10778,7 +10824,8 @@ function saveAssignment(goToPlan) {
   const dueDate = document.getElementById('assignment-due')?.value || '';
   const subject = subjectChip ? subjectChip.dataset.subject : '수학';
   const type = typeBtn ? typeBtn.dataset.atype : '문제풀이';
-  
+  const usePlan = state._assignmentUsePlan;
+
   const subjectColors = {
     '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
     '한국사':'#74B9FF','체육':'#A29BFE','미술':'#FD79A8','기타':'#636e72'
@@ -10794,14 +10841,16 @@ function saveAssignment(goToPlan) {
       a.teacher = teacher || a.teacher;
       a.dueDate = dueDate || a.dueDate;
       a.color = subjectColors[subject] || '#636e72';
-      
+      a.simple = !usePlan;
+
       // DB 업데이트
       if (a._dbId && DB.studentId()) {
         DB.updateAssignment(a._dbId, { title: a.title, dueDate: a.dueDate, status: a.status });
       }
     }
     state.editingAssignment = null;
-    if (goToPlan) {
+    state._assignmentUsePlan = undefined;
+    if (goToPlan && usePlan) {
       state.viewingAssignment = a.id;
       goScreen('assignment-plan');
     } else {
@@ -10811,22 +10860,24 @@ function saveAssignment(goToPlan) {
   }
 
   const newId = state.assignments.length > 0 ? Math.max(...state.assignments.map(a=>a.id)) + 1 : 1;
-  const daysUntilDue = getDday(dueDate);
-  const stepsCount = Math.max(3, Math.min(6, daysUntilDue));
-  
-  // Auto-generate plan steps
-  const plan = [];
-  const dueD = new Date(dueDate);
-  const today = kstNow();
-  for (let i = 0; i < stepsCount; i++) {
-    const stepDate = new Date(today.getTime() + ((dueD - today) / stepsCount) * (i + 1));
+
+  // 심플 과제면 플랜 생성 안 함
+  let plan = [];
+  if (usePlan) {
+    const daysUntilDue = getDday(dueDate);
+    const stepsCount = Math.max(3, Math.min(6, daysUntilDue));
+    const dueD = new Date(dueDate);
+    const today = kstNow();
     const stepLabels = ['자료 조사 및 준비','초안 작성','본문 완성','검토 및 수정','최종 점검','제출'];
-    plan.push({
-      step: i + 1,
-      title: stepLabels[i] || `${i+1}단계 진행`,
-      date: `${stepDate.getMonth()+1}/${stepDate.getDate()}`,
-      done: false
-    });
+    for (let i = 0; i < stepsCount; i++) {
+      const stepDate = new Date(today.getTime() + ((dueD - today) / stepsCount) * (i + 1));
+      plan.push({
+        step: i + 1,
+        title: stepLabels[i] || `${i+1}단계 진행`,
+        date: `${stepDate.getMonth()+1}/${stepDate.getDate()}`,
+        done: false
+      });
+    }
   }
 
   const newAssignment = {
@@ -10841,7 +10892,8 @@ function saveAssignment(goToPlan) {
     color: subjectColors[subject] || '#636e72',
     status: 'pending',
     progress: 0,
-    plan
+    plan,
+    simple: !usePlan
   };
   
   state.assignments.push(newAssignment);
@@ -10864,7 +10916,8 @@ function saveAssignment(goToPlan) {
     });
   }
 
-  if (goToPlan) {
+  state._assignmentUsePlan = undefined;
+  if (goToPlan && usePlan) {
     state.viewingAssignment = newId;
     goScreen('assignment-plan');
   } else {
