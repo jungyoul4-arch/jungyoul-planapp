@@ -408,9 +408,14 @@ function _renderScreenImpl(forced) {
                 return;
               }
               state._communityOpened = false;
-              state.studentTab = tab; 
-              state.currentScreen = 'main'; 
-              renderScreen(); 
+              // 이미 아카이브 탭인 상태에서 아카이브 클릭 → 대시보드로 복귀
+              if (tab === 'archive' && state.studentTab === 'archive' && _archiveModuleActive && window.ArchiveModule) {
+                window.ArchiveModule.navigate('dashboard');
+                return;
+              }
+              state.studentTab = tab;
+              state.currentScreen = 'main';
+              renderScreen();
             });
           });
         }
@@ -718,6 +723,11 @@ function initMobileBottomTab() {
       if (tab === 'myqa') { openMyQaIframe(); return; }
       if (tab === 'community') { openCommunityNewTab(); return; }
       state._communityOpened = false;
+      // 이미 아카이브 탭인 상태에서 아카이브 클릭 → 대시보드로 복귀
+      if (tab === 'archive' && state.studentTab === 'archive' && _archiveModuleActive && window.ArchiveModule) {
+        window.ArchiveModule.navigate('dashboard');
+        return;
+      }
       state.studentTab = tab;
       state.currentScreen = 'main';
       renderScreen();
