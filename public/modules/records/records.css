@@ -3291,3 +3291,15 @@
 .archive-module .plan-cta-content p {
   font-size: 12px; color: var(--text-muted); margin: 4px 0 0;
 }
+
+/* === 심플 과제 힌트 === */
+.archive-module .assignment-simple-hint {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 16px; margin: 8px 0;
+  background: rgba(0,184,148,0.08); border-radius: 12px;
+  border: 1px solid rgba(0,184,148,0.2);
+  font-size: 13px; color: var(--text-secondary);
+}
+.archive-module .assignment-simple-hint span:first-child {
+  font-size: 18px;
+}

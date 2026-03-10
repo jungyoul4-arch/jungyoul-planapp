@@ -155,15 +155,32 @@ export function renderRecordAssignment() {
 
         <div class="field-group">
           <label class="field-label">📝 과제 제목</label>
-          <input class="input-field" id="assignment-title" placeholder="예: 치환적분 연습문제 풀이" value="${isEdit && a ? a.title : ''}" oninput="_RM.autoDetectPlan()">
+          <input class="input-field" id="assignment-title" placeholder="예: 수학 p.45~48 풀기" value="${isEdit && a ? a.title : ''}" oninput="_RM.autoDetectPlan()">
         </div>
 
         <div class="field-group">
+          <label class="field-label">📅 마감일</label>
+          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : todayStr}" style="color:var(--text-primary)">
+        </div>
+
+        <!-- 단계별 플랜 토글 -->
+        <div class="plan-toggle-row" onclick="_RM.toggleUsePlan()">
+          <div class="plan-toggle-info">
+            <span class="plan-toggle-label">${usePlan ? '📅 복잡 과제 모드' : '⚡ 심플 과제 모드'}</span>
+            <span class="plan-toggle-desc">${usePlan ? '상세 내용 + 유형 + 단계별 계획까지 기록해요' : '제목 + 마감일만! 빠르게 기록해요'}</span>
+          </div>
+          <div class="plan-toggle-switch ${usePlan ? 'on' : ''}">
+            <div class="plan-toggle-knob"></div>
+          </div>
+        </div>
+
+        ${usePlan ? `
+        <div class="field-group animate-in">
           <label class="field-label">📄 상세 내용</label>
           <textarea class="input-field" id="assignment-desc" rows="3" placeholder="과제의 구체적인 내용, 범위, 조건 등을 적어주세요">${isEdit && a ? a.desc : ''}</textarea>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">📂 과제 유형</label>
           <div class="assignment-type-grid">
             ${[
@@ -183,28 +200,11 @@ export function renderRecordAssignment() {
           </div>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">👨‍🏫 선생님</label>
           <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit && a ? a.teacher : ''}">
         </div>
 
-        <div class="field-group">
-          <label class="field-label">📅 마감일</label>
-          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : todayStr}" style="color:var(--text-primary)">
-        </div>
-
-        <!-- 단계별 플랜 토글 -->
-        <div class="plan-toggle-row" onclick="_RM.toggleUsePlan()">
-          <div class="plan-toggle-info">
-            <span class="plan-toggle-label">📅 단계별 플랜 사용</span>
-            <span class="plan-toggle-desc">${usePlan ? '마감일까지 단계별 계획을 자동 생성해요' : '과제명 + 마감일 + 완료 체크만 표시해요'}</span>
-          </div>
-          <div class="plan-toggle-switch ${usePlan ? 'on' : ''}">
-            <div class="plan-toggle-knob"></div>
-          </div>
-        </div>
-
-        ${usePlan ? `
         <div class="assignment-plan-cta animate-in" onclick="_RM.saveAssignment(true)">
           <div class="plan-cta-icon">📅</div>
           <div class="plan-cta-content">
@@ -213,10 +213,15 @@ export function renderRecordAssignment() {
           </div>
           <i class="fas fa-chevron-right" style="color:var(--primary-light)"></i>
         </div>
-        ` : ''}
+        ` : `
+        <div class="assignment-simple-hint animate-in">
+          <span>⚡</span>
+          <span>과목 + 제목 + 마감일만 입력하면 끝!</span>
+        </div>
+        `}
 
         <button class="btn-primary" onclick="_RM.saveAssignment(false)">
-          ${isEdit ? '과제 수정 완료' : '과제 기록 완료 +15 XP ✨'}
+          ${isEdit ? '과제 수정 완료' : usePlan ? '과제 기록 완료 +15 XP ✨' : '과제 기록 완료 ✨'}
         </button>
       </div>
     </div>
