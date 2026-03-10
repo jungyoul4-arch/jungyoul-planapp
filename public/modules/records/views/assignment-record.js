@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { navigate, render } from '../core/router.js';
-import { kstToday, formatDate, generatePlanSteps } from '../core/utils.js';
+import { kstToday, formatDate, generatePlanSteps, isSimpleAssignment } from '../core/utils.js';
 
 const subjectColors = {
   '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
@@ -13,6 +13,20 @@ const subjectColors = {
 };
 
 export function registerHandlers(RM) {
+  RM.toggleUsePlan = () => {
+    state._assignmentUsePlan = !state._assignmentUsePlan;
+    render();
+  };
+
+  RM.autoDetectPlan = () => {
+    const title = document.getElementById('assignment-title')?.value || '';
+    const shouldUsePlan = !isSimpleAssignment(title);
+    if (state._assignmentUsePlan !== shouldUsePlan) {
+      state._assignmentUsePlan = shouldUsePlan;
+      render();
+    }
+  };
+
   RM.saveAssignment = (goToPlan) => {
     const subjectChip = document.querySelector('#assignment-subject-chips .chip.active');
     const typeBtn = document.querySelector('.assignment-type-btn.active');
@@ -22,6 +36,7 @@ export function registerHandlers(RM) {
     const dueDate = document.getElementById('assignment-due')?.value || '';
     const subject = subjectChip ? subjectChip.dataset.subject : '수학';
     const type = typeBtn ? typeBtn.dataset.atype : '문제풀이';
+    const usePlan = state._assignmentUsePlan;
 
     if (state.editingAssignment !== null) {
       const a = (state.assignments||[]).find(x => String(x.id) === String(state.editingAssignment));
@@ -33,24 +48,26 @@ export function registerHandlers(RM) {
         a.teacher = teacher || a.teacher;
         a.dueDate = dueDate || a.dueDate;
         a.color = subjectColors[subject] || '#636e72';
+        a.simple = !usePlan;
 
         if (a._dbId) {
           RM.DB.updateAssignment(a._dbId, { title: a.title, dueDate: a.dueDate, status: a.status });
         }
       }
       state.editingAssignment = null;
-      if (goToPlan) {
+      if (goToPlan && usePlan) {
         state.viewingAssignment = a.id;
         navigate('assignment-plan');
       } else {
         RM.showXpPopup(5, '과제 수정 완료!');
+        navigate('assignment-list');
       }
       return;
     }
 
     const assignments = state.assignments || [];
     const newId = assignments.length > 0 ? Math.max(...assignments.map(a => a.id)) + 1 : 1;
-    const plan = generatePlanSteps(dueDate);
+    const plan = usePlan ? generatePlanSteps(dueDate) : [];
 
     const newAssignment = {
       id: newId,
@@ -64,7 +81,8 @@ export function registerHandlers(RM) {
       color: subjectColors[subject] || '#636e72',
       status: 'pending',
       progress: 0,
-      plan
+      plan,
+      simple: !usePlan,
     };
 
     state.assignments = [...assignments, newAssignment];
@@ -85,7 +103,7 @@ export function registerHandlers(RM) {
       }
     });
 
-    if (goToPlan) {
+    if (goToPlan && usePlan) {
       state.viewingAssignment = newId;
       navigate('assignment-plan');
     } else {
@@ -101,10 +119,20 @@ export function renderRecordAssignment() {
   const a = isEdit ? (state.assignments||[]).find(x => String(x.id) === String(editing)) : null;
   const todayStr = kstToday();
 
+  // 플랜 사용 여부: 편집 시 기존 값 유지, 신규 시 제목 키워드 기반 자동 판단
+  if (state._assignmentUsePlan === undefined) {
+    if (isEdit && a) {
+      state._assignmentUsePlan = !a.simple;
+    } else {
+      state._assignmentUsePlan = false; // 기본: 단순 과제 (부담 줄이기)
+    }
+  }
+  const usePlan = state._assignmentUsePlan;
+
   return `
     <div class="full-screen animate-in">
       <div class="screen-header">
-        <button class="back-btn" onclick="_RM.state.editingAssignment=null;_RM.nav('dashboard')"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="_RM.state.editingAssignment=null;_RM.state._assignmentUsePlan=undefined;_RM.nav('dashboard')"><i class="fas fa-arrow-left"></i></button>
         <h1>${isEdit ? '과제 수정' : '📋 과제 기록'}</h1>
         <span class="xp-badge-sm">+15 XP</span>
       </div>
@@ -127,15 +155,32 @@ export function renderRecordAssignment() {
 
         <div class="field-group">
           <label class="field-label">📝 과제 제목</label>
-          <input class="input-field" id="assignment-title" placeholder="예: 치환적분 연습문제 풀이" value="${isEdit && a ? a.title : ''}">
+          <input class="input-field" id="assignment-title" placeholder="예: 수학 p.45~48 풀기" value="${isEdit && a ? a.title : ''}" oninput="_RM.autoDetectPlan()">
         </div>
 
         <div class="field-group">
+          <label class="field-label">📅 마감일</label>
+          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : todayStr}" style="color:var(--text-primary)">
+        </div>
+
+        <!-- 단계별 플랜 토글 -->
+        <div class="plan-toggle-row" onclick="_RM.toggleUsePlan()">
+          <div class="plan-toggle-info">
+            <span class="plan-toggle-label">${usePlan ? '📅 복잡 과제 모드' : '⚡ 심플 과제 모드'}</span>
+            <span class="plan-toggle-desc">${usePlan ? '상세 내용 + 유형 + 단계별 계획까지 기록해요' : '제목 + 마감일만! 빠르게 기록해요'}</span>
+          </div>
+          <div class="plan-toggle-switch ${usePlan ? 'on' : ''}">
+            <div class="plan-toggle-knob"></div>
+          </div>
+        </div>
+
+        ${usePlan ? `
+        <div class="field-group animate-in">
           <label class="field-label">📄 상세 내용</label>
           <textarea class="input-field" id="assignment-desc" rows="3" placeholder="과제의 구체적인 내용, 범위, 조건 등을 적어주세요">${isEdit && a ? a.desc : ''}</textarea>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">📂 과제 유형</label>
           <div class="assignment-type-grid">
             ${[
@@ -155,14 +200,9 @@ export function renderRecordAssignment() {
           </div>
         </div>
 
-        <div class="field-group">
+        <div class="field-group animate-in">
           <label class="field-label">👨‍🏫 선생님</label>
           <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit && a ? a.teacher : ''}">
-        </div>
-
-        <div class="field-group">
-          <label class="field-label">📅 마감일</label>
-          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : todayStr}" style="color:var(--text-primary)">
         </div>
 
         <div class="assignment-plan-cta animate-in" onclick="_RM.saveAssignment(true)">
@@ -173,9 +213,15 @@ export function renderRecordAssignment() {
           </div>
           <i class="fas fa-chevron-right" style="color:var(--primary-light)"></i>
         </div>
+        ` : `
+        <div class="assignment-simple-hint animate-in">
+          <span>⚡</span>
+          <span>과목 + 제목 + 마감일만 입력하면 끝!</span>
+        </div>
+        `}
 
         <button class="btn-primary" onclick="_RM.saveAssignment(false)">
-          ${isEdit ? '과제 수정 완료' : '과제 기록 완료 +15 XP ✨'}
+          ${isEdit ? '과제 수정 완료' : usePlan ? '과제 기록 완료 +15 XP ✨' : '과제 기록 완료 ✨'}
         </button>
       </div>
     </div>

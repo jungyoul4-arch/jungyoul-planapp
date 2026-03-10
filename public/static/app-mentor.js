@@ -1583,7 +1583,7 @@ function __renderMentorRelay() {
     return `<div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
       <div style="font-size:48px;margin-bottom:16px;opacity:0.3">📚</div>
       <p style="font-size:16px;margin-bottom:8px">릴레이단어장을 사용할 수 없습니다</p>
-      <p style="font-size:13px">영어 클래스(genre_id=3)이고 멤버가 16명 이상인 경우에만 사용 가능합니다</p>
+      <p style="font-size:13px">영어 클래스(genre_id=3)이고 학생(kind=2)이 15명 이상인 경우에만 사용 가능합니다</p>
     </div>`;
   }
 

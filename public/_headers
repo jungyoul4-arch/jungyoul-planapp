@@ -11,3 +11,8 @@
 /static/app.css
   Cache-Control: no-cache, no-store, must-revalidate
   Pragma: no-cache
+
+# Archive Module - 항상 최신 버전 로드
+/modules/records/*
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache

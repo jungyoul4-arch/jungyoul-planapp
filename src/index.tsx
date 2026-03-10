@@ -1023,7 +1023,7 @@ app.post('/api/auth/mentor/login', async (c) => {
 
     // 멘토의 그룹 목록 조회
     const groups = await c.env.DB.prepare(
-      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
+      'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ? AND is_active = 1'
     ).bind(mentor.id).all();
 
     const token = generateToken();
@@ -1152,28 +1152,18 @@ app.get('/api/auth/external-login', async (c) => {
         } catch (_) { /* 원격 DB 연결 실패 시 기본 반 생성으로 진행 */ }
 
         if (studentsData.success && studentsData.classes) {
+          // 그룹만 배치로 생성 (학생은 별도 API에서 비동기 처리)
+          const groupStmts: any[] = [];
           for (const cls of studentsData.classes) {
-            // 반 생성
             const inviteCode = generateInviteCode();
-            const groupResult = await c.env.DB.prepare(
-              'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
-            ).bind(mentorId, cls.class_name || `반${cls.class_id}`, inviteCode, '', cls.class_id).run();
-            const groupId = groupResult.meta.last_row_id;
-
-            // 학생들 자동 생성
-            for (const st of cls.students) {
-              const exists = await c.env.DB.prepare(
-                'SELECT id FROM students WHERE external_user_id = ?'
-              ).bind(st.user_id).first();
-              if (!exists) {
-                const stPwHash = await hashPassword(`ext_${st.user_id}_auto`);
-                const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
-                const emoji = emojis[Math.floor(Math.random() * emojis.length)];
-                await c.env.DB.prepare(
-                  'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(groupId, st.name, stPwHash, '', 0, emoji, st.user_id).run();
-              }
-            }
+            groupStmts.push(
+              c.env.DB.prepare(
+                'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
+              ).bind(mentorId, cls.class_name || `반${cls.class_id}`, inviteCode, '', cls.class_id)
+            );
+          }
+          if (groupStmts.length > 0) {
+            await c.env.DB.batch(groupStmts);
           }
         } else {
           // 반/학생 정보 없으면 기본 반 생성
@@ -1190,11 +1180,77 @@ app.get('/api/auth/external-login', async (c) => {
           await c.env.DB.prepare('UPDATE mentors SET name = ? WHERE id = ?').bind(name, mentor.id).run();
           mentor.name = name;
         }
+
+        // ===== 매 로그인 시 그룹 동기화 (최적화: 배치 쿼리, 학생은 별도 API) =====
+        try {
+          const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${remoteUserId}&key=${jyskApiKey}`);
+          const ct = studentsRes.headers.get('content-type') || '';
+          if (ct.includes('json')) {
+            const studentsData: any = await studentsRes.json();
+            if (studentsData.success && studentsData.classes) {
+              const remoteClassIds = new Set(studentsData.classes.map((cls: any) => Number(cls.class_id)));
+
+              // 로컬 기존 그룹 조회 (1 쿼리)
+              const localGroups: any = await c.env.DB.prepare(
+                'SELECT id, name, external_class_id, is_active FROM groups WHERE mentor_id = ?'
+              ).bind(mentor.id).all();
+
+              const localClassMap = new Map<number, any>();
+              for (const g of (localGroups.results || [])) {
+                if (g.external_class_id) localClassMap.set(Number(g.external_class_id), g);
+              }
+
+              // 배치 쿼리 수집
+              const batchStmts: any[] = [];
+
+              // 1) 원격에 없는 로컬 그룹 → 비활성화
+              for (const g of (localGroups.results || [])) {
+                if (g.external_class_id && !remoteClassIds.has(Number(g.external_class_id)) && g.is_active === 1) {
+                  batchStmts.push(
+                    c.env.DB.prepare('UPDATE groups SET is_active = 0, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?').bind(g.id)
+                  );
+                }
+              }
+
+              // 2) 원격에 있는 클래스 → 로컬에 없으면 생성, 있으면 이름/활성상태 업데이트
+              const newGroups: { cls: any, inviteCode: string }[] = [];
+              for (const cls of studentsData.classes) {
+                const extClassId = Number(cls.class_id);
+                const existingGroup = localClassMap.get(extClassId);
+
+                if (!existingGroup) {
+                  const inviteCode = generateInviteCode();
+                  newGroups.push({ cls, inviteCode });
+                  batchStmts.push(
+                    c.env.DB.prepare(
+                      'INSERT INTO groups (mentor_id, name, invite_code, description, external_class_id) VALUES (?, ?, ?, ?, ?)'
+                    ).bind(mentor.id, cls.class_name || `반${cls.class_id}`, inviteCode, '', extClassId)
+                  );
+                } else {
+                  if (existingGroup.name !== cls.class_name || existingGroup.is_active !== 1) {
+                    batchStmts.push(
+                      c.env.DB.prepare(
+                        'UPDATE groups SET name = ?, is_active = 1, updated_at = datetime(\'now\',\'+9 hours\') WHERE id = ?'
+                      ).bind(cls.class_name || existingGroup.name, existingGroup.id)
+                    );
+                  }
+                }
+              }
+
+              // 배치 실행 (그룹 동기화만, 학생은 별도)
+              if (batchStmts.length > 0) {
+                await c.env.DB.batch(batchStmts);
+              }
+            }
+          }
+        } catch (syncErr: any) {
+          console.log('Mentor group sync error (non-fatal):', syncErr.message);
+        }
       }
 
-      // 멘토 그룹 목록 조회
+      // 멘토 그룹 목록 조회 (활성 그룹만)
       const groups = await c.env.DB.prepare(
-        'SELECT id, name, invite_code, description, max_students, is_active FROM groups WHERE mentor_id = ?'
+        'SELECT id, name, invite_code, description, max_students, is_active, external_class_id FROM groups WHERE mentor_id = ? AND is_active = 1'
       ).bind(mentor.id).all();
 
       const token = generateToken();
@@ -1437,11 +1493,118 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
     const groups = await c.env.DB.prepare(`
       SELECT g.*, 
         (SELECT COUNT(*) FROM students s WHERE s.group_id = g.id AND s.is_active = 1) as student_count
-      FROM groups g WHERE g.mentor_id = ? ORDER BY student_count DESC, g.created_at DESC
+      FROM groups g WHERE g.mentor_id = ? AND g.is_active = 1 ORDER BY student_count DESC, g.created_at DESC
     `).bind(mentorId).all();
 
     return c.json({ groups: groups.results });
   } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 멘토 학생 동기화 (로그인 후 비동기 호출)
+app.post('/api/mentor/:mentorId/sync-students', async (c) => {
+  try {
+    const mentorId = c.req.param('mentorId');
+    const body: any = await c.req.json().catch(() => ({}));
+    const externalUserId = body.externalUserId;
+    if (!externalUserId) return c.json({ error: 'externalUserId required' }, 400);
+
+    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php';
+    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026';
+
+    const studentsRes = await fetch(`${jyskApiUrl}?action=get_mentor_students&user_id=${externalUserId}&key=${jyskApiKey}`);
+    const ct = studentsRes.headers.get('content-type') || '';
+    if (!ct.includes('json')) return c.json({ error: 'Remote API error' }, 502);
+
+    const studentsData: any = await studentsRes.json();
+    if (!studentsData.success || !studentsData.classes) return c.json({ success: true, synced: 0 });
+
+    // 로컬 그룹 목록 조회
+    const localGroups: any = await c.env.DB.prepare(
+      'SELECT id, external_class_id FROM groups WHERE mentor_id = ? AND is_active = 1'
+    ).bind(mentorId).all();
+
+    const classToGroupMap = new Map<number, number>();
+    for (const g of (localGroups.results || [])) {
+      if (g.external_class_id) classToGroupMap.set(Number(g.external_class_id), g.id);
+    }
+
+    // ★ 핵심: 한 학생이 여러 그룹에 속할 수 있으므로 (extUserId, groupId) 쌍으로 관리
+    const allEntries: { extUserId: number, groupId: number, name: string }[] = [];
+    const allGroupIds = new Set<number>();
+    for (const cls of studentsData.classes) {
+      const groupId = classToGroupMap.get(Number(cls.class_id));
+      if (!groupId) continue;
+      allGroupIds.add(groupId);
+      for (const st of cls.students) {
+        allEntries.push({ extUserId: Number(st.user_id), groupId, name: st.name });
+      }
+    }
+
+    if (allEntries.length === 0) return c.json({ success: true, synced: 0 });
+
+    // 해당 멘토의 모든 활성 그룹에서 기존 학생을 (external_user_id, group_id) 조합으로 조회
+    const existingMap = new Map<string, any>(); // key: "extUserId_groupId"
+    const groupIdArr = Array.from(allGroupIds);
+    for (let i = 0; i < groupIdArr.length; i += 80) {
+      const chunk = groupIdArr.slice(i, i + 80);
+      const placeholders = chunk.map(() => '?').join(',');
+      const existingStudents: any = await c.env.DB.prepare(
+        `SELECT id, external_user_id, group_id, name FROM students WHERE group_id IN (${placeholders}) AND external_user_id IS NOT NULL`
+      ).bind(...chunk).all();
+      for (const s of (existingStudents.results || [])) {
+        existingMap.set(`${s.external_user_id}_${s.group_id}`, s);
+      }
+    }
+
+    // 배치 쿼리 수집
+    const batchStmts: any[] = [];
+    const defaultPwHash = await hashPassword('ext_student_auto');
+    const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+
+    for (const entry of allEntries) {
+      const key = `${entry.extUserId}_${entry.groupId}`;
+      const existing = existingMap.get(key);
+      if (!existing) {
+        // 해당 그룹에 이 학생이 없음 → INSERT (다른 그룹에 같은 학생이 있어도 별도 레코드)
+        const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+        batchStmts.push(
+          c.env.DB.prepare(
+            'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(entry.groupId, entry.name, defaultPwHash, '', 0, emoji, entry.extUserId)
+        );
+      } else if (existing.name !== entry.name) {
+        // 이름 변경 시 업데이트
+        batchStmts.push(
+          c.env.DB.prepare(
+            'UPDATE students SET name = ? WHERE id = ?'
+          ).bind(entry.name, existing.id)
+        );
+      }
+    }
+
+    // ★ 외부 API에 없는 학생 비활성화 (이전 잘못된 배정 정리)
+    const remoteKeys = new Set(allEntries.map(e => `${e.extUserId}_${e.groupId}`));
+    for (const [key, existing] of existingMap) {
+      if (!remoteKeys.has(key)) {
+        batchStmts.push(
+          c.env.DB.prepare('UPDATE students SET is_active = 0 WHERE id = ?').bind(existing.id)
+        );
+      }
+    }
+
+    // D1 batch 최대 ~100개, 청크로 나눠서 실행
+    let synced = 0;
+    for (let i = 0; i < batchStmts.length; i += 50) {
+      const chunk = batchStmts.slice(i, i + 50);
+      await c.env.DB.batch(chunk);
+      synced += chunk.length;
+    }
+
+    return c.json({ success: true, synced });
+  } catch (e: any) {
+    console.log('Student sync error:', e.message);
     return c.json({ error: e.message }, 500);
   }
 });
@@ -1674,6 +1837,119 @@ app.delete('/api/student/assignments/:assignmentId', async (c) => {
 });
 
 
+// ==================== STUDENT DATA API: 오늘 할 일 (Daily Todos) ====================
+
+app.get('/api/student/:studentId/daily-todos', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const date = c.req.query('date') || new Date().toISOString().split('T')[0];
+    const todos = await c.env.DB.prepare(
+      'SELECT * FROM daily_todos WHERE student_id = ? AND date = ? ORDER BY is_completed ASC, sort_order ASC, id ASC'
+    ).bind(studentId, date).all();
+    return c.json({ success: true, data: todos.results });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.post('/api/student/:studentId/daily-todos', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const { content, date } = await c.req.json();
+    if (!content?.trim()) return c.json({ success: false, error: '내용을 입력하세요' }, 400);
+    const todoDate = date || new Date().toISOString().split('T')[0];
+    const result = await c.env.DB.prepare(
+      'INSERT INTO daily_todos (student_id, date, content, sort_order) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM daily_todos WHERE student_id = ? AND date = ?))'
+    ).bind(studentId, todoDate, content.trim(), studentId, todoDate).run();
+    return c.json({ success: true, data: { id: result.meta.last_row_id, content: content.trim(), date: todoDate, is_completed: 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.patch('/api/student/:studentId/daily-todos/:todoId', async (c) => {
+  try {
+    const todoId = c.req.param('todoId');
+    const body = await c.req.json();
+    const fields: string[] = [];
+    const values: any[] = [];
+    if (body.is_completed !== undefined) { fields.push('is_completed = ?'); values.push(body.is_completed ? 1 : 0); }
+    if (body.content !== undefined) { fields.push('content = ?'); values.push(body.content.trim()); }
+    if (fields.length === 0) return c.json({ success: false, error: '변경할 필드 없음' }, 400);
+    values.push(todoId);
+    await c.env.DB.prepare(`UPDATE daily_todos SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+app.delete('/api/student/:studentId/daily-todos/:todoId', async (c) => {
+  try {
+    const todoId = c.req.param('todoId');
+    await c.env.DB.prepare('DELETE FROM daily_todos WHERE id = ?').bind(todoId).run();
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== STUDENT DATA API: 플래너 통합 조회 ====================
+
+app.get('/api/student/:studentId/planner', async (c) => {
+  try {
+    const studentId = c.req.param('studentId');
+    const month = c.req.query('month'); // YYYY-MM
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return c.json({ error: 'month 파라미터 필수 (YYYY-MM)' }, 400);
+    }
+    const monthPrefix = month + '%';
+
+    const [assignments, exams] = await Promise.all([
+      c.env.DB.prepare(
+        'SELECT id, subject, title, due_date, status, color FROM assignments WHERE student_id = ? AND due_date LIKE ?'
+      ).bind(studentId, monthPrefix).all(),
+      c.env.DB.prepare(
+        'SELECT id, name, type, start_date, subjects FROM exams WHERE student_id = ? AND start_date LIKE ?'
+      ).bind(studentId, monthPrefix).all(),
+    ]);
+
+    const events: any[] = [];
+
+    (assignments.results as any[]).forEach(a => {
+      events.push({
+        id: 'a-' + a.id,
+        date: a.due_date,
+        type: 'assignment',
+        subject: a.subject || '',
+        title: a.title,
+        color: a.color || '#3B82F6',
+        status: a.status,
+      });
+    });
+
+    (exams.results as any[]).forEach(e => {
+      const typeColorMap: Record<string, string> = {
+        midterm: '#EF4444', final: '#EF4444',
+        performance: '#F59E0B', mock: '#1D4ED8', quiz: '#10B981',
+      };
+      events.push({
+        id: 'e-' + e.id,
+        date: e.start_date,
+        type: e.type || 'midterm',
+        subject: '',
+        title: e.name,
+        color: typeColorMap[e.type] || '#EF4444',
+        subjects: e.subjects,
+      });
+    });
+
+    return c.json({ success: true, data: { events } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
 // ==================== STUDENT DATA API: 수업 기록 ====================
 
 app.get('/api/student/:studentId/class-records', async (c) => {
@@ -1705,6 +1981,19 @@ app.post('/api/student/:studentId/class-records', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+// 수업 기록 삭제
+app.delete('/api/student/class-records/:recordId', async (c) => {
+  try {
+    const recordId = c.req.param('recordId')
+    // 관련 사진도 삭제
+    await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(recordId).run()
+    await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(recordId).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 // 수업 기록 수정
 app.put('/api/student/class-records/:recordId', async (c) => {
@@ -3178,6 +3467,28 @@ app.get('/api/seed-test-data', async (c) => {
   }
 });
 
+// 임시: 중복 수업기록 정리 (GET으로 호출 가능)
+app.get('/api/admin/cleanup-duplicate-records', async (c) => {
+  try {
+    // 같은 student_id + date + subject 조합에서 가장 높은 id만 남기고 삭제
+    const dupes = await c.env.DB.prepare(`
+      SELECT id FROM class_records
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM class_records GROUP BY student_id, date, subject
+      )
+    `).all()
+    const ids = (dupes.results as any[]).map((r: any) => r.id)
+    if (ids.length === 0) return c.json({ success: true, message: 'No duplicates found', deleted: 0 })
+    for (const id of ids) {
+      await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(id).run()
+      await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(id).run()
+    }
+    return c.json({ success: true, deleted: ids.length, deletedIds: ids })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+});
+
 
 // ==================== DB 자동 마이그레이션 ====================
 app.get('/api/migrate', async (c) => {
@@ -3297,6 +3608,24 @@ app.get('/api/migrate', async (c) => {
       `ALTER TABLE activity_logs ADD COLUMN ai_result TEXT DEFAULT ''`,
       // 시간표 저장 테이블
       `CREATE TABLE IF NOT EXISTS student_timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, school_data TEXT DEFAULT '[]', teachers_data TEXT DEFAULT '{}', period_times TEXT DEFAULT '[]', subject_colors TEXT DEFAULT '{}', academy_data TEXT DEFAULT '[]', updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      // ===== 시간표 사진 → 과목 자동 등록 (학기/과목/시간표슬롯/시험과목) =====
+      `CREATE TABLE IF NOT EXISTS semesters (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, year INTEGER NOT NULL, term INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_semesters_unique ON semesters(student_id, year, term)`,
+      `CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, name TEXT NOT NULL, teacher TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_subjects_semester ON subjects(semester_id)`,
+      `CREATE TABLE IF NOT EXISTS timetable_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, semester_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, day_of_week INTEGER NOT NULL, period INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_timetable_slots_semester ON timetable_slots(semester_id)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_timetable_slots_unique ON timetable_slots(semester_id, day_of_week, period)`,
+      `CREATE TABLE IF NOT EXISTS exam_subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL, subject_id INTEGER NOT NULL, exam_date TEXT NOT NULL, period INTEGER, scope TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE, FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam ON exam_subjects(exam_id)`,
+      // ===== 오늘 할 일 (Daily Todos) =====
+      `CREATE TABLE IF NOT EXISTS daily_todos (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL, is_completed INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_daily_todos_student_date ON daily_todos(student_id, date)`,
+      // ===== 릴레이단어장 =====
+      `CREATE TABLE IF NOT EXISTS relay_wordbooks (id INTEGER PRIMARY KEY AUTOINCREMENT, class_id INTEGER NOT NULL, date TEXT NOT NULL, words TEXT NOT NULL DEFAULT '[]', is_ready INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_wordbooks_unique ON relay_wordbooks(class_id, date)`,
+      `CREATE TABLE IF NOT EXISTS relay_word_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, wordbook_id INTEGER NOT NULL, student_user_id INTEGER NOT NULL, student_name TEXT NOT NULL DEFAULT '', entries TEXT NOT NULL DEFAULT '[]', is_finished INTEGER NOT NULL DEFAULT 0, finished_at DATETIME DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (wordbook_id) REFERENCES relay_wordbooks(id) ON DELETE CASCADE)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_entries_unique ON relay_word_entries(wordbook_id, student_user_id)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
@@ -3336,6 +3665,195 @@ app.get('/api/migrate', async (c) => {
   }
 });
 
+
+// ==================== 시간표 사진 → 과목 자동 등록 API ====================
+
+// GET /api/student/:id/semesters — 전체 학기 목록
+app.get('/api/student/:id/semesters', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, year, term, created_at FROM semesters WHERE student_id = ? ORDER BY year DESC, term DESC'
+    ).bind(studentId).all()
+    return c.json({ success: true, data: results || [] })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// GET /api/student/:id/subjects?year=2026&term=1 — 해당 학기 과목 목록
+app.get('/api/student/:id/subjects', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  const year = Number(c.req.query('year'))
+  const term = Number(c.req.query('term'))
+  try {
+    const semester: any = await c.env.DB.prepare(
+      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
+    ).bind(studentId, year, term).first()
+    if (!semester) return c.json({ success: true, data: { subjects: [], slots: [] } })
+
+    const { results: subjects } = await c.env.DB.prepare(
+      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
+    ).bind(semester.id).all()
+
+    const { results: slots } = await c.env.DB.prepare(
+      'SELECT id, subject_id, day_of_week, period FROM timetable_slots WHERE semester_id = ? ORDER BY day_of_week, period'
+    ).bind(semester.id).all()
+
+    return c.json({ success: true, data: { semesterId: semester.id, subjects: subjects || [], slots: slots || [] } })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/timetable/photo — 시간표 사진 분석 (Gemini Vision)
+app.post('/api/student/:id/timetable/photo', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const body = await c.req.json()
+    const { imageBase64, mimeType = 'image/jpeg', year, term } = body
+    if (!imageBase64) return c.json({ success: false, error: '이미지가 없습니다' }, 400)
+
+    const currentYear = year || new Date(Date.now() + 9 * 3600000).getFullYear()
+    const currentTerm = term || (new Date(Date.now() + 9 * 3600000).getMonth() < 7 ? 1 : 2)
+
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+
+    const prompt = `당신은 한국 고등학교 시간표 분석 전문가입니다.
+
+이 시간표 사진을 분석하여 아래 JSON 형식으로 정확히 추출해주세요.
+
+처리 규칙:
+1. 과목명, 요일(1=월~5=금), 교시(1~7), 담당 교사명을 추출
+2. 고교학점제 특성상 학생마다 과목이 다름 — 보이는 그대로 추출
+3. 교사명이 없는 칸은 teacher: null
+4. 빈 칸(자습/공강)은 포함하지 말 것
+5. 과목명은 정확히 (예: "생명과학Ⅱ", "미적분", "화학Ⅰ")
+
+반드시 아래 JSON만 출력:
+{
+  "slots": [
+    { "subject": "과목명", "teacher": "교사명 또는 null", "day_of_week": 1, "period": 1 }
+  ]
+}`
+
+    // Gemini 3.1 Flash Vision으로 시간표 분석
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: cleanBase64 } }
+          ] }],
+          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+        })
+      }
+    )
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text()
+      console.error('Gemini Vision error:', errText)
+      return c.json({ success: false, error: 'AI 분석 실패: ' + geminiRes.status }, 500)
+    }
+    const geminiData: any = await geminiRes.json()
+    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+
+    // JSON 파싱 (```json 블록 제거)
+    let parsed: any
+    try {
+      const jsonStr = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+      parsed = JSON.parse(jsonStr)
+    } catch {
+      return c.json({ success: false, error: 'AI 응답 파싱 실패', raw: aiText }, 500)
+    }
+
+    const slots = parsed.slots || []
+    if (!slots.length) return c.json({ success: false, error: '시간표에서 과목을 찾지 못했습니다' }, 400)
+
+    // 분석 결과만 반환 (저장은 confirm API에서)
+    return c.json({
+      success: true,
+      data: {
+        year: currentYear,
+        term: currentTerm,
+        slots,
+        subjectList: [...new Set(slots.map((s: any) => s.subject))]
+      }
+    })
+  } catch (e: any) {
+    console.error('Timetable photo error:', e)
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/timetable/confirm — 분석 결과 확인 후 DB 저장
+app.post('/api/student/:id/timetable/confirm', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const body = await c.req.json()
+    const { year, term, slots } = body
+    if (!year || !term || !slots?.length) return c.json({ success: false, error: '필수 데이터 누락' }, 400)
+
+    const DB = c.env.DB
+
+    // 1) semester upsert (동일 학기 있으면 기존 데이터 삭제 후 재등록)
+    let semester: any = await DB.prepare(
+      'SELECT id FROM semesters WHERE student_id = ? AND year = ? AND term = ?'
+    ).bind(studentId, year, term).first()
+
+    if (semester) {
+      await DB.prepare('DELETE FROM timetable_slots WHERE semester_id = ?').bind(semester.id).run()
+      await DB.prepare('DELETE FROM subjects WHERE semester_id = ?').bind(semester.id).run()
+    } else {
+      const ins = await DB.prepare(
+        'INSERT INTO semesters (student_id, year, term) VALUES (?, ?, ?)'
+      ).bind(studentId, year, term).run()
+      semester = { id: ins.meta.last_row_id }
+    }
+
+    const semesterId = semester.id
+
+    // 2) 고유 과목 추출 및 저장
+    const uniqueSubjects = new Map<string, string | null>()
+    for (const s of slots) {
+      if (!uniqueSubjects.has(s.subject)) {
+        uniqueSubjects.set(s.subject, s.teacher || null)
+      }
+    }
+
+    const subjectIdMap = new Map<string, number>()
+    for (const [name, teacher] of uniqueSubjects) {
+      const res = await DB.prepare(
+        'INSERT INTO subjects (semester_id, name, teacher) VALUES (?, ?, ?)'
+      ).bind(semesterId, name, teacher).run()
+      subjectIdMap.set(name, res.meta.last_row_id as number)
+    }
+
+    // 3) 시간표 슬롯 저장
+    for (const s of slots) {
+      const subjectId = subjectIdMap.get(s.subject)
+      if (!subjectId) continue
+      await DB.prepare(
+        'INSERT OR REPLACE INTO timetable_slots (semester_id, subject_id, day_of_week, period) VALUES (?, ?, ?, ?)'
+      ).bind(semesterId, subjectId, s.day_of_week, s.period).run()
+    }
+
+    // 4) 저장된 과목 목록 반환
+    const { results: savedSubjects } = await DB.prepare(
+      'SELECT id, name, teacher FROM subjects WHERE semester_id = ? ORDER BY name'
+    ).bind(semesterId).all()
+
+    return c.json({
+      success: true,
+      data: { semesterId, year, term, subjects: savedSubjects || [], slotCount: slots.length }
+    })
+  } catch (e: any) {
+    console.error('Timetable confirm error:', e)
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
 
 // ==================== 크로켓 포인트 API ====================
 
@@ -4673,6 +5191,207 @@ app.get('/api/aha-report/:reportId', async (c) => {
     }
     
     return c.json({ report })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ==================== 릴레이단어장 API ====================
+
+// 학생이 속한 모든 활성 클래스 목록 (성장 아하 리포트용)
+app.get('/api/student/classes', async (c) => {
+  try {
+    const userId = c.req.query('user_id')
+    if (!userId) return c.json({ error: 'user_id 필요' }, 400)
+
+    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php'
+    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026'
+
+    const res = await fetch(`${jyskApiUrl}?action=get_student_classes&user_id=${userId}&key=${jyskApiKey}`)
+    const data: any = await res.json()
+    if (!data.success) return c.json({ success: false, classes: [] })
+    return c.json({ success: true, classes: data.classes || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 릴레이 자격 확인: 사용자(멘토/학생)의 영어 클래스 중 학생(kind=2) 15명 이상인 클래스 목록
+app.get('/api/relay/classes', async (c) => {
+  try {
+    const userId = c.req.query('user_id')
+    if (!userId) return c.json({ error: 'user_id 필요' }, 400)
+
+    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php'
+    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026'
+
+    const res = await fetch(`${jyskApiUrl}?action=get_relay_classes&user_id=${userId}&key=${jyskApiKey}`)
+    const data: any = await res.json()
+    if (!data.success) return c.json({ success: false, classes: [] })
+    return c.json({ success: true, classes: data.classes || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 클래스의 학생 목록 (원격 DB)
+app.get('/api/relay/class-students', async (c) => {
+  try {
+    const classId = c.req.query('class_id')
+    if (!classId) return c.json({ error: 'class_id 필요' }, 400)
+
+    const jyskApiUrl = c.env.JYSK_API_URL || 'https://jungyoul.com/api/jysk-api.php'
+    const jyskApiKey = c.env.JYSK_API_KEY || 'jysk-planner-2026'
+
+    const res = await fetch(`${jyskApiUrl}?action=get_relay_class_students&class_id=${classId}&key=${jyskApiKey}`)
+    const data: any = await res.json()
+    if (!data.success) return c.json({ success: false, students: [] })
+    return c.json({ success: true, students: data.students || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 멘토: 오늘의 단어장 조회 (클래스별)
+app.get('/api/relay/wordbook', async (c) => {
+  try {
+    const classId = c.req.query('class_id')
+    const date = c.req.query('date') || getKSTDate()
+    if (!classId) return c.json({ error: 'class_id 필요' }, 400)
+
+    const wb: any = await c.env.DB.prepare(
+      'SELECT * FROM relay_wordbooks WHERE class_id = ? AND date = ?'
+    ).bind(Number(classId), date).first()
+
+    if (!wb) return c.json({ success: true, wordbook: null })
+
+    // 학생 제출 현황
+    const entries: any = await c.env.DB.prepare(
+      'SELECT student_user_id, student_name, is_finished, finished_at, entries FROM relay_word_entries WHERE wordbook_id = ? ORDER BY finished_at ASC'
+    ).bind(wb.id).all()
+
+    return c.json({ success: true, wordbook: wb, entries: entries.results || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 멘토: 단어장 저장 (생성 또는 업데이트)
+app.post('/api/relay/wordbook', async (c) => {
+  try {
+    const { class_id, date, words, is_ready, created_by } = await c.req.json()
+    if (!class_id || !words || !created_by) return c.json({ error: '필수 필드 누락' }, 400)
+
+    const dateStr = date || getKSTDate()
+    const wordsJson = JSON.stringify(words)
+
+    // UPSERT: 이미 있으면 업데이트, 없으면 생성
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM relay_wordbooks WHERE class_id = ? AND date = ?'
+    ).bind(class_id, dateStr).first()
+
+    if (existing) {
+      await c.env.DB.prepare(
+        'UPDATE relay_wordbooks SET words = ?, is_ready = ?, updated_at = ? WHERE id = ?'
+      ).bind(wordsJson, is_ready ? 1 : 0, getKSTString(), existing.id).run()
+      return c.json({ success: true, id: existing.id, updated: true })
+    } else {
+      const result = await c.env.DB.prepare(
+        'INSERT INTO relay_wordbooks (class_id, date, words, is_ready, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(class_id, dateStr, wordsJson, is_ready ? 1 : 0, created_by, getKSTString(), getKSTString()).run()
+      return c.json({ success: true, id: result.meta.last_row_id, created: true })
+    }
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 학생: 오늘의 단어장 + 본인 엔트리 조회
+app.get('/api/relay/student-wordbook', async (c) => {
+  try {
+    const classId = c.req.query('class_id')
+    const studentUserId = c.req.query('student_user_id')
+    const date = c.req.query('date') || getKSTDate()
+    if (!classId || !studentUserId) return c.json({ error: 'class_id, student_user_id 필요' }, 400)
+
+    const wb: any = await c.env.DB.prepare(
+      'SELECT * FROM relay_wordbooks WHERE class_id = ? AND date = ? AND is_ready = 1'
+    ).bind(Number(classId), date).first()
+
+    if (!wb) return c.json({ success: true, wordbook: null, myEntry: null, finishedStudents: [] })
+
+    // 완료된 학생 목록 (완료순)
+    const finished: any = await c.env.DB.prepare(
+      'SELECT student_user_id, student_name, finished_at FROM relay_word_entries WHERE wordbook_id = ? AND is_finished = 1 ORDER BY finished_at ASC'
+    ).bind(wb.id).all()
+
+    // 본인 엔트리
+    const myEntry: any = await c.env.DB.prepare(
+      'SELECT * FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
+    ).bind(wb.id, Number(studentUserId)).first()
+
+    return c.json({
+      success: true,
+      wordbook: { id: wb.id, class_id: wb.class_id, date: wb.date, words: wb.words, is_ready: wb.is_ready },
+      myEntry: myEntry || null,
+      finishedStudents: finished.results || []
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 학생: 단어 뜻 저장 (임시 저장 또는 완료 제출)
+app.post('/api/relay/student-entry', async (c) => {
+  try {
+    const { wordbook_id, student_user_id, student_name, entries, is_finished } = await c.req.json()
+    if (!wordbook_id || !student_user_id) return c.json({ error: '필수 필드 누락' }, 400)
+
+    const entriesJson = JSON.stringify(entries || [])
+    const now = getKSTString()
+
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
+    ).bind(wordbook_id, student_user_id).first()
+
+    if (existing) {
+      if (is_finished) {
+        await c.env.DB.prepare(
+          'UPDATE relay_word_entries SET entries = ?, is_finished = 1, finished_at = ?, updated_at = ? WHERE id = ?'
+        ).bind(entriesJson, now, now, existing.id).run()
+      } else {
+        await c.env.DB.prepare(
+          'UPDATE relay_word_entries SET entries = ?, updated_at = ? WHERE id = ?'
+        ).bind(entriesJson, now, existing.id).run()
+      }
+      return c.json({ success: true, id: existing.id, updated: true })
+    } else {
+      const result = await c.env.DB.prepare(
+        'INSERT INTO relay_word_entries (wordbook_id, student_user_id, student_name, entries, is_finished, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(wordbook_id, student_user_id, student_name || '', entriesJson, is_finished ? 1 : 0, is_finished ? now : null, now, now).run()
+      return c.json({ success: true, id: result.meta.last_row_id, created: true })
+    }
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 멘토: 특정 학생의 제출 상세 조회
+app.get('/api/relay/student-entry-detail', async (c) => {
+  try {
+    const wordbookId = c.req.query('wordbook_id')
+    const studentUserId = c.req.query('student_user_id')
+    if (!wordbookId || !studentUserId) return c.json({ error: '필수 파라미터 누락' }, 400)
+
+    const entry: any = await c.env.DB.prepare(
+      'SELECT * FROM relay_word_entries WHERE wordbook_id = ? AND student_user_id = ?'
+    ).bind(Number(wordbookId), Number(studentUserId)).first()
+
+    const wb: any = await c.env.DB.prepare(
+      'SELECT words FROM relay_wordbooks WHERE id = ?'
+    ).bind(Number(wordbookId)).first()
+
+    return c.json({ success: true, entry: entry || null, words: wb?.words || '[]' })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

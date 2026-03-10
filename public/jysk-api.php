@@ -135,34 +135,6 @@ switch ($action) {
         echo json_encode(['success' => true, 'members' => $members], JSON_UNESCAPED_UNICODE);
         break;
 
-    // ==================== 학생이 속한 활성 클래스 (아하 리포트 대상만) ====================
-    case 'get_student_classes':
-        $user_id = $_GET['user_id'] ?? null;
-        if (!$user_id) {
-            echo json_encode(['error' => 'user_id required'], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-
-        $stmt = $pdo->prepare('
-            SELECT c.class_id, c.class_name, c.genre_id
-            FROM ClassMember cm
-            JOIN Class c ON c.class_id = cm.class_id
-            WHERE cm.user_id = ? AND cm.kind = 2 AND cm.active_flag = 1
-              AND c.is_active = 1 AND c.is_aha_report = 1
-            ORDER BY c.class_name
-        ');
-        $stmt->execute([$user_id]);
-        $classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        foreach ($classes as &$c) {
-            $c['class_id'] = (int)$c['class_id'];
-            $c['genre_id'] = (int)$c['genre_id'];
-        }
-        unset($c);
-
-        echo json_encode(['success' => true, 'classes' => $classes], JSON_UNESCAPED_UNICODE);
-        break;
-
     // ==================== 릴레이단어장: 대상 클래스 목록 ====================
     // 영어(genre_id=3) 클래스 중 학생(kind=2)이 15명 이상인 클래스
     case 'get_relay_classes':
@@ -229,7 +201,7 @@ switch ($action) {
     // ==================== 알 수 없는 액션 ====================
     default:
         echo json_encode([
-            'error' => 'Unknown action. Available: get_user, get_mentor_students, get_class_students, get_student_classes, get_relay_classes, get_relay_class_students'
+            'error' => 'Unknown action. Available: get_user, get_mentor_students, get_class_students, get_relay_classes, get_relay_class_students'
         ], JSON_UNESCAPED_UNICODE);
         break;
 }

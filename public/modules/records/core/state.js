@@ -23,7 +23,7 @@ const _initialState = {
   todayAcademyRecords: null,
 
   // DB 데이터
-  _dbClassRecords: [],
+  _dbClassRecords: null, // null = 아직 로딩 전, [] = 로딩 완료(0건)
   _dbQuestionRecords: [],
   _dbTeachRecords: [],
   _dbActivityRecords: [],

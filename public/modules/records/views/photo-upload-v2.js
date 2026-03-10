@@ -48,18 +48,24 @@ async function handleNoteUpload(input) {
   if (!state._classPhotoTags) state._classPhotoTags = [];
 
   const file = input.files[0];
-  const dataUrl = await resizeImage(file);
 
-  // 기존 필기 노트가 있으면 교체
+  // 낙관적 UI: 즉시 로컬 미리보기 표시
+  const quickPreview = URL.createObjectURL(file);
   if (_hasNote()) {
-    state._classPhotos[0] = dataUrl;
+    state._classPhotos[0] = quickPreview;
     state._classPhotoTags[0] = '필기';
   } else {
-    // 맨 앞에 삽입
-    state._classPhotos.unshift(dataUrl);
+    state._classPhotos.unshift(quickPreview);
     state._classPhotoTags.unshift('필기');
   }
+  state._photoProcessing = true; // 처리 중 표시
+  navigate(state.currentScreen, { replace: true });
 
+  // 백그라운드에서 리사이즈 → 교체
+  const dataUrl = await resizeImage(file);
+  URL.revokeObjectURL(quickPreview);
+  state._classPhotos[0] = dataUrl;
+  state._photoProcessing = false;
   input.value = '';
   navigate(state.currentScreen, { replace: true });
 }
@@ -84,12 +90,27 @@ async function handleRefUpload(input) {
 
   const files = Array.from(input.files).slice(0, remaining);
 
+  // 1단계: 모든 파일의 로컬 미리보기 즉시 추가
+  const previews = [];
   for (const file of files) {
-    const dataUrl = await resizeImage(file);
-    state._classPhotos.push(dataUrl);
+    const blobUrl = URL.createObjectURL(file);
+    state._classPhotos.push(blobUrl);
     state._classPhotoTags.push('참고');
+    previews.push({ blobUrl, file });
   }
+  state._photoProcessing = true;
+  navigate(state.currentScreen, { replace: true });
 
+  // 2단계: 백그라운드에서 리사이즈 → blob URL을 data URL로 교체
+  for (const { blobUrl, file } of previews) {
+    const dataUrl = await resizeImage(file);
+    const idx = state._classPhotos.indexOf(blobUrl);
+    if (idx >= 0) {
+      state._classPhotos[idx] = dataUrl;
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+  state._photoProcessing = false;
   input.value = '';
   navigate(state.currentScreen, { replace: true });
 }
@@ -176,9 +197,13 @@ export function renderPhotoUpload() {
           <div class="pu-note-desc">AI가 분석하여 수업 기록을 자동 정리합니다</div>
 
           ${hasNote ? `
-            <div class="pu-note-preview">
+            <div class="pu-note-preview" style="position:relative">
               <img class="pu-note-img" src="${notePhoto}" alt="필기 노트">
-              <div class="pu-note-done-badge">✅ 촬영 완료</div>
+              ${state._photoProcessing ? `
+                <div class="pu-photo-overlay">
+                  <div class="pu-photo-spinner"></div>
+                  <div class="pu-photo-status">처리 중...</div>
+                </div>` : `<div class="pu-note-done-badge">✅ 촬영 완료</div>`}
               <div class="pu-note-actions">
                 <label class="pu-note-retake">
                   다시 촬영
@@ -210,12 +235,18 @@ export function renderPhotoUpload() {
           <div class="pu-ref-desc">교과서, 프린트, 칠판 등 참고 자료를 남겨보세요</div>
 
           <div class="pu-ref-grid">
-            ${refPhotos.map((p, i) => `
-              <div class="pu-ref-tile">
+            ${refPhotos.map((p, i) => {
+              const isBlob = p.dataUrl.startsWith('blob:');
+              return `
+              <div class="pu-ref-tile" style="position:relative">
                 <img class="pu-ref-tile-img" src="${p.dataUrl}" alt="참고 ${i + 1}">
+                ${isBlob ? `
+                  <div class="pu-photo-overlay">
+                    <div class="pu-photo-spinner" style="width:20px;height:20px;border-width:2px"></div>
+                  </div>` : ''}
                 <button class="pu-ref-tile-delete" onclick="_RM.removeRefPhoto(${i})">&times;</button>
-              </div>
-            `).join('')}
+              </div>`;
+            }).join('')}
             ${refCount < 14 ? `
               <label class="pu-ref-add-tile">
                 <i class="fas fa-plus" style="font-size:20px;margin-bottom:4px"></i>
@@ -242,11 +273,15 @@ export function renderPhotoUpload() {
 
         <!-- 액션 버튼 -->
         <div class="pu-actions">
+          ${state._photoProcessing ? `
+          <button class="btn-primary pu-ai-btn disabled" disabled>
+            <div class="pu-photo-spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>사진 처리 중...
+          </button>` : `
           <button class="btn-primary pu-ai-btn ${hasAnyPhoto ? '' : 'disabled'}"
                   onclick="${hasAnyPhoto ? '_RM.startAiAnalysis()' : ''}"
                   ${hasAnyPhoto ? '' : 'disabled'}>
             <i class="fas fa-magic" style="margin-right:8px"></i>AI 정리 시작
-          </button>
+          </button>`}
           <button class="pu-skip-btn" onclick="_RM.skipToManualEntry()">
             직접 입력할게요 →
           </button>

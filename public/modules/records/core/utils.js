@@ -124,6 +124,21 @@ export function markKeywords(text, keywords) {
  * @param {string} dueDate - YYYY-MM-DD 마감일
  * @returns {Array} plan steps [{step, title, date, done}, ...]
  */
+// 단순 과제 여부 판단 (키워드 기반)
+const SIMPLE_KEYWORDS = ['풀기', '풀이', '읽기', '외우기', '암기', '제출', '프린트', '복습', '정리', '필기'];
+const COMPLEX_KEYWORDS = ['보고서', '탐구', '발표', '제작', '조사', '만들기', '프로젝트', '실험', '에세이', '작문', '감상문'];
+
+export function isSimpleAssignment(title) {
+  if (!title) return true;
+  const t = title.toLowerCase();
+  // 복잡 키워드가 있으면 복잡 과제
+  if (COMPLEX_KEYWORDS.some(k => t.includes(k))) return false;
+  // 단순 키워드가 있으면 단순 과제
+  if (SIMPLE_KEYWORDS.some(k => t.includes(k))) return true;
+  // 기본: 단순 과제 (부담 줄이기)
+  return true;
+}
+
 export function generatePlanSteps(dueDate) {
   if (!dueDate) return [];
   const daysUntilDue = getDday(dueDate);
@@ -187,4 +202,66 @@ export function getAssignmentDisplayText(assignment) {
     return text;
   }
   return '';
+}
+
+// === 토스트 알림 ===
+export function showToast(icon, message, duration = 3000) {
+  const existing = document.querySelector('.toast-notification');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast-notification';
+  toast.innerHTML = `<span class="toast-icon">${icon}</span><span>${message}</span>`;
+
+  // .archive-module 컨테이너 안에 추가
+  const container = document.querySelector('.archive-module') || document.body;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// === 스켈레톤 HTML 생성 ===
+export function skeletonCards(count = 3) {
+  return Array.from({ length: count }, () => `
+    <div class="skeleton-card">
+      <div class="skeleton skeleton-thumb"></div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <div class="skeleton skeleton-chip"></div>
+        <div class="skeleton skeleton-chip" style="width:40px"></div>
+      </div>
+      <div class="skeleton skeleton-text long"></div>
+      <div class="skeleton skeleton-text medium"></div>
+      <div class="skeleton skeleton-text short"></div>
+    </div>
+  `).join('');
+}
+
+export function skeletonDetail() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" disabled><i class="fas fa-arrow-left"></i></button>
+        <div class="skeleton skeleton-text medium" style="height:20px;margin:0"></div>
+      </div>
+      <div class="form-body">
+        <div class="skeleton-card" style="border-left:4px solid rgba(255,255,255,0.1)">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="skeleton skeleton-circle"></div>
+            <div style="flex:1">
+              <div class="skeleton skeleton-text medium" style="height:18px"></div>
+              <div class="skeleton skeleton-text short" style="height:12px"></div>
+            </div>
+          </div>
+        </div>
+        <div class="skeleton skeleton-text long" style="height:16px;margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium" style="height:14px"></div>
+        <div class="skeleton skeleton-thumb" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text long" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+    </div>`;
 }

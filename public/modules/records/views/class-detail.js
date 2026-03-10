@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
-import { kstToday, getSubjectColor, tryParseJSON, markKeywords, getAssignmentDisplayText } from '../core/utils.js';
+import { kstToday, getSubjectColor, tryParseJSON, markKeywords, getAssignmentDisplayText, skeletonDetail } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { render } from '../core/router.js';
 
@@ -280,23 +280,32 @@ export function renderClassRecordDetail() {
         <div class="detail-photo-section">
           <div class="detail-photo-header">
             <span class="detail-photo-label">📸 필기 사진</span>
-            <span class="detail-photo-count">${photos.length > 0 ? photos.length : record.photo_count}장${photos.length === 0 && record.photo_count > 0 ? ' (로딩 중...)' : ''}</span>
+            <span class="detail-photo-count">${photos.length > 0 ? photos.length : record.photo_count}장</span>
           </div>
           <div class="detail-gallery-wrap">
             <div class="detail-gallery-scroll" id="detailGalleryScroll">
-              ${photos.map((p, i) => `
+              ${photos.length > 0 ? photos.map((p, i) => `
                 <div class="detail-gallery-item" data-idx="${i}" ondblclick="_RM.openPhotoZoom(${i})">
                   <img src="${p}" alt="필기 ${i + 1}" class="detail-gallery-img" loading="lazy" draggable="false">
                 </div>
-              `).join('')}
+              `).join('') : `
+                ${Array.from({ length: record.photo_count || 1 }, (_, i) => `
+                  <div class="detail-photo-loading">
+                    <div class="pu-photo-spinner"></div>
+                    <div class="detail-photo-loading-text">사진 불러오는 중...</div>
+                  </div>
+                `).join('')}
+              `}
             </div>
+            ${photos.length > 0 ? `
             <div class="detail-gallery-indicator">
               <span class="detail-gallery-current">1</span> / <span class="detail-gallery-total">${photos.length}</span>
-            </div>
+            </div>` : ''}
           </div>
+          ${photos.length > 0 ? `
           <div class="detail-gallery-hint">
             <i class="fas fa-hand-point-up" style="margin-right:4px"></i>좌우 스와이프로 넘기기 · 더블탭으로 확대
-          </div>
+          </div>` : ''}
         </div>` : ''}
 
         ${record.teacher_note ? `
