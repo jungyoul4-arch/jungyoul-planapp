@@ -29,6 +29,16 @@ export function registerHandlers(RM) {
     const el = document.getElementById(`recall-answer-${idx}`);
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
   };
+  RM.toggleSeteukResolved = (idx) => {
+    if (!state._aiCreditLog?.seteuk_questions?.[idx]) return;
+    state._aiCreditLog.seteuk_questions[idx].resolved = !state._aiCreditLog.seteuk_questions[idx].resolved;
+    navigate(state.currentScreen, { replace: true });
+  };
+  RM.toggleAssignmentDone = () => {
+    if (!state._aiCreditLog?.assignment) return;
+    state._aiCreditLog.assignment.done = !state._aiCreditLog.assignment.done;
+    navigate(state.currentScreen, { replace: true });
+  };
 }
 
 // === AI 분석 실행 (ai-loading 화면 진입 시 호출) ===
@@ -227,14 +237,17 @@ async function _backgroundTasks(log, subject, period, date, record, recordId, ha
     }
   }
 
-  // 세특 질문 → 나의 질문함 자동 등록
-  const questions = log.questions || [];
-  if (questions.length > 0 && recordId) {
-    for (const q of questions) {
-      if (!q.original || q.original.trim().length < 2) continue;
+  // 세특 질문 → 나의 질문함 자동 등록 (신형식: seteuk_questions / 구형식: questions)
+  const seteukQs = log.seteuk_questions || [];
+  const legacyQs = log.questions || [];
+  const questionsToSave = seteukQs.length > 0 ? seteukQs : legacyQs;
+  if (questionsToSave.length > 0 && recordId) {
+    for (const q of questionsToSave) {
+      const title = q.q || q.original || '';
+      if (!title || title.trim().length < 2) continue;
       await DB.saveMyQuestion({
-        subject, source: '수업', title: q.original,
-        aiImproved: q.improved || null, classRecordId: recordId,
+        subject, source: '수업', title,
+        aiImproved: q.reason || q.improved || null, classRecordId: recordId,
         period, date, skipXp: true,
       });
     }
@@ -329,17 +342,15 @@ export function renderAiLoading() {
   `;
 }
 
-// === 결과 화면 헬퍼 ===
+// === 결과 화면 헬퍼 (신형식 양식지 스타일) ===
 function _renderKeywords(keywords, editing) {
   if (!keywords || keywords.length === 0) return '<span style="color:var(--text-muted)">키워드 없음</span>';
-
   const chips = keywords.map((kw, i) => `
     <span class="cl-keyword-chip">
       ${kw}
       ${editing ? `<button class="cl-keyword-remove" onclick="_RM.removeCreditLogKeyword(${i})">&times;</button>` : ''}
     </span>
   `).join('');
-
   const addInput = editing && keywords.length < 5 ? `
     <span class="cl-keyword-add">
       <input class="cl-keyword-add-input" placeholder="추가" maxlength="20"
@@ -348,96 +359,67 @@ function _renderKeywords(keywords, editing) {
       <button onclick="_RM.addCreditLogKeyword()" style="background:none;border:none;color:var(--primary-light);cursor:pointer;font-size:12px">+</button>
     </span>
   ` : '';
-
   return chips + addInput;
 }
 
-function _renderQuestionPair(q, idx, editing, keywords) {
-  return `
-    <div class="cl-question-pair">
-      <div class="cl-question-num">Q${idx + 1}</div>
-      <div class="cl-question-body">
-        <div class="cl-question-original">
-          <span class="cl-q-label">💬 내가 쓴 질문</span>
-          ${editing
-            ? `<textarea class="cl-edit-textarea" oninput="_RM.updateQuestionField(${idx},'original',this.value)" rows="2">${q.original || ''}</textarea>`
-            : `<p>${q.original || '(질문 없음)'}</p>`}
+function _renderSeteukQuestions(log, editing) {
+  const qs = log.seteuk_questions || [];
+  if (qs.length === 0) return '<div style="color:var(--text-muted);padding:8px 0;font-size:13px">질문 없음</div>';
+  return qs.map((q, i) => `
+    <div class="cl-seteuk-item" style="padding:14px 0;${i < qs.length - 1 ? 'border-bottom:1px solid var(--border)' : ''}">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <button onclick="_RM.toggleSeteukResolved(${i})" style="flex-shrink:0;width:24px;height:24px;border-radius:6px;border:2px solid ${q.resolved ? 'var(--success)' : 'var(--border)'};background:${q.resolved ? 'var(--success)' : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:2px;transition:all 0.2s">
+          ${q.resolved ? '<i class="fas fa-check" style="color:white;font-size:11px"></i>' : ''}
+        </button>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${renderMath(q.q)}</div>
+          ${q.reason ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:4px;font-size:10px"></i><strong>왜?</strong> ${q.reason}</div>` : ''}
+          ${q.guide ? `<div style="font-size:12px;color:var(--primary-light);margin-top:4px;line-height:1.5;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px"><i class="fas fa-compass" style="margin-right:4px;font-size:10px"></i><strong>탐구 방향:</strong> ${q.guide}</div>` : ''}
         </div>
-        <div class="cl-question-improved">
-          <span class="cl-q-label">✨ 선생님께 이렇게 여쭤보세요</span>
-          ${editing
-            ? `<textarea class="cl-edit-textarea" oninput="_RM.updateQuestionField(${idx},'improved',this.value)" rows="3">${q.improved || ''}</textarea>`
-            : `<p>${renderMath(markKeywords(q.improved || '(개선 질문 없음)', keywords))}</p>`}
-        </div>
+        <span class="cl-question-num" style="flex-shrink:0">Q${i + 1}</span>
       </div>
-    </div>`;
+    </div>
+  `).join('');
 }
 
-function _renderAssignmentSection(log, editing) {
-  const asg = log.assignment;
-  // null / 없음 → 과제 없음 표시
-  if (!asg) {
+function _renderQuiz(log) {
+  const quiz = log.quiz || [];
+  // 하위호환: 구형식 exam_questions (문자열 배열)
+  const legacy = log.exam_questions || [];
+  if (quiz.length === 0 && legacy.length === 0) return '';
+
+  if (quiz.length > 0) {
     return `
-      <div class="cl-section cl-assignment-section">
-        <span class="cl-section-label">📌 과제</span>
-        <div class="cl-section-value cl-handwriting" style="color:var(--text-muted)">과제 없음</div>
-      </div>`;
-  }
-  // 구조화된 객체
-  if (typeof asg === 'object') {
-    if (editing) {
-      return `
-        <div class="cl-section cl-assignment-section">
-          <span class="cl-section-label">📌 과제</span>
-          <div class="cl-assignment-card">
-            <label style="font-size:20px;color:var(--text-secondary);margin-bottom:4px;display:block">과제 제목</label>
-            <input class="cl-edit-input" value="${asg.title || ''}" oninput="_RM.updateAssignmentField('title',this.value)">
-            <label style="font-size:20px;color:var(--text-secondary);margin:8px 0 4px;display:block">상세 내용</label>
-            <textarea class="cl-edit-textarea" rows="2" oninput="_RM.updateAssignmentField('description',this.value)">${asg.description || ''}</textarea>
-            <label style="font-size:20px;color:var(--text-secondary);margin:8px 0 4px;display:block">마감일</label>
-            <input class="cl-edit-input" type="date" value="${asg.dueDate || ''}" oninput="_RM.updateAssignmentField('dueDate',this.value)" style="color:var(--text-primary)">
-          </div>
-        </div>`;
-    }
-    return `
-      <div class="cl-section cl-assignment-section">
-        <span class="cl-section-label">📌 과제</span>
-        <div class="cl-assignment-card">
-          <div class="cl-assignment-title">${asg.title || ''}</div>
-          ${asg.description ? `<div class="cl-assignment-desc">${asg.description}</div>` : ''}
-          ${asg.dueDate ? `<div class="cl-assignment-due"><i class="fas fa-calendar-alt" style="margin-right:6px"></i>마감일: ${asg.dueDate}${asg.dueDateRaw ? ` (${asg.dueDateRaw})` : ''}</div>` : (asg.dueDateRaw ? `<div class="cl-assignment-due" style="color:var(--warning)"><i class="fas fa-clock" style="margin-right:6px"></i>${asg.dueDateRaw}</div>` : '')}
-          <div class="cl-assignment-auto-badge"><i class="fas fa-check-circle" style="margin-right:4px"></i>저장 시 과제로 자동 등록됩니다</div>
+      <div class="cl-section cl-exam-section">
+        <span class="cl-section-label">📝 예상 퀴즈</span>
+        <div class="cl-quiz-list">
+          ${quiz.map((q, i) => `
+            <div class="cl-quiz-item" style="padding:12px 0;${i < quiz.length - 1 ? 'border-bottom:1px solid var(--border)' : ''}">
+              <div style="display:flex;align-items:flex-start;gap:10px">
+                <span class="cl-exam-num">${i + 1}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:14px;font-weight:500;color:var(--text-primary);line-height:1.5">${renderMath(q.question)}</div>
+                  <button onclick="_RM.toggleRecallAnswer(${i})" style="margin-top:8px;padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text-secondary);font-size:12px;cursor:pointer;transition:all 0.2s">
+                    <i class="fas fa-eye" style="margin-right:4px"></i>정답·해설 보기
+                  </button>
+                  <div id="recall-answer-${i}" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(99,102,241,0.06);border-radius:8px;border-left:3px solid var(--primary-light)">
+                    ${q.answer ? `<div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:4px"><i class="fas fa-check-circle" style="margin-right:4px"></i>정답: ${renderMath(q.answer)}</div>` : ''}
+                    ${q.explanation ? `<div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${renderMath(q.explanation)}</div>` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          `).join('')}
         </div>
       </div>`;
   }
-  // 하위호환: 문자열
-  return `
-    <div class="cl-section cl-assignment-section">
-      <span class="cl-section-label">📌 과제</span>
-      <div class="cl-section-value cl-handwriting">${asg}</div>
-    </div>`;
-}
 
-// === 새 섹션 렌더러 ===
-function _renderSummarySection(log, editing) {
-  if (!log.summary && !editing) return '';
-  return `
-    <div class="cl-section cl-summary-section">
-      <span class="cl-section-label">📋 수업 맥락 요약</span>
-      ${editing
-        ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateCreditLogField('summary',this.value)">${log.summary || ''}</textarea>`
-        : `<div class="cl-section-value cl-handwriting">${renderMath((log.summary || '—').replace(/\n/g, '<br>'))}</div>`}
-    </div>`;
-}
-
-function _renderExamConnection(log, editing) {
-  const items = log.exam_connection || [];
-  if (items.length === 0 && !editing) return '';
+  // 하위호환: 문자열 배열
   return `
     <div class="cl-section cl-exam-section">
-      <span class="cl-section-label">🎯 시험 연결 포인트</span>
+      <span class="cl-section-label">📝 예상 시험 문제</span>
       <div class="cl-exam-list">
-        ${items.map((item, i) => `
+        ${legacy.map((item, i) => `
           <div class="cl-exam-item">
             <span class="cl-exam-num">${i + 1}</span>
             <span class="cl-exam-text">${renderMath(item)}</span>
@@ -447,39 +429,61 @@ function _renderExamConnection(log, editing) {
     </div>`;
 }
 
-function _renderDeepDive(log, editing) {
-  if (!log.deep_dive && !editing) return '';
+function _renderAssignmentSection(log, editing) {
+  const asg = log.assignment;
+  if (!asg) {
+    return `
+      <div class="cl-section cl-assignment-section">
+        <span class="cl-section-label">📌 과제</span>
+        <div class="cl-section-value cl-handwriting" style="color:var(--text-muted)">과제 없음 (미확인)</div>
+      </div>`;
+  }
+  if (typeof asg === 'object') {
+    if (editing) {
+      return `
+        <div class="cl-section cl-assignment-section">
+          <span class="cl-section-label">📌 과제</span>
+          <div class="cl-assignment-card">
+            <label style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;display:block">과제 제목</label>
+            <input class="cl-edit-input" value="${asg.title || ''}" oninput="_RM.updateAssignmentField('title',this.value)">
+            <label style="font-size:12px;color:var(--text-secondary);margin:8px 0 4px;display:block">상세 내용</label>
+            <textarea class="cl-edit-textarea" rows="2" oninput="_RM.updateAssignmentField('description',this.value)">${asg.description || ''}</textarea>
+            <label style="font-size:12px;color:var(--text-secondary);margin:8px 0 4px;display:block">마감일</label>
+            <input class="cl-edit-input" type="date" value="${asg.dueDate || ''}" oninput="_RM.updateAssignmentField('dueDate',this.value)" style="color:var(--text-primary)">
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="cl-section cl-assignment-section">
+        <span class="cl-section-label">📌 과제</span>
+        <div class="cl-assignment-card" style="display:flex;align-items:flex-start;gap:10px">
+          <button onclick="_RM.toggleAssignmentDone()" style="flex-shrink:0;width:24px;height:24px;border-radius:6px;border:2px solid ${asg.done ? 'var(--success)' : 'var(--border)'};background:${asg.done ? 'var(--success)' : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:2px;transition:all 0.2s">
+            ${asg.done ? '<i class="fas fa-check" style="color:white;font-size:11px"></i>' : ''}
+          </button>
+          <div style="flex:1">
+            <div class="cl-assignment-title" style="${asg.done ? 'text-decoration:line-through;opacity:0.6' : ''}">${asg.title || asg.content || ''}</div>
+            ${asg.description ? `<div class="cl-assignment-desc">${asg.description}</div>` : ''}
+            ${asg.dueDate || asg.due ? `<div class="cl-assignment-due"><i class="fas fa-calendar-alt" style="margin-right:6px"></i>마감일: ${asg.dueDate || asg.due}</div>` : ''}
+            <div class="cl-assignment-auto-badge"><i class="fas fa-check-circle" style="margin-right:4px"></i>저장 시 과제로 자동 등록됩니다</div>
+          </div>
+        </div>
+      </div>`;
+  }
   return `
-    <div class="cl-section cl-deepdive-section">
-      <span class="cl-section-label">🔬 핵심 논리 분석</span>
-      ${editing
-        ? `<textarea class="cl-edit-textarea" rows="4" oninput="_RM.updateCreditLogField('deep_dive',this.value)">${log.deep_dive || ''}</textarea>`
-        : `<div class="cl-section-value cl-handwriting">${renderMath((log.deep_dive || '—').replace(/\n/g, '<br>'))}</div>`}
+    <div class="cl-section cl-assignment-section">
+      <span class="cl-section-label">📌 과제</span>
+      <div class="cl-section-value cl-handwriting">${asg}</div>
     </div>`;
 }
 
-function _renderActiveRecall(log) {
-  const items = log.active_recall || [];
-  if (items.length === 0) return '';
+function _renderSummarySection(log, editing) {
+  if (!log.summary && !editing) return '';
   return `
-    <div class="cl-section cl-recall-section">
-      <span class="cl-section-label">🧠 메타인지 자극 질문</span>
-      <div class="cl-recall-list">
-        ${items.map((item, i) => `
-          <div class="cl-recall-item">
-            <div class="cl-recall-q" onclick="_RM.toggleRecallAnswer(${i})">
-              <span class="cl-recall-icon">Q</span>
-              <span class="cl-recall-text">${renderMath(item.question)}</span>
-              <i class="fas fa-chevron-down cl-recall-toggle"></i>
-            </div>
-            <div id="recall-answer-${i}" class="cl-recall-a" style="display:none">
-              <span class="cl-recall-a-icon">A</span>
-              <span>${renderMath(item.answer)}</span>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-      <div class="cl-recall-hint">질문을 탭하면 답을 확인할 수 있어요</div>
+    <div class="cl-section cl-summary-section">
+      <span class="cl-section-label">📋 수업 맥락 요약</span>
+      ${editing
+        ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateCreditLogField('summary',this.value)">${log.summary || ''}</textarea>`
+        : `<div class="cl-section-value cl-handwriting">${renderMath((log.summary || '—').replace(/\n/g, '<br>'))}</div>`}
     </div>`;
 }
 
@@ -494,14 +498,13 @@ function _renderTeacherInsight(log, editing) {
     </div>`;
 }
 
-// === 결과 화면 렌더러 ===
+// === 결과 화면 렌더러 (양식지 스타일) ===
 export function renderAiResult() {
   const log = state._aiCreditLog;
   const editing = state._aiCreditLogEditing;
   const record = state.todayRecords[state._selectedPeriodIdx];
   const subject = record ? record.subject : '';
   const period = record ? record.period : '';
-  const color = record ? record.color : '#6C5CE7';
 
   if (!log) {
     return `
@@ -513,7 +516,6 @@ export function renderAiResult() {
       </div>`;
   }
 
-  const questions = log.questions || [];
   const kw = log.keywords || [];
 
   return `
@@ -531,24 +533,20 @@ export function renderAiResult() {
             <div class="cl-meta">${subject} · ${period}교시 · ${state._backfillDate || kstToday()}</div>
           </div>
 
+          <!-- 1. 단원/주제 + 교과서 -->
           <div class="cl-section">
             <span class="cl-section-label">📖 단원 / 주제</span>
             ${editing
               ? `<input class="cl-edit-input" value="${log.topic || ''}" oninput="_RM.updateCreditLogField('topic',this.value)">`
-              : `<div class="cl-section-value cl-handwriting">${log.topic || '—'}</div>`}
+              : `<div class="cl-section-value cl-handwriting">${log.topic || '—'}${log.pages ? ` <span style="color:var(--text-muted);font-size:12px">(${log.pages})</span>` : ''}</div>`}
           </div>
-
+          ${editing ? `
           <div class="cl-section">
             <span class="cl-section-label">📚 교과서</span>
-            ${editing
-              ? `<input class="cl-edit-input" value="${log.pages || ''}" oninput="_RM.updateCreditLogField('pages',this.value)">`
-              : `<div class="cl-section-value cl-handwriting">${log.pages || '—'}</div>`}
-          </div>
+            <input class="cl-edit-input" value="${log.pages || ''}" oninput="_RM.updateCreditLogField('pages',this.value)">
+          </div>` : ''}
 
-          ${_renderSummarySection(log, editing)}
-
-          ${_renderExamConnection(log, editing)}
-
+          <!-- 2. ⭐ 선생님 강조 포인트 -->
           <div class="cl-section cl-highlight-section">
             <span class="cl-section-label">⭐ 선생님 강조 포인트</span>
             ${editing
@@ -556,22 +554,22 @@ export function renderAiResult() {
               : `<div class="cl-section-value cl-handwriting">${renderMath(markKeywords((log.highlights || '—').replace(/\n/g, '<br>'), kw))}</div>`}
           </div>
 
-          ${_renderDeepDive(log, editing)}
-
+          <!-- 3. 🔑 핵심 키워드 -->
           <div class="cl-section">
             <span class="cl-section-label">🔑 오늘 수업의 핵심 키워드 <span style="color:var(--text-muted);font-weight:400">(최대 5개)</span></span>
             <div class="cl-keywords">${_renderKeywords(log.keywords, editing)}</div>
           </div>
 
+          <!-- 4. 💡 세특 소재 질문 -->
           <div class="cl-section cl-questions-section">
             <span class="cl-section-label">💡 세특 소재 질문</span>
-            ${questions.map((q, i) => _renderQuestionPair(q, i, editing, kw)).join('')}
+            ${_renderSeteukQuestions(log, editing)}
           </div>
 
-          ${_renderActiveRecall(log)}
+          <!-- 5. 📝 예상 퀴즈 -->
+          ${_renderQuiz(log)}
 
-          ${_renderTeacherInsight(log, editing)}
-
+          <!-- 6. 📌 과제 -->
           ${_renderAssignmentSection(log, editing)}
         </div>
 

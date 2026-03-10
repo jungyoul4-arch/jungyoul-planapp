@@ -4,7 +4,8 @@
    ================================================================ */
 
 import { state } from '../core/state.js';
-import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP, skeletonCards } from '../core/utils.js';
+import { DB } from '../core/api.js';
+import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP, skeletonCards, showToast } from '../core/utils.js';
 
 export function registerHandlers(RM) {
   RM.setGalleryFilter = (sub) => {
@@ -27,6 +28,73 @@ export function registerHandlers(RM) {
   };
   RM.setGallerySearch = (q) => {
     state._recordGallerySearchQuery = q;
+    RM.render();
+  };
+
+  // === 개별 삭제 ===
+  RM.confirmDeleteRecord = (recordId, subject, topic) => {
+    state._deleteSingleTarget = { id: recordId, subject, topic };
+    RM.render();
+  };
+
+  RM.cancelDeleteSingle = () => {
+    state._deleteSingleTarget = null;
+    RM.render();
+  };
+
+  RM.executeDeleteRecord = async () => {
+    const target = state._deleteSingleTarget;
+    if (!target) return;
+    state._deleteSingleLoading = true;
+    RM.render();
+    try {
+      const ok = await DB.deleteClassRecord(target.id);
+      state._deleteSingleTarget = null;
+      state._deleteSingleLoading = false;
+      if (ok) {
+        showToast('🗑️', '수업 기록이 삭제되었습니다.');
+      } else {
+        showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+      }
+    } catch (e) {
+      state._deleteSingleTarget = null;
+      state._deleteSingleLoading = false;
+      showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+    }
+    RM.render();
+  };
+
+  // === 전체 삭제 ===
+  RM.confirmDeleteAllRecords = () => {
+    state._deleteAllStep = 1;
+    RM.render();
+  };
+
+  RM.cancelDeleteAll = () => {
+    state._deleteAllStep = 0;
+    RM.render();
+  };
+
+  RM.confirmDeleteAllStep2 = () => {
+    state._deleteAllStep = 2;
+    RM.render();
+  };
+
+  RM.executeDeleteAllRecords = async () => {
+    state._deleteAllStep = 'loading';
+    RM.render();
+    try {
+      const count = await DB.deleteAllClassRecords();
+      state._deleteAllStep = 0;
+      if (count !== false) {
+        showToast('🗑️', `수업 기록 ${count}건이 삭제되었습니다.`);
+      } else {
+        showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+      }
+    } catch (e) {
+      state._deleteAllStep = 0;
+      showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+    }
     RM.render();
   };
 }
@@ -127,6 +195,9 @@ export function renderClassRecordHistory() {
           <button class="rg-icon-btn" onclick="_RM.setGallerySort('${currentSort === 'newest' ? 'oldest' : 'newest'}')" title="정렬">
             <i class="fas fa-sort-amount-${currentSort === 'newest' ? 'down' : 'up'}"></i>
           </button>
+          ${allRecords.length > 0 ? `<button class="rg-icon-btn" onclick="_RM.confirmDeleteAllRecords()" title="전체 삭제" style="color:#EF4444">
+            <i class="fas fa-trash-alt"></i>
+          </button>` : ''}
         </div>
       </div>
 
@@ -195,8 +266,101 @@ export function renderClassRecordHistory() {
           </div>
         `}
       </div>
+
+      ${_renderDeleteModal(allRecords.length)}
+      ${_renderSingleDeleteModal()}
     </div>
   `;
+}
+
+function _renderDeleteModal(totalCount) {
+  const step = state._deleteAllStep || 0;
+  if (!step) return '';
+
+  const overlay = `<div class="rg-modal-overlay" onclick="_RM.cancelDeleteAll()"><div class="rg-modal-box" onclick="event.stopPropagation()">`;
+  const end = `</div></div>`;
+
+  if (step === 'loading') {
+    return `${overlay}
+      <div style="text-align:center;padding:24px 0">
+        <i class="fas fa-spinner fa-spin" style="font-size:32px;color:#6C5CE7;margin-bottom:12px"></i>
+        <p style="font-size:15px;color:var(--text-secondary)">삭제 중입니다...</p>
+      </div>
+    ${end}`;
+  }
+
+  const icon = `<div style="width:56px;height:56px;border-radius:50%;background:#FEE2E2;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px">
+    <i class="fas fa-exclamation-triangle" style="font-size:24px;color:#EF4444"></i></div>`;
+  const cancelBtn = `<button onclick="_RM.cancelDeleteAll()" style="flex:1;padding:12px;border-radius:10px;border:1px solid #E5E7EB;background:#fff;font-size:14px;font-weight:600;color:var(--text-secondary);cursor:pointer">`;
+
+  if (step === 1) {
+    return `${overlay}
+      <div style="text-align:center;margin-bottom:16px">
+        ${icon}
+        <h3 style="font-size:17px;font-weight:700;margin:0 0 8px">전체 삭제</h3>
+        <p style="font-size:14px;color:var(--text-secondary);line-height:1.5;margin:0">
+          수업 기록 <strong style="color:#EF4444">${totalCount}건</strong>과 첨부된 사진, AI 분석 결과가<br>모두 삭제됩니다.
+        </p>
+      </div>
+      <div style="display:flex;gap:8px">
+        ${cancelBtn}취소</button>
+        <button onclick="_RM.confirmDeleteAllStep2()" style="flex:1;padding:12px;border-radius:10px;border:none;background:#EF4444;font-size:14px;font-weight:600;color:#fff;cursor:pointer">삭제하기</button>
+      </div>
+    ${end}`;
+  }
+
+  if (step === 2) {
+    return `${overlay}
+      <div style="text-align:center;margin-bottom:16px">
+        ${icon}
+        <h3 style="font-size:17px;font-weight:700;margin:0 0 8px">정말 삭제하시겠습니까?</h3>
+        <p style="font-size:14px;color:var(--text-secondary);line-height:1.5;margin:0">
+          삭제된 데이터는 <strong style="color:#EF4444">복구할 수 없습니다.</strong><br>정말로 전체 삭제를 진행하시겠습니까?
+        </p>
+      </div>
+      <div style="display:flex;gap:8px">
+        ${cancelBtn}아니요, 취소</button>
+        <button onclick="_RM.executeDeleteAllRecords()" style="flex:1;padding:12px;border-radius:10px;border:none;background:#EF4444;font-size:14px;font-weight:600;color:#fff;cursor:pointer">네, 전체 삭제</button>
+      </div>
+    ${end}`;
+  }
+
+  return '';
+}
+
+function _renderSingleDeleteModal() {
+  const target = state._deleteSingleTarget;
+  if (!target) return '';
+  const loading = state._deleteSingleLoading;
+
+  const overlay = `<div class="rg-modal-overlay" onclick="_RM.cancelDeleteSingle()"><div class="rg-modal-box" onclick="event.stopPropagation()">`;
+  const end = `</div></div>`;
+
+  if (loading) {
+    return `${overlay}
+      <div style="text-align:center;padding:24px 0">
+        <i class="fas fa-spinner fa-spin" style="font-size:32px;color:#6C5CE7;margin-bottom:12px"></i>
+        <p style="font-size:15px;color:var(--text-secondary)">삭제 중입니다...</p>
+      </div>
+    ${end}`;
+  }
+
+  const displayName = target.topic || target.subject || '수업';
+  return `${overlay}
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="width:56px;height:56px;border-radius:50%;background:#FEE2E2;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px">
+        <i class="fas fa-trash-alt" style="font-size:22px;color:#EF4444"></i>
+      </div>
+      <h3 style="font-size:17px;font-weight:700;margin:0 0 8px">'${displayName}' 수업 기록을 삭제할까요?</h3>
+      <p style="font-size:14px;color:var(--text-secondary);line-height:1.5;margin:0">
+        사진과 AI 분석 결과가 함께 삭제됩니다.
+      </p>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="_RM.cancelDeleteSingle()" style="flex:1;padding:12px;border-radius:10px;border:1px solid #E5E7EB;background:#fff;font-size:14px;font-weight:600;color:var(--text-secondary);cursor:pointer">취소</button>
+      <button onclick="_RM.executeDeleteRecord()" style="flex:1;padding:12px;border-radius:10px;border:none;background:#EF4444;font-size:14px;font-weight:600;color:#fff;cursor:pointer">삭제</button>
+    </div>
+  ${end}`;
 }
 
 function _renderCard(r, cardIdx) {
@@ -214,8 +378,14 @@ function _renderCard(r, cardIdx) {
 
   const thumbSrc = photos.length > 0 && !String(photos[0]).startsWith('ref:') ? photos[0] : '';
 
+  // 개별 삭제 버튼 (DB 레코드만)
+  const safeSubject = (r.subject || '').replace(/'/g, "\\'");
+  const safeTopic = (r.topic || '').replace(/'/g, "\\'");
+  const deleteBtn = r._source === 'db' ? `<button class="rg-card-delete-btn" onclick="event.stopPropagation();_RM.confirmDeleteRecord('${r.id}','${safeSubject}','${safeTopic}')" title="삭제"><i class="fas fa-trash-alt"></i></button>` : '';
+
   return `
     <div class="rg-card" onclick="${clickAction}">
+      ${deleteBtn}
       <div class="rg-card-thumb" style="border-top:3px solid ${color}">
         ${thumbSrc
           ? '<img src="' + thumbSrc + '" alt="" class="rg-card-img" loading="lazy" />'

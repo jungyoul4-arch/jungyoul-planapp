@@ -231,6 +231,13 @@ function _hideArchiveModule() {
   if (phoneContent) phoneContent.style.display = '';
   if (tabletContent) tabletContent.style.display = '';
   // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
+  // 아카이브에서 홈으로 돌아올 때 DB 기록 반영하여 시간표 done 상태 갱신
+  if (_archiveModuleActive && state._authUser?.id) {
+    DB.loadClassRecords().then(() => {
+      syncTodayRecords();
+      renderScreen();
+    }).catch(() => {});
+  }
 }
 
 // ==================== 홈 → 아카이브 기록 플로우 브릿지 ====================
@@ -1684,6 +1691,8 @@ const DB = {
         this.loadMentorFeedbacks(),
         this.loadTimetable(),
       ]);
+      // 시간표 + DB 기록 모두 로드 완료 → done 상태 동기화
+      syncTodayRecords();
       // 즉시 UI 갱신 (프로필 XP/레벨 + 수업기록 반영)
       try { refreshDataWidgets(); } catch(_){}
       // 나머지는 백그라운드에서 지연 로딩
@@ -13651,28 +13660,39 @@ function syncTodayRecords() {
 
   const tt = state.timetable;
   const periodTimes = tt.periodTimes || [];
+  // DB에서 오늘 날짜의 class_records 조회
+  const todayDbRecords = (state._dbClassRecords || []).filter(r => r.date === todayStr);
   const newRecords = [];
   for (let pi = 0; pi < tt.school.length; pi++) {
     const subject = tt.school[pi][dayIdx];
     if (!subject) continue;
     const existing = state.todayRecords.find(r => r.period === pi + 1 && r.subject === subject);
     const time = periodTimes[pi] || {};
+    // DB에 같은 날짜 + 과목 + 교시 기록이 있는지 확인
+    const dbMatch = todayDbRecords.find(db => {
+      if (db.subject !== subject) return false;
+      try {
+        const memo = JSON.parse(db.memo || '{}');
+        return memo.period === pi + 1;
+      } catch { return false; }
+    });
+    const isDone = !!(existing?.done || dbMatch);
     newRecords.push({
       period: pi + 1,
       subject: subject,
       teacher: tt.teachers[subject] || '',
-      done: existing ? existing.done : false,
+      done: isDone,
       question: existing ? existing.question : null,
-      summary: existing ? existing.summary : '',
+      summary: existing?.summary || (dbMatch ? (dbMatch.topic || dbMatch.content || '기록완료') : ''),
       color: tt.subjectColors[subject] || '#636e72',
       startTime: time.start || '',
       endTime: time.end || '',
-      _dbRecordId: existing ? existing._dbRecordId : null,
-      _topic: existing ? existing._topic : '',
-      _pages: existing ? existing._pages : '',
-      _keywords: existing ? existing._keywords : [],
-      _photos: existing ? existing._photos : [],
-      _teacherNote: existing ? existing._teacherNote : '',
+      _dbRecordId: existing?._dbRecordId || (dbMatch ? dbMatch.id : null),
+      _topic: existing?._topic || (dbMatch ? dbMatch.topic : ''),
+      _pages: existing?._pages || (dbMatch ? dbMatch.pages : ''),
+      _keywords: existing?._keywords || (dbMatch ? dbMatch.keywords : []),
+      _photos: existing?._photos || [],
+      _teacherNote: existing?._teacherNote || (dbMatch ? dbMatch.teacher_note : ''),
       _assignmentText: existing ? existing._assignmentText : '',
       _assignmentDue: existing ? existing._assignmentDue : '',
     });
@@ -14679,6 +14699,7 @@ async function ttSave() {
     state.timetable.teachers = newTeachers;
     state.timetable.subjectColors = newColors;
     DB.saveTimetable();
+    syncTodayRecords();
 
     state._ttOnboardingStep = 'done';
   } catch (err) {

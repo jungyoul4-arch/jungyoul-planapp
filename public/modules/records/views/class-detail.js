@@ -5,13 +5,37 @@
 
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
-import { kstToday, getSubjectColor, tryParseJSON, markKeywords, getAssignmentDisplayText, skeletonDetail } from '../core/utils.js';
+import { kstToday, getSubjectColor, tryParseJSON, markKeywords, getAssignmentDisplayText, skeletonDetail, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
-import { render } from '../core/router.js';
+import { render, navigate } from '../core/router.js';
 
 export function registerHandlers(RM) {
   RM.openPhotoZoom = (idx) => openPhotoZoom(idx);
   RM.downloadDetailPDF = (recordId) => downloadDetailPDF(recordId);
+  RM.deleteDetailPhoto = (photoIdx, recordId) => deleteDetailPhoto(photoIdx, recordId);
+  RM.addDetailPhoto = (recordId) => addDetailPhoto(recordId);
+  RM.reanalyzeRecord = (recordId) => reanalyzeRecord(recordId);
+  RM.deleteRecord = (recordId) => deleteRecord(recordId);
+  RM.toggleDetailSeteuk = async (recordId, idx) => {
+    const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(recordId));
+    if (!dbRec || !dbRec.ai_credit_log) return;
+    const log = typeof dbRec.ai_credit_log === 'string' ? tryParseJSON(dbRec.ai_credit_log, {}) : dbRec.ai_credit_log;
+    if (!log.seteuk_questions?.[idx]) return;
+    log.seteuk_questions[idx].resolved = !log.seteuk_questions[idx].resolved;
+    dbRec.ai_credit_log = log;
+    await DB.updateClassRecord(recordId, { ai_credit_log: log });
+    render();
+  };
+  RM.toggleDetailAssignment = async (recordId) => {
+    const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(recordId));
+    if (!dbRec || !dbRec.ai_credit_log) return;
+    const log = typeof dbRec.ai_credit_log === 'string' ? tryParseJSON(dbRec.ai_credit_log, {}) : dbRec.ai_credit_log;
+    if (!log.assignment) return;
+    log.assignment.done = !log.assignment.done;
+    dbRec.ai_credit_log = log;
+    await DB.updateClassRecord(recordId, { ai_credit_log: log });
+    render();
+  };
 }
 
 function downloadDetailPDF(recordId) {
@@ -113,6 +137,131 @@ function openPhotoZoom(photoIdx) {
   document.body.appendChild(overlay);
 }
 
+async function deleteRecord(recordId) {
+  if (!confirm('이 수업 기록을 삭제할까요?\n사진과 AI 분석 결과가 함께 삭제됩니다.')) return;
+  try {
+    const ok = await DB.deleteClassRecord(recordId);
+    if (ok) {
+      showToast('🗑️', '수업 기록이 삭제되었습니다.');
+      state._viewingDbRecord = null;
+      navigate('class-record-history');
+    } else {
+      showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+    }
+  } catch (e) {
+    console.error('deleteRecord error:', e);
+    showToast('⚠️', '삭제 중 오류가 발생했습니다.');
+  }
+}
+
+async function deleteDetailPhoto(photoIdx, recordId) {
+  const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(recordId));
+  if (!dbRec) return;
+  const rawPhotos = Array.isArray(dbRec.photos) ? dbRec.photos : [];
+  const ref = rawPhotos[photoIdx];
+  if (!ref || !ref.startsWith('ref:')) return;
+  const photoId = ref.slice(4);
+
+  if (!confirm('이 사진을 삭제할까요?\n사진과 함께 AI 분석 결과도 삭제됩니다.')) return;
+
+  const ok = await DB.deletePhoto(photoId);
+  if (ok) {
+    // AI 분석 결과도 함께 삭제
+    await DB.updateClassRecord(recordId, { ai_credit_log: null });
+    // 캐시 무효화
+    delete state[`_resolvedPhotos_${recordId}`];
+    render();
+  }
+}
+
+async function addDetailPhoto(recordId) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;
+  input.onchange = async () => {
+    if (!input.files || input.files.length === 0) return;
+    const photos = [];
+    for (const file of input.files) {
+      const dataUrl = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          // 리사이즈
+          const img = new Image();
+          img.onload = () => {
+            const maxW = 1200;
+            let w = img.width, h = img.height;
+            if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.85));
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+      photos.push(dataUrl);
+    }
+    if (photos.length === 0) return;
+
+    // 업로드 중 표시
+    const btn = document.getElementById('detail-add-photo-btn');
+    if (btn) { btn.textContent = '업로드 중...'; btn.disabled = true; }
+
+    const newIds = await DB.addPhotosToRecord(recordId, photos, photos.map(() => '필기'));
+    if (newIds && newIds.length > 0) {
+      // 캐시 무효화 + 재렌더
+      delete state[`_resolvedPhotos_${recordId}`];
+      // 사진 추가됨 표시 (재분석 필요)
+      state._photoAddedToRecord = recordId;
+      render();
+    } else {
+      if (btn) { btn.textContent = '+ 사진 추가'; btn.disabled = false; }
+      alert('사진 업로드에 실패했습니다.');
+    }
+  };
+  input.click();
+}
+
+async function reanalyzeRecord(recordId) {
+  const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(recordId));
+  if (!dbRec) return;
+
+  const rawPhotos = Array.isArray(dbRec.photos) ? dbRec.photos : [];
+  const tags = Array.isArray(dbRec.photo_tags) ? dbRec.photo_tags : [];
+  if (rawPhotos.length === 0) { alert('분석할 사진이 없습니다.'); return; }
+
+  if (!confirm('AI 분석을 다시 실행할까요?\n기존 분석 결과가 새로 생성됩니다.')) return;
+
+  // 사진 resolve
+  const resolved = await DB.resolvePhotos(rawPhotos);
+  const images = resolved.map((p, i) => ({
+    base64: p,
+    mimeType: 'image/jpeg',
+    tag: (tags[i] === '참고' ? '참고' : '필기')
+  }));
+
+  // 재분석 로딩 UI
+  state._reanalyzingRecord = recordId;
+  render();
+
+  const result = await DB.analyzePhotos(images, dbRec.subject, '', dbRec.date, '');
+  if (result) {
+    await DB.updateClassRecord(recordId, { ai_credit_log: result });
+    delete state._photoAddedToRecord;
+    delete state._reanalyzingRecord;
+    // 캐시 무효화
+    delete state[`_resolvedPhotos_${recordId}`];
+    await DB.loadClassRecords();
+    render();
+  } else {
+    delete state._reanalyzingRecord;
+    render();
+    alert('AI 분석에 실패했습니다. 잠시 후 다시 시도해주세요.');
+  }
+}
+
 async function _resolvePhotosAsync(recordId, rawPhotos, cacheKey) {
   try {
     const resolved = await DB.resolvePhotos(rawPhotos);
@@ -124,11 +273,56 @@ async function _resolvePhotosAsync(recordId, rawPhotos, cacheKey) {
 }
 
 function _renderDetailCreditLog(log, dbId) {
-  const questions = log.questions || [];
   const keywords = log.keywords || [];
-  const examConn = log.exam_connection || [];
+  const seteukQs = log.seteuk_questions || [];
+  const legacyQs = log.questions || [];
+  const examQs = log.exam_questions || [];
+  const legacyExam = log.exam_connection || [];
   const activeRecall = log.active_recall || [];
   function nl2br(t) { return (t || '').replace(/\n/g, '<br>'); }
+
+  // 세특 질문 (신형식: 체크박스 / 구형식: Q&A 쌍)
+  let seteukHtml = '';
+  if (seteukQs.length > 0) {
+    seteukHtml = seteukQs.map((q, i) => `
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <button onclick="_RM.toggleDetailSeteuk('${dbId}',${i})" style="flex-shrink:0;width:22px;height:22px;border-radius:5px;border:2px solid ${q.resolved ? 'var(--success)' : 'var(--border)'};background:${q.resolved ? 'var(--success)' : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:1px">
+          ${q.resolved ? '<i class="fas fa-check" style="color:white;font-size:10px"></i>' : ''}
+        </button>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${q.q}</div>
+          ${q.reason ? '<div style="font-size:11px;color:var(--text-secondary);margin-top:3px"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:3px;font-size:9px"></i>' + q.reason + '</div>' : ''}
+        </div>
+        <span style="font-size:11px;font-weight:700;color:var(--primary-light)">Q${i + 1}</span>
+      </div>`).join('');
+  } else if (legacyQs.length > 0) {
+    seteukHtml = legacyQs.map((q, i) => '<div class="cl-question-pair"><div class="cl-question-num">Q' + (i + 1) + '</div><div class="cl-question-body"><div class="cl-question-original"><span class="cl-q-label">💬 질문</span><p>' + (q.original || '') + '</p></div>' + (q.improved ? '<div class="cl-question-improved"><span class="cl-q-label">✨ AI 고도화</span><p>' + markKeywords(q.improved, keywords) + '</p></div>' : '') + '</div></div>').join('');
+  }
+
+  // 예상 시험 문제 (신형식) 또는 시험 연결 포인트 (구형식)
+  const examItems = examQs.length > 0 ? examQs : legacyExam;
+  const examLabel = examQs.length > 0 ? '📝 예상 시험 문제' : '🎯 시험 연결 포인트';
+
+  // 과제 (신형식: 체크박스)
+  let assignmentHtml = '';
+  const asg = log.assignment;
+  if (asg && typeof asg === 'object') {
+    assignmentHtml = `
+      <div class="cl-section cl-assignment-section"><span class="cl-section-label">📌 과제</span>
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;background:var(--bg-input);border-radius:10px;border:1px solid var(--border)">
+          <button onclick="_RM.toggleDetailAssignment('${dbId}')" style="flex-shrink:0;width:22px;height:22px;border-radius:5px;border:2px solid ${asg.done ? 'var(--success)' : 'var(--border)'};background:${asg.done ? 'var(--success)' : 'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:1px">
+            ${asg.done ? '<i class="fas fa-check" style="color:white;font-size:10px"></i>' : ''}
+          </button>
+          <div style="flex:1">
+            <div style="font-size:14px;font-weight:600;${asg.done ? 'text-decoration:line-through;opacity:0.6' : ''}">${asg.title || asg.content || ''}</div>
+            ${asg.description ? '<div style="font-size:12px;color:var(--text-secondary);margin-top:3px">' + asg.description + '</div>' : ''}
+            ${asg.dueDate || asg.due ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px"><i class="fas fa-calendar-alt" style="margin-right:4px"></i>마감: ' + (asg.dueDate || asg.due) + '</div>' : ''}
+          </div>
+        </div>
+      </div>`;
+  } else if (asg && typeof asg === 'string') {
+    assignmentHtml = `<div class="cl-section cl-assignment-section"><span class="cl-section-label">📌 과제</span><div class="cl-section-value cl-handwriting">${asg}</div></div>`;
+  }
 
   return `
     <div class="cl-card" style="margin-top:16px">
@@ -138,15 +332,14 @@ function _renderDetailCreditLog(log, dbId) {
       </div>
       ${log.topic ? `<div class="cl-section"><span class="cl-section-label">📖 단원 / 주제</span><div class="cl-section-value cl-handwriting">${log.topic}</div></div>` : ''}
       ${log.pages ? `<div class="cl-section"><span class="cl-section-label">📚 교과서</span><div class="cl-section-value cl-handwriting">${log.pages}</div></div>` : ''}
-      ${log.summary ? `<div class="cl-section cl-summary-section"><span class="cl-section-label">📋 수업 맥락 요약</span><div class="cl-section-value cl-handwriting">${nl2br(log.summary)}</div></div>` : ''}
-      ${examConn.length > 0 ? `<div class="cl-section cl-exam-section"><span class="cl-section-label">🎯 시험 연결 포인트</span><div class="cl-exam-list">${examConn.map((item, i) => '<div class="cl-exam-item"><span class="cl-exam-num">' + (i + 1) + '</span><span class="cl-exam-text">' + item + '</span></div>').join('')}</div></div>` : ''}
-      ${log.highlights ? `<div class="cl-section cl-highlight-section"><span class="cl-section-label">⭐ 선생님 강조 포인트</span><div class="cl-section-value cl-handwriting">${markKeywords(log.highlights.replace(/\n/g, '<br>'), keywords)}</div></div>` : ''}
-      ${log.deep_dive ? `<div class="cl-section cl-deepdive-section"><span class="cl-section-label">🔬 핵심 논리 분석</span><div class="cl-section-value cl-handwriting">${nl2br(log.deep_dive)}</div></div>` : ''}
+      ${log.highlights ? `<div class="cl-section cl-highlight-section"><span class="cl-section-label">★ 선생님 강조 포인트</span><div class="cl-section-value cl-handwriting">${markKeywords(nl2br(log.highlights), keywords)}</div></div>` : ''}
+      ${seteukHtml ? `<div class="cl-section cl-questions-section"><span class="cl-section-label">💡 세특 소재 질문</span>${seteukHtml}</div>` : ''}
+      ${examItems.length > 0 ? `<div class="cl-section cl-exam-section"><span class="cl-section-label">${examLabel}</span><div class="cl-exam-list">${examItems.map((item, i) => '<div class="cl-exam-item"><span class="cl-exam-num">' + (i + 1) + '</span><span class="cl-exam-text">' + item + '</span></div>').join('')}</div></div>` : ''}
       ${keywords.length > 0 ? `<div class="cl-section"><span class="cl-section-label">🔑 핵심 키워드</span><div class="cl-keywords">${keywords.map(k => '<span class="cl-keyword-chip">' + k + '</span>').join('')}</div></div>` : ''}
-      ${questions.length > 0 ? `<div class="cl-section cl-questions-section"><span class="cl-section-label">💡 세특 소재 질문</span>${questions.map((q, i) => '<div class="cl-question-pair"><div class="cl-question-num">Q' + (i + 1) + '</div><div class="cl-question-body"><div class="cl-question-original"><span class="cl-q-label">💬 내가 쓴 질문</span><p>' + (q.original || '') + '</p></div><div class="cl-question-improved"><span class="cl-q-label">✨ 선생님께 이렇게 여쭤보세요</span><p>' + markKeywords(q.improved || '', keywords) + '</p></div></div></div>').join('')}</div>` : ''}
-      ${activeRecall.length > 0 ? `<div class="cl-section cl-recall-section"><span class="cl-section-label">🧠 메타인지 자극 질문</span><div class="cl-recall-list">${activeRecall.map((item, i) => '<div class="cl-recall-item"><div class="cl-recall-q" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'flex\':\'none\'"><span class="cl-recall-icon">Q</span><span class="cl-recall-text">' + item.question + '</span><i class="fas fa-chevron-down cl-recall-toggle"></i></div><div class="cl-recall-a" style="display:none"><span class="cl-recall-a-icon">A</span><span>' + item.answer + '</span></div></div>').join('')}</div><div class="cl-recall-hint">질문을 탭하면 답을 확인할 수 있어요</div></div>` : ''}
+      ${assignmentHtml}
+      ${log.summary ? `<div class="cl-section cl-summary-section"><span class="cl-section-label">📋 수업 맥락 요약</span><div class="cl-section-value cl-handwriting">${nl2br(log.summary)}</div></div>` : ''}
       ${log.teacher_insight ? `<div class="cl-section cl-insight-section"><span class="cl-section-label">📝 세특 관찰 코멘트</span><div class="cl-insight-box">${nl2br(log.teacher_insight)}</div></div>` : ''}
-      ${log.assignment ? `<div class="cl-section cl-assignment-section"><span class="cl-section-label">📌 과제</span><div class="cl-section-value cl-handwriting">${getAssignmentDisplayText(log.assignment)}</div></div>` : ''}
+      ${activeRecall.length > 0 ? `<div class="cl-section cl-recall-section"><span class="cl-section-label">🧠 메타인지 자극 질문</span><div class="cl-recall-list">${activeRecall.map((item, i) => '<div class="cl-recall-item"><div class="cl-recall-q" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'flex\':\'none\'"><span class="cl-recall-icon">Q</span><span class="cl-recall-text">' + item.question + '</span><i class="fas fa-chevron-down cl-recall-toggle"></i></div><div class="cl-recall-a" style="display:none"><span class="cl-recall-a-icon">A</span><span>' + item.answer + '</span></div></div>').join('')}</div><div class="cl-recall-hint">질문을 탭하면 답을 확인할 수 있어요</div></div>` : ''}
     </div>
     <button class="cl-pdf-btn" onclick="_RM.downloadDetailPDF('${dbId}')" style="width:100%;margin-top:12px">
       <i class="fas fa-file-pdf" style="margin-right:6px"></i>PDF로 저장
@@ -239,7 +432,10 @@ export function renderClassRecordDetail() {
       <div class="screen-header">
         <button class="back-btn" onclick="${backAction}"><i class="fas fa-arrow-left"></i></button>
         <h1>📖 수업 기록</h1>
-        ${fromToday ? '<button class="header-action-btn" onclick="' + editAction + '" style="color:var(--primary-light)"><i class="fas fa-edit"></i></button>' : ''}
+        <div style="display:flex;gap:8px">
+          ${fromToday ? '<button class="header-action-btn" onclick="' + editAction + '" style="color:var(--primary-light)"><i class="fas fa-edit"></i></button>' : ''}
+          ${record._dbId ? `<button class="header-action-btn" onclick="_RM.deleteRecord('${record._dbId}')" style="color:#EF4444" title="삭제"><i class="fas fa-trash-alt"></i></button>` : ''}
+        </div>
       </div>
       <div class="form-body">
         <div class="card" style="margin-bottom:16px;border-left:4px solid ${color}">
@@ -285,8 +481,9 @@ export function renderClassRecordDetail() {
           <div class="detail-gallery-wrap">
             <div class="detail-gallery-scroll" id="detailGalleryScroll">
               ${photos.length > 0 ? photos.map((p, i) => `
-                <div class="detail-gallery-item" data-idx="${i}" ondblclick="_RM.openPhotoZoom(${i})">
+                <div class="detail-gallery-item" data-idx="${i}" ondblclick="_RM.openPhotoZoom(${i})" style="position:relative">
                   <img src="${p}" alt="필기 ${i + 1}" class="detail-gallery-img" loading="lazy" draggable="false">
+                  ${record._dbId ? `<button class="detail-photo-delete-btn" onclick="event.stopPropagation();_RM.deleteDetailPhoto(${i},'${record._dbId}')" title="삭제"><i class="fas fa-trash-alt"></i></button>` : ''}
                 </div>
               `).join('') : `
                 ${Array.from({ length: record.photo_count || 1 }, (_, i) => `
@@ -306,7 +503,23 @@ export function renderClassRecordDetail() {
           <div class="detail-gallery-hint">
             <i class="fas fa-hand-point-up" style="margin-right:4px"></i>좌우 스와이프로 넘기기 · 더블탭으로 확대
           </div>` : ''}
-        </div>` : ''}
+          ${record._dbId ? `
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button id="detail-add-photo-btn" onclick="_RM.addDetailPhoto('${record._dbId}')" style="flex:1;padding:10px;border:1px dashed var(--border);border-radius:var(--radius-md);background:transparent;color:var(--text-secondary);font-size:13px;font-weight:600;cursor:pointer">
+              <i class="fas fa-plus" style="margin-right:4px"></i>사진 추가
+            </button>
+            ${state._photoAddedToRecord === record._dbId || state._reanalyzingRecord === record._dbId ? `
+            <button onclick="_RM.reanalyzeRecord('${record._dbId}')" style="flex:1;padding:10px;border:none;border-radius:var(--radius-md);background:var(--primary);color:white;font-size:13px;font-weight:600;cursor:pointer" ${state._reanalyzingRecord === record._dbId ? 'disabled' : ''}>
+              ${state._reanalyzingRecord === record._dbId ? '<i class="fas fa-spinner fa-spin" style="margin-right:4px"></i>분석 중...' : '<i class="fas fa-sync-alt" style="margin-right:4px"></i>AI 재분석'}
+            </button>` : ''}
+          </div>` : ''}
+        </div>` : `
+        ${record._dbId ? `
+        <div style="margin-bottom:14px">
+          <button id="detail-add-photo-btn" onclick="_RM.addDetailPhoto('${record._dbId}')" style="width:100%;padding:12px;border:1px dashed var(--border);border-radius:var(--radius-md);background:transparent;color:var(--text-secondary);font-size:13px;font-weight:600;cursor:pointer">
+            <i class="fas fa-camera" style="margin-right:6px"></i>사진 추가하기
+          </button>
+        </div>` : ''}`}
 
         ${record.teacher_note ? `
         <div class="field-group" style="margin-bottom:14px">

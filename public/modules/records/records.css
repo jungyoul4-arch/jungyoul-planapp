@@ -333,8 +333,11 @@
 .archive-module .detail-gallery-wrap { position: relative; }
 .archive-module .detail-gallery-scroll { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 0 0 8px; }
 .archive-module .detail-gallery-scroll::-webkit-scrollbar { display: none; }
-.archive-module .detail-gallery-item { flex-shrink: 0; width: 85%; aspect-ratio: 4/3; border-radius: 14px; overflow: hidden; scroll-snap-align: center; background: rgba(30,34,40,0.5); border: 1px solid var(--border); cursor: pointer; }
+.archive-module .detail-gallery-item { flex-shrink: 0; width: 85%; aspect-ratio: 4/3; border-radius: 14px; overflow: hidden; scroll-snap-align: center; background: rgba(30,34,40,0.5); border: 1px solid var(--border); cursor: pointer; position: relative; }
 .archive-module .detail-gallery-img { width: 100%; height: 100%; object-fit: cover; display: block; user-select: none; pointer-events: none; }
+.archive-module .detail-photo-delete-btn { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,0.6); border: none; color: #ff6b6b; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s; backdrop-filter: blur(4px); z-index: 2; }
+.archive-module .detail-gallery-item:hover .detail-photo-delete-btn { opacity: 1; }
+@media (hover: none) { .archive-module .detail-photo-delete-btn { opacity: 0.7; } }
 .archive-module .detail-gallery-indicator { text-align: center; margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
 .archive-module .detail-gallery-current { color: #FFFFFF; font-weight: 900; font-size: 15px; }
 .archive-module .detail-gallery-hint { text-align: center; font-size: 11px; font-weight: 600; color: var(--text-muted); margin-top: 6px; }
@@ -3302,4 +3305,45 @@
 }
 .archive-module .assignment-simple-hint span:first-child {
   font-size: 18px;
+}
+
+/* === 전체 삭제 모달 === */
+.archive-module .rg-modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: rm-fadeIn 0.2s ease;
+}
+.archive-module .rg-modal-box {
+  background: #fff; border-radius: 16px; padding: 24px;
+  max-width: 340px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  animation: rm-slideUp 0.25s ease;
+}
+@keyframes rm-slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* === 카드 개별 삭제 버튼 === */
+.archive-module .rg-card {
+  position: relative;
+}
+.archive-module .rg-card-delete-btn {
+  position: absolute; top: 8px; right: 8px; z-index: 10;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: rgba(30,30,40,0.75); border: 1px solid rgba(239,68,68,0.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #EF4444; cursor: pointer;
+  opacity: 0.7; transition: opacity 0.2s, background 0.2s;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+.archive-module .rg-card:hover .rg-card-delete-btn,
+.archive-module .rg-card-delete-btn:focus {
+  opacity: 1; background: rgba(30,30,40,0.9);
+}
+/* 모바일/패드: 항상 표시 */
+@media (hover: none) {
+  .archive-module .rg-card-delete-btn { opacity: 0.8; }
 }

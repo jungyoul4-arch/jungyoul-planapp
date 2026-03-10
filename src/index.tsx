@@ -87,7 +87,7 @@ async function callGeminiWithFallback(opts: {
     if (inlineData) parts.push({ inline_data: inlineData })
 
     const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -366,107 +366,63 @@ async function callGeminiMultiImage(opts: {
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================
 
-const SYSTEM_PROMPT_CREDIT_LOG = `# Role
-당신은 [Subject] 분야의 최고 수준 일타강사이자 학습 코치입니다.
-선생님이 이 수업에서 무엇을 의도했는지 꿰뚫어 보고,
-이 내용이 시험에서 어떻게 출제되는지 정확히 알고 있습니다.
-학생의 날 것의 필기를 보며 놓친 핵심을 짚어주고,
-"아, 이래서 이걸 배우는 거구나"를 깨닫는 순간을 만드는 것이 목표입니다.
-교학상장(敎學相長) — 학생이 스스로 질문하고 성장하도록 돕습니다.
+const SYSTEM_PROMPT_CREDIT_LOG = `# Team
+당신은 3명의 전문가로 구성된 [Subject] 수업 분석 팀입니다.
+어떤 사진이 올라오든 (양식지 / 교과서 필기 / 프린트물 / 칠판 사진 / 노트 필기)
+각 전문가가 자신의 관점에서 수업 내용을 분석합니다.
+
+## 전문가 1 — [Subject] 스타 강사
+수업 사진 전체를 보고 선생님의 수업 의도를 역으로 파악합니다.
+선생님이 무엇을 강조하려 했는지, 어떤 흐름으로 수업을 설계했는지 분석하여
+"선생님 강조 포인트"와 "핵심 키워드"를 작성합니다.
+
+## 전문가 2 — 고교학점제·탐구보고서·세특 작성 전문가
+이 수업 내용을 바탕으로 학생이 생기부 세특(세부능력 및 특기사항)에 활용할 수 있는
+탐구 소재 질문 3가지를 제안합니다. 각 질문마다:
+- 세특 소재 질문
+- 왜 이 소재를 선택해야 하는가
+- 어떻게 탐구하면 좋은지 방향 가이드
+
+## 전문가 3 — 내신 출제 전문가
+이 수업에서 시험에 반드시 출제될 가능성이 높은 퀴즈 문제 3가지를 만듭니다.
+각 문제에 정답과 해설을 함께 작성합니다.
 
 # Input Data
 - [Subject]: 과목명
-- [Student_Comment]: 학생이 입력한 오늘 수업 소감 / 궁금한 점 / 수업 후 느낀 점 (없을 수 있음)
-- [Note_OCR]: 필기 노트 OCR 텍스트 (MY CREDIT LOG 양식)
+- [Student_Comment]: 학생 소감/궁금한 점 (없을 수 있음)
+- [Note_OCR]: 필기 노트 OCR 텍스트
 - [Reference_OCR_1~N]: 참고사진 OCR 텍스트 (교과서/프린트/칠판 등, 없을 수 있음)
 
 # 수식 처리 규칙 (절대 예외 없음)
-다음에 해당하는 모든 표현을 LaTeX으로 변환한다:
+수학적 표현은 모두 LaTeX으로 변환:
+- 인라인: $수식$ / 블록: $$수식$$
+- 거듭제곱: $x^2$ / 분수: $\\frac{a}{b}$ / 루트: $\\sqrt{x}$
+- 함수: $f(x)$, $\\sin(x)$, $\\log(x)$ / 극한: $\\lim$ / 적분: $\\int$
+- 그리스 문자: $\\alpha$, $\\theta$, $\\pi$ / 부등호: $\\leq$, $\\geq$
+- 절대 일반 텍스트로 수식을 출력하지 말 것
 
-변환 대상:
-- 사칙연산: x+y, x-y, x*y, x/y
-- 거듭제곱: x², x³, x^n → $x^2$, $x^3$, $x^n$
-- 분수: a/b 형태 → $\\frac{a}{b}$
-- 루트: √x, √(a+b) → $\\sqrt{x}$, $\\sqrt{a+b}$
-- 방정식: ax²+bx+c=0 → $ax^2+bx+c=0$
-- 함수: f(x), sin(x), cos(x), log(x) → $f(x)$, $\\sin(x)$, $\\cos(x)$, $\\log(x)$
-- 극한: lim → $\\lim$
-- 적분: ∫ → $\\int$
-- 벡터: a→ → $\\vec{a}$
-- 집합: ∈, ∪, ∩ → $\\in$, $\\cup$, $\\cap$
-- 부등호: ≤, ≥ → $\\leq$, $\\geq$
-- 그리스 문자: α, β, θ, π → $\\alpha$, $\\beta$, $\\theta$, $\\pi$
+# 공통 규칙
+1. 사진에서 해당 정보를 찾을 수 없으면 수업 내용에서 AI가 추론하여 생성
+2. 말투: 전문적이고 구체적으로. 추상적 표현 금지.
+3. 마크다운 코드블록(\\x60\\x60\\x60)으로 감싸지 말 것. 순수 JSON만 출력.
 
-규칙:
-1. 인라인 수식: $수식$ 형식 (문장 중간)
-2. 블록 수식: $$수식$$ 형식 (단독 줄)
-3. 텍스트에서 수학적 표현이 보이면 무조건 LaTeX으로 변환
-4. 절대 일반 텍스트로 수식을 출력하지 말 것
-5. 변환 예시: "x의 제곱" → $x^2$, "루트 2" → $\\sqrt{2}$, "a분의 b" → $\\frac{b}{a}$, "2x+3=7" → $2x+3=7$
-
-# 공통 처리 규칙
-1. 학생 문장은 의미·의도를 보존하되 자연스럽고 품격 있게 다듬기
-2. 내용 없는 섹션은 빈값 유지 (절대 임의 생성 금지)
-3. 말투: 코치처럼 따뜻하게 격려하되 전문성 있게
-
-# Instructions
-
-## 1. 수업 맥락 요약 (Context Summary)
-- 일타강사의 시각으로: 선생님이 이 수업을 통해 진짜 가르치려 한 것이 무엇인지 파악
-- 노트와 참고사진 전체를 하나의 흐름으로 연결하여 핵심 주제 3문장 이내로 요약
-- [Student_Comment]가 있다면 반드시 먼저 공감하고 통찰 제시
-- 단순 요약이 아닌 "왜 이걸 배우는가"의 교육적 의미까지 포함
-
-## 2. 시험 연결 포인트 (Exam Connection)
-- 일타강사로서: 오늘 배운 내용 중 시험에 반드시 나오는 포인트 2~3개 명시
-- "선생님이 강조한 이 부분은 이런 유형으로 출제됩니다" 형식
-- 수험생 입장에서 절대 놓치면 안 되는 개념·공식·논리 흐름 짚기
-
-## 3. 핵심 논리 분석 (Deep Dive)
-- 학생 필기 중 가장 깊은 사고가 담긴 지점 하나를 선택하여 구체적으로 칭찬
-- 고난도 문제/서술형 시도가 있다면 정답 여부와 무관하게 논리적 접근 과정 심층 분석
-- 학생이 미처 발전시키지 못한 사고의 방향을 한 걸음 더 안내
-
-## 4. 세특 소재 질문 정제 (Seteuk Questions)
-- 학생이 노트에 작성한 질문들을 추출
-- 각 질문을 선생님께 실제로 여쭤볼 수 있는 전문적인 수준으로 다듬기
-- 원문과 다듬은 버전을 함께 제공 (학생이 자신의 생각이 발전하는 걸 체감하도록)
-- send_to_qbox: true → 나의 질문함에 자동 저장
-
-## 5. 메타인지 자극 질문 (Active Recall)
-- 오늘 학습에서 가장 헷갈리기 쉽거나 시험에 자주 나오는 부분
-- "왜 이렇게 될까?", "조건이 바뀌면 어떻게 될까?" 중심의 Why·What if 질문 2개
-- 질문과 답변을 반드시 분리된 필드로 제공 (UI에서 답 가리기 기능 연동)
-
-## 6. 세특 관찰 코멘트 (Teacher Insight)
-- 자기주도성 / 문제해결력 / 지적 호기심 중심으로 분석
-- 학교생활기록부 세특에 직접 참고할 수 있는 수준의 관찰 코멘트
-- 분량: 300~400자, 객관적이고 전문적인 톤
-
-## 7. 과제 추출 (Assignment)
-- 사진에서 "과제", "숙제", "제출", "~까지", "~해오세요" 등 과제 관련 내용을 찾는다
-- 과제가 발견되면 구조화하여 반환, 없으면 null
-
-# Output Format (반드시 이 JSON 형식으로만 응답)
+# Output Format (반드시 이 JSON만 응답 — 코드블록 없이)
 {
-  "topic": "단원/주제",
-  "pages": "p.XX~XX",
-  "summary": "수업 맥락 요약 (3문장 이내)",
-  "exam_connection": ["시험 연결 포인트 1", "시험 연결 포인트 2", "시험 연결 포인트 3"],
-  "deep_dive": "핵심 논리 분석 텍스트",
-  "highlights": "선생님 강조 포인트 (여러 줄 가능)",
+  "topic": "단원/주제명",
+  "pages": "p.XX~XX 또는 빈 문자열",
+  "teacher_emphasis": "선생님 강조 포인트 (여러 줄 가능, \\n으로 구분). 밑줄/별표/반복/박스/색깔 표시된 내용, 수업 흐름상 핵심 개념/원리.",
   "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
-  "questions": [
-    { "original": "학생 원본 질문", "improved": "AI 고도화 질문", "send_to_qbox": true },
-    { "original": "학생 원본 질문", "improved": "AI 고도화 질문", "send_to_qbox": true },
-    { "original": "학생 원본 질문", "improved": "AI 고도화 질문", "send_to_qbox": true }
+  "seteuk_questions": [
+    {"question": "세특 소재 질문", "reason": "왜 이 소재인가", "guide": "탐구 방향 가이드"},
+    {"question": "세특 소재 질문", "reason": "왜 이 소재인가", "guide": "탐구 방향 가이드"},
+    {"question": "세특 소재 질문", "reason": "왜 이 소재인가", "guide": "탐구 방향 가이드"}
   ],
-  "active_recall": [
-    { "question": "메타인지 질문 1", "answer": "답변 1" },
-    { "question": "메타인지 질문 2", "answer": "답변 2" }
+  "quiz": [
+    {"question": "예상 시험 문제", "answer": "정답", "explanation": "해설"},
+    {"question": "예상 시험 문제", "answer": "정답", "explanation": "해설"},
+    {"question": "예상 시험 문제", "answer": "정답", "explanation": "해설"}
   ],
-  "teacher_insight": "세특 관찰 코멘트 (300~400자)",
-  "assignment": null 또는 { "title": "과제 제목", "description": "과제 상세", "dueDate": "YYYY-MM-DD 또는 빈 문자열", "dueDateRaw": "원문 마감일 표현" },
+  "assignment": null 또는 {"content": "과제 내용", "due": "기한 (없으면 미확인)"},
   "rawOcrText": "사진에서 인식한 전체 텍스트 원본"
 }`
 
@@ -721,21 +677,79 @@ app.post('/api/ai/credit-log', async (c) => {
     })
 
     try {
-      const result = JSON.parse(text)
-      // assignment 정규화: 문자열 → 구조화된 객체, 빈 값 → null
+      // JSON 파싱 (```json 코드블록 처리)
+      const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/)
+      const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim()
+      const result = JSON.parse(jsonStr)
+
+      // teacher_emphasis → highlights 하위호환 매핑
+      result.highlights = result.teacher_emphasis || result.highlights || ''
+      if (result.teacher_emphasis) result.teacher_emphasis = result.teacher_emphasis
+
+      // seteuk_questions 정규화 (신형식 question/reason/guide + 구형식 q/reason 모두 지원)
+      const rawSeteuk = result.seteuk_questions || result['세특_questions'] || []
+      result.seteuk_questions = Array.isArray(rawSeteuk) ? rawSeteuk.map((q: any) => ({
+        q: q.question || q.q || '',
+        reason: q.reason || '',
+        guide: q.guide || '',
+        resolved: q.resolved || false,
+      })) : []
+
+      // 하위호환: 구형 questions → seteuk_questions 변환
+      if (result.seteuk_questions.length === 0 && Array.isArray(result.questions)) {
+        result.seteuk_questions = result.questions.map((q: any) => ({
+          q: q.improved || q.original || q.question || '',
+          reason: '',
+          guide: '',
+          resolved: false,
+        }))
+      }
+
+      // quiz 정규화 (신형식 question/answer/explanation)
+      if (Array.isArray(result.quiz)) {
+        result.quiz = result.quiz.map((q: any) => ({
+          question: q.question || '',
+          answer: q.answer || '',
+          explanation: q.explanation || '',
+        }))
+        // exam_questions 하위호환 (문자열 배열)
+        result.exam_questions = result.quiz.map((q: any) => q.question)
+      } else if (Array.isArray(result.exam_questions)) {
+        // 구형식: 문자열 배열 → quiz 형식으로 변환
+        result.quiz = result.exam_questions.map((q: any) => ({
+          question: typeof q === 'string' ? q : (q.question || ''),
+          answer: '',
+          explanation: '',
+        }))
+      } else {
+        result.quiz = []
+        result.exam_questions = []
+      }
+
+      // assignment 정규화
       if (typeof result.assignment === 'string' && result.assignment.trim()) {
         result.assignment = {
           title: result.assignment.replace(/\s*기한:.*$/, '').substring(0, 50).trim(),
           description: result.assignment,
           dueDate: '',
-          dueDateRaw: '',
+          done: false,
         }
       } else if (!result.assignment || (typeof result.assignment === 'string' && !result.assignment.trim())) {
         result.assignment = null
+      } else if (typeof result.assignment === 'object') {
+        result.assignment = {
+          title: result.assignment.content || result.assignment.title || '',
+          description: result.assignment.content || result.assignment.description || '',
+          dueDate: result.assignment.due || result.assignment.dueDate || '',
+          done: result.assignment.done || false,
+        }
+        // "미확인"이면 null 처리
+        if (result.assignment.title === '미확인') result.assignment = null
       }
+
       return c.json({ success: true, data: result })
     } catch {
-      return c.json({ success: true, data: { rawOcrText: text, topic: '', pages: '', summary: '', exam_connection: [], deep_dive: '', highlights: '', keywords: [], questions: [], active_recall: [], teacher_insight: '', assignment: null } })
+      return c.json({ success: true, data: { rawOcrText: text, topic: '', pages: '', highlights: '', seteuk_questions: [], exam_questions: [], keywords: [], assignment: null, summary: '', teacher_insight: '' } })
     }
   } catch (e: any) {
     console.error('credit-log AI error:', e)
@@ -1982,11 +1996,40 @@ app.post('/api/student/:studentId/class-records', async (c) => {
   }
 });
 
-// 수업 기록 삭제
+// 수업 기록 전체 삭제 (학생별)
+app.delete('/api/student/:studentId/class-records/all', async (c) => {
+  try {
+    const studentId = c.req.param('studentId')
+
+    // 1. 삭제 대상 수 카운트
+    const countResult = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ?'
+    ).bind(studentId).first() as any
+    const deletedCount = countResult?.cnt || 0
+
+    if (deletedCount > 0) {
+      // 2. DB 사진 레코드 삭제 (서브쿼리)
+      await c.env.DB.prepare(
+        'DELETE FROM class_record_photos WHERE class_record_id IN (SELECT id FROM class_records WHERE student_id = ?)'
+      ).bind(studentId).run()
+
+      // 3. class_records 삭제
+      await c.env.DB.prepare(
+        'DELETE FROM class_records WHERE student_id = ?'
+      ).bind(studentId).run()
+    }
+
+    return c.json({ success: true, deletedCount })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// 수업 기록 삭제 (R2 사진 포함)
 app.delete('/api/student/class-records/:recordId', async (c) => {
   try {
     const recordId = c.req.param('recordId')
-    // 관련 사진도 삭제
+    // DB 사진 + 레코드 삭제
     await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(recordId).run()
     await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(recordId).run()
     return c.json({ success: true })
@@ -2077,6 +2120,51 @@ app.post('/api/student/:studentId/class-record-photos', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+// 개별 사진 삭제 (R2 + DB)
+app.delete('/api/photos/:photoId', async (c) => {
+  try {
+    const photoId = c.req.param('photoId')
+    const row: any = await c.env.DB.prepare(
+      'SELECT photo_data, class_record_id FROM class_record_photos WHERE id = ?'
+    ).bind(photoId).first()
+    if (!row) return c.json({ error: 'Photo not found' }, 404)
+
+    // R2에서 삭제
+    if (row.photo_data?.startsWith('r2:') && c.env.R2) {
+      try { await c.env.R2.delete(row.photo_data.slice(3)) } catch (_) {}
+    }
+
+    // DB에서 사진 행 삭제
+    await c.env.DB.prepare('DELETE FROM class_record_photos WHERE id = ?').bind(photoId).run()
+
+    // class_records의 photos 배열에서 ref:ID 제거 + photo_count 갱신
+    if (row.class_record_id) {
+      const rec: any = await c.env.DB.prepare(
+        'SELECT photos, photo_tags FROM class_records WHERE id = ?'
+      ).bind(row.class_record_id).first()
+      if (rec) {
+        let photos = []
+        let tags = []
+        try { photos = JSON.parse(rec.photos || '[]') } catch (_) {}
+        try { tags = JSON.parse(rec.photo_tags || '[]') } catch (_) {}
+        const refStr = `ref:${photoId}`
+        const idx = photos.indexOf(refStr)
+        if (idx !== -1) {
+          photos.splice(idx, 1)
+          tags.splice(idx, 1)
+        }
+        await c.env.DB.prepare(
+          'UPDATE class_records SET photos = ?, photo_tags = ?, photo_count = ? WHERE id = ?'
+        ).bind(JSON.stringify(photos), JSON.stringify(tags), photos.length, row.class_record_id).run()
+      }
+    }
+
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 // 사진 원본 조회 (R2 또는 DB)
 app.get('/api/photos/:photoId', async (c) => {
@@ -3737,28 +3825,59 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
   ]
 }`
 
-    // Gemini 3.1 Flash Vision으로 시간표 분석
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
-      {
+    // Gemini → OpenAI 폴백으로 시간표 분석
+    let aiText = '{}'
+
+    // 1차: Gemini Vision
+    try {
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType, data: cleanBase64 } }
+            ] }],
+            generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+          })
+        }
+      )
+      if (!geminiRes.ok) throw new Error('Gemini ' + geminiRes.status)
+      const geminiData: any = await geminiRes.json()
+      aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+    } catch (geminiErr: any) {
+      console.error('Gemini Vision failed, trying OpenAI:', geminiErr.message)
+
+      // 2차: OpenAI GPT-4o Vision 폴백
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`
+        },
         body: JSON.stringify({
-          contents: [{ parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: cleanBase64 } }
-          ] }],
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+          model: 'gpt-4o',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${cleanBase64}` } }
+            ]
+          }],
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
         })
+      })
+      if (!openaiRes.ok) {
+        const errText = await openaiRes.text()
+        console.error('OpenAI Vision error:', errText)
+        return c.json({ success: false, error: 'AI 분석 실패 (Gemini+OpenAI 모두 실패)' }, 500)
       }
-    )
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text()
-      console.error('Gemini Vision error:', errText)
-      return c.json({ success: false, error: 'AI 분석 실패: ' + geminiRes.status }, 500)
+      const openaiData: any = await openaiRes.json()
+      aiText = openaiData.choices?.[0]?.message?.content || '{}'
     }
-    const geminiData: any = await geminiRes.json()
-    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
 
     // JSON 파싱 (```json 블록 제거)
     let parsed: any
@@ -4944,7 +5063,7 @@ OCR 규칙:
     // Step 1: Gemini 시도
     try {
       const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5075,7 +5194,7 @@ app.post('/api/aha-report/give-croquet', async (c) => {
 // 리포트 저장 (사진은 R2 우선)
 app.post('/api/aha-report/save', async (c) => {
   try {
-    const { studentId, subject, unit, photos, sections, ai_feedback, ai_source, student_name_detected, subject_detected, unit_detected, croquet_given, section_sa, section_pa, section_da, section_poa, section_ppa, source, date } = await c.req.json<{
+    const { studentId, subject, unit, photos, sections, ai_feedback, ai_source, student_name_detected, subject_detected, unit_detected, croquet_given, section_sa, section_pa, section_da, section_poa, section_ppa, source, date, photo_tags } = await c.req.json<{
       studentId: number, subject: string, unit?: string, photos: string[],
       sections?: { problem: string, topic: string, research: string, self_feedback: string },
       ai_feedback?: string, ai_source?: string,

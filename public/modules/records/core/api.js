@@ -138,6 +138,53 @@ export const DB = {
     return resolved;
   },
 
+  // 개별 사진 삭제
+  async deletePhoto(photoId) {
+    try {
+      const res = await fetch(`/api/photos/${photoId}`, { method: 'DELETE' });
+      if (res.ok) {
+        try { await this.loadClassRecords(); } catch (_) {}
+        return true;
+      }
+    } catch (e) { console.error('deletePhoto:', e); }
+    return false;
+  },
+
+  // 기존 수업 기록에 사진 추가
+  async addPhotosToRecord(recordId, newPhotos, newTags) {
+    const sid = studentId();
+    if (!sid || !recordId) return null;
+    try {
+      // 1. 사진 업로드
+      const photoRes = await fetch(`/api/student/${sid}/class-record-photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photos: newPhotos, classRecordId: recordId })
+      });
+      if (!photoRes.ok) return null;
+      const photoData = await photoRes.json();
+      const newIds = photoData.photoIds || [];
+
+      // 2. 기존 photos/photo_tags 가져와서 병합
+      const rec = (state._dbClassRecords || []).find(r => String(r.id) === String(recordId));
+      const existingPhotos = rec ? (Array.isArray(rec.photos) ? rec.photos : []) : [];
+      const existingTags = rec ? (Array.isArray(rec.photo_tags) ? rec.photo_tags : []) : [];
+      const mergedPhotos = [...existingPhotos, ...newIds.map(id => `ref:${id}`)];
+      const mergedTags = [...existingTags, ...(newTags || newPhotos.map(() => '필기'))];
+
+      // 3. 메인 레코드 업데이트
+      await fetch(`/api/student/class-records/${recordId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photos: mergedPhotos, photo_tags: mergedTags, photo_count: mergedPhotos.length })
+      });
+
+      try { await this.loadClassRecords(); } catch (_) {}
+      return newIds;
+    } catch (e) { console.error('addPhotosToRecord:', e); }
+    return null;
+  },
+
   // 특정 수업 기록의 사진 목록 로드
   async loadClassRecordPhotos(recordId) {
     try {
@@ -148,6 +195,33 @@ export const DB = {
       }
     } catch (e) { console.error('loadClassRecordPhotos:', e); }
     return [];
+  },
+
+  // 수업 기록 개별 삭제
+  async deleteClassRecord(recordId) {
+    try {
+      const res = await fetch(`/api/student/class-records/${recordId}`, { method: 'DELETE' });
+      if (res.ok) {
+        state._dbClassRecords = (state._dbClassRecords || []).filter(r => String(r.id) !== String(recordId));
+        return true;
+      }
+    } catch (e) { console.error('deleteClassRecord:', e); }
+    return false;
+  },
+
+  // 수업 기록 전체 삭제
+  async deleteAllClassRecords() {
+    const sid = studentId();
+    if (!sid) return false;
+    try {
+      const res = await fetch(`/api/student/${sid}/class-records/all`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        state._dbClassRecords = [];
+        return data.deletedCount || 0;
+      }
+    } catch (e) { console.error('deleteAllClassRecords:', e); }
+    return false;
   },
 
   // === AI Credit Log 분석 ===
