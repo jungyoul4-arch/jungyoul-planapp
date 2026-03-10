@@ -124,6 +124,21 @@ export function markKeywords(text, keywords) {
  * @param {string} dueDate - YYYY-MM-DD 마감일
  * @returns {Array} plan steps [{step, title, date, done}, ...]
  */
+// 단순 과제 여부 판단 (키워드 기반)
+const SIMPLE_KEYWORDS = ['풀기', '풀이', '읽기', '외우기', '암기', '제출', '프린트', '복습', '정리', '필기'];
+const COMPLEX_KEYWORDS = ['보고서', '탐구', '발표', '제작', '조사', '만들기', '프로젝트', '실험', '에세이', '작문', '감상문'];
+
+export function isSimpleAssignment(title) {
+  if (!title) return true;
+  const t = title.toLowerCase();
+  // 복잡 키워드가 있으면 복잡 과제
+  if (COMPLEX_KEYWORDS.some(k => t.includes(k))) return false;
+  // 단순 키워드가 있으면 단순 과제
+  if (SIMPLE_KEYWORDS.some(k => t.includes(k))) return true;
+  // 기본: 단순 과제 (부담 줄이기)
+  return true;
+}
+
 export function generatePlanSteps(dueDate) {
   if (!dueDate) return [];
   const daysUntilDue = getDday(dueDate);

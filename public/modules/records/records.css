@@ -3203,3 +3203,91 @@
   font-size: 12px; color: var(--text-muted);
   margin-top: 8px; font-weight: 500;
 }
+
+/* === 과제 플랜 토글 스위치 === */
+.archive-module .plan-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; margin: 12px 0;
+  background: rgba(30,34,40,0.6); border-radius: 14px;
+  border: 1px solid var(--border); cursor: pointer;
+  transition: background 0.2s;
+}
+.archive-module .plan-toggle-row:active {
+  background: rgba(40,44,52,0.8);
+}
+.archive-module .plan-toggle-info {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.archive-module .plan-toggle-label {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+}
+.archive-module .plan-toggle-desc {
+  font-size: 11px; color: var(--text-muted); line-height: 1.4;
+}
+.archive-module .plan-toggle-switch {
+  width: 48px; height: 28px; border-radius: 14px;
+  background: rgba(80,80,90,0.5); position: relative;
+  transition: background 0.25s; flex-shrink: 0;
+}
+.archive-module .plan-toggle-switch.on {
+  background: var(--primary-light);
+}
+.archive-module .plan-toggle-knob {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; position: absolute;
+  top: 3px; left: 3px;
+  transition: transform 0.25s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.archive-module .plan-toggle-switch.on .plan-toggle-knob {
+  transform: translateX(20px);
+}
+
+/* === 심플 과제 카드 === */
+.archive-module .assignment-card.simple {
+  padding: 12px 14px;
+}
+.archive-module .ac-simple-row {
+  display: flex; align-items: center; gap: 12px;
+}
+.archive-module .ac-simple-check {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--text-muted); transition: color 0.2s, transform 0.15s;
+  flex-shrink: 0;
+}
+.archive-module .ac-simple-check:active {
+  transform: scale(0.85);
+}
+.archive-module .ac-simple-check.done {
+  color: var(--success);
+}
+.archive-module .ac-simple-info {
+  flex: 1; min-width: 0; cursor: pointer;
+}
+.archive-module .ac-simple-top {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.archive-module .ac-title.done-text {
+  text-decoration: line-through; opacity: 0.5;
+}
+
+/* === 과제 플랜 CTA (record-assignment) === */
+.archive-module .assignment-plan-cta {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px; margin: 12px 0;
+  background: linear-gradient(135deg, rgba(108,92,231,0.15), rgba(108,92,231,0.05));
+  border: 1px solid rgba(108,92,231,0.3); border-radius: 14px;
+  cursor: pointer; transition: background 0.2s;
+}
+.archive-module .assignment-plan-cta:active {
+  background: linear-gradient(135deg, rgba(108,92,231,0.25), rgba(108,92,231,0.1));
+}
+.archive-module .plan-cta-icon {
+  font-size: 28px; flex-shrink: 0;
+}
+.archive-module .plan-cta-content h3 {
+  font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0;
+}
+.archive-module .plan-cta-content p {
+  font-size: 12px; color: var(--text-muted); margin: 4px 0 0;
+}

@@ -8,7 +8,7 @@ import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
 import { navigate } from '../core/router.js';
 import { events, EVENTS } from '../core/events.js';
-import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, generatePlanSteps, SUBJECT_COLOR_MAP, showToast } from '../core/utils.js';
+import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, generatePlanSteps, isSimpleAssignment, SUBJECT_COLOR_MAP, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { showXpPopup } from '../components/xp-popup.js';
 
@@ -203,7 +203,8 @@ async function _backgroundTasks(log, subject, period, date, record, recordId, ha
     const asg = log.assignment;
     const dueDate = asg.dueDate || kstDateOffset(7);
     const color = SUBJECT_COLOR_MAP[subject] || '#636e72';
-    const planData = generatePlanSteps(dueDate);
+    const simple = isSimpleAssignment(asg.title);
+    const planData = simple ? [] : generatePlanSteps(dueDate);
 
     const dbId = await DB.saveAssignment({
       subject, title: asg.title,
@@ -219,7 +220,7 @@ async function _backgroundTasks(log, subject, period, date, record, recordId, ha
         title: asg.title, desc: asg.description || '',
         teacher: record.teacher || '', dueDate,
         createdDate: date, color, status: 'pending',
-        progress: 0, plan: planData,
+        progress: 0, plan: planData, simple,
       });
       state.assignments = [...assignments];
       showToast('📌', `과제 "${asg.title}" 자동 등록 완료!`);

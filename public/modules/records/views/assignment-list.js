@@ -231,6 +231,32 @@ export function renderAssignmentList() {
           const dDay = getDday(a.dueDate);
           const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
           const urgency = a.status === 'completed' ? 'completed' : dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+          const isSimple = a.simple || (a.plan||[]).length === 0;
+
+          if (isSimple) {
+            // 심플 카드: 과제명 + 마감일 + 완료 체크
+            return `
+            <div class="assignment-card simple ${urgency} stagger-${i+1} animate-in">
+              <div class="ac-simple-row">
+                <button class="ac-simple-check ${a.status === 'completed' ? 'done' : ''}" onclick="event.stopPropagation();_RM.toggleAssignmentDone('${a.id}')">
+                  <i class="fas fa-${a.status === 'completed' ? 'check-circle' : 'circle'}" style="font-size:22px"></i>
+                </button>
+                <div class="ac-simple-info" onclick="_RM.state.editingAssignment='${a.id}';_RM.state._assignmentUsePlan=undefined;_RM.nav('record-assignment')">
+                  <div class="ac-simple-top">
+                    <span class="ac-subject-badge" style="background:${a.color}22;color:${a.color};border:1px solid ${a.color}44;font-size:11px;padding:2px 8px">${a.subject}</span>
+                    <span class="assignment-dday ${urgency}" style="font-size:11px;padding:2px 8px">${a.status === 'completed' ? '✅ 완료' : dDayText}</span>
+                  </div>
+                  <h3 class="ac-title ${a.status === 'completed' ? 'done-text' : ''}">${a.title}</h3>
+                  <div class="ac-meta" style="margin-top:4px">
+                    ${a.teacher ? '<span><i class="fas fa-user"></i> ' + a.teacher + '</span>' : ''}
+                    <span><i class="fas fa-calendar"></i> ${formatDate(a.dueDate)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>`;
+          }
+
+          // 복잡 과제: 기존 카드 + 플랜 단계 표시
           const donePlanSteps = (a.plan||[]).filter(p => p.done).length;
           return `
           <div class="assignment-card ${urgency} stagger-${i+1} animate-in" onclick="_RM.state.viewingAssignment='${a.id}';_RM.nav('assignment-plan')">
