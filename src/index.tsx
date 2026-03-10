@@ -68,6 +68,21 @@ async function recordXp(db: D1Database, studentId: number, amount: number, sourc
   }
 }
 
+// ==================== 타임아웃 fetch 헬퍼 ====================
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number = 60000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal })
+    return res
+  } catch (e: any) {
+    if (e.name === 'AbortError') throw new Error(`요청 시간 초과 (${Math.round(timeoutMs / 1000)}초)`)
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // ==================== Gemini → OpenAI 폴백 헬퍼 ====================
 // Gemini API가 할당량 초과(429) 등으로 실패할 경우 OpenAI gpt-4o-mini로 자동 폴백
 
@@ -88,7 +103,7 @@ async function callGeminiWithFallback(opts: {
     const parts: any[] = [{ text: prompt }]
     if (inlineData) parts.push({ inline_data: inlineData })
 
-    const geminiRes = await fetch(
+    const geminiRes = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
@@ -100,7 +115,8 @@ async function callGeminiWithFallback(opts: {
             ...(jsonMode ? { responseMimeType: 'application/json' } : { maxOutputTokens: 2048 })
           }
         })
-      }
+      },
+      30000
     )
 
     if (geminiRes.ok) {
@@ -138,7 +154,7 @@ async function callGeminiOcrSingle(geminiKey: string, image: { mime_type: string
   const ocrPrompt = `이 사진(${tag})의 모든 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 텍스트만 반환.`
   const parts: any[] = [{ text: ocrPrompt }, { inline_data: image }]
 
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
     {
       method: 'POST',
@@ -147,7 +163,8 @@ async function callGeminiOcrSingle(geminiKey: string, image: { mime_type: string
         contents: [{ parts }],
         generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
       })
-    }
+    },
+    45000
   )
 
   if (!res.ok) throw new Error(`OCR 실패 (사진${index + 1}): ${res.status}`)
@@ -157,7 +174,7 @@ async function callGeminiOcrSingle(geminiKey: string, image: { mime_type: string
 
 // Sonnet 분석 호출 (텍스트 전용)
 async function callSonnetAnalysis(anthropicKey: string, systemPrompt: string, userPrompt: string, jsonMode: boolean = true, temperature: number = 0.3) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'x-api-key': anthropicKey,
@@ -229,7 +246,7 @@ async function callGeminiMultiImage(opts: {
       for (const img of images) {
         parts.push({ inline_data: img })
       }
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
@@ -282,7 +299,7 @@ async function callGeminiMultiImage(opts: {
     if (ocrSuccess) {
       console.log('[분석] Gemini 텍스트 분석 폴백')
       const textPrompt = prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
@@ -308,7 +325,7 @@ async function callGeminiMultiImage(opts: {
       for (const img of images) {
         parts.push({ inline_data: img })
       }
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
@@ -548,7 +565,7 @@ app.post('/api/coaching', async (c) => {
     const { messages, subject, currentLevel } = await c.req.json()
     if (!messages || messages.length === 0) return c.json({ error: '대화 내용이 필요합니다' }, 400)
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': c.env.ANTHROPIC_API_KEY,
@@ -564,7 +581,7 @@ app.post('/api/coaching', async (c) => {
           content: m.content
         }))
       })
-    })
+    }, 45000)
 
     if (!res.ok) {
       const err = await res.text()
@@ -757,7 +774,7 @@ app.post('/api/deep-analyze', async (c) => {
     const { question, subject, context } = await c.req.json()
     if (!question) return c.json({ error: '질문 내용이 필요합니다' }, 400)
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': c.env.ANTHROPIC_API_KEY,
@@ -1751,26 +1768,44 @@ app.get('/api/student/:studentId/exam-results', async (c) => {
       ORDER BY e.start_date DESC
     `).bind(studentId).all();
 
-    // 각 결과에 오답 데이터 추가
-    const fullResults = [];
-    for (const r of results.results as any[]) {
-      const wrongAnswers = await c.env.DB.prepare(
-        'SELECT * FROM wrong_answers WHERE exam_result_id = ? ORDER BY id'
-      ).bind(r.id).all();
+    // 모든 오답 + 이미지를 배치 조회 (N+1 방지)
+    const resultIds = (results.results as any[]).map(r => r.id);
+    let allWrongAnswers: any[] = [];
+    let allImages: any[] = [];
 
-      const waWithImages = [];
-      for (const wa of wrongAnswers.results as any[]) {
-        const images = await c.env.DB.prepare(
-          'SELECT image_data FROM wrong_answer_images WHERE wrong_answer_id = ? ORDER BY sort_order'
-        ).bind(wa.id).all();
-        waWithImages.push({
-          ...wa,
-          images: (images.results as any[]).map((img: any) => img.image_data)
-        });
-      }
-
-      fullResults.push({ ...r, wrongAnswers: waWithImages });
+    if (resultIds.length > 0) {
+      const placeholders = resultIds.map(() => '?').join(',');
+      const [waResult, imgResult] = await Promise.all([
+        c.env.DB.prepare(
+          `SELECT * FROM wrong_answers WHERE exam_result_id IN (${placeholders}) ORDER BY id`
+        ).bind(...resultIds).all(),
+        c.env.DB.prepare(
+          `SELECT wai.* FROM wrong_answer_images wai
+           INNER JOIN wrong_answers wa ON wai.wrong_answer_id = wa.id
+           WHERE wa.exam_result_id IN (${placeholders}) ORDER BY wai.sort_order`
+        ).bind(...resultIds).all(),
+      ]);
+      allWrongAnswers = waResult.results as any[];
+      allImages = imgResult.results as any[];
     }
+
+    // 이미지를 wrong_answer_id별로 그룹핑
+    const imageMap: Record<number, string[]> = {};
+    for (const img of allImages) {
+      if (!imageMap[img.wrong_answer_id]) imageMap[img.wrong_answer_id] = [];
+      imageMap[img.wrong_answer_id].push(img.image_data);
+    }
+
+    // 오답을 exam_result_id별로 그룹핑
+    const waMap: Record<number, any[]> = {};
+    for (const wa of allWrongAnswers) {
+      if (!waMap[wa.exam_result_id]) waMap[wa.exam_result_id] = [];
+      waMap[wa.exam_result_id].push({ ...wa, images: imageMap[wa.id] || [] });
+    }
+
+    const fullResults = (results.results as any[]).map(r => ({
+      ...r, wrongAnswers: waMap[r.id] || []
+    }));
 
     return c.json({ results: fullResults });
   } catch (e: any) {
@@ -2198,6 +2233,50 @@ app.get('/api/photos/:photoId', async (c) => {
   }
 });
 
+// 사진 배치 조회 API (N+1 방지)
+app.post('/api/photos/batch', async (c) => {
+  try {
+    const { photoIds } = await c.req.json();
+    if (!photoIds || !Array.isArray(photoIds) || photoIds.length === 0) {
+      return c.json({ photos: {} });
+    }
+    // 최대 30장 제한
+    const ids = photoIds.slice(0, 30);
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await c.env.DB.prepare(
+      `SELECT id, photo_data, mime_type FROM class_record_photos WHERE id IN (${placeholders})`
+    ).bind(...ids).all();
+
+    const photos: Record<string, string> = {};
+    for (const row of rows.results as any[]) {
+      if (row.photo_data?.startsWith('r2:') && c.env.R2) {
+        try {
+          const r2Key = row.photo_data.slice(3);
+          const obj = await c.env.R2.get(r2Key);
+          if (obj) {
+            const arrayBuf = await obj.arrayBuffer();
+            const bytes = new Uint8Array(arrayBuf);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            const base64 = btoa(binary);
+            const mime = obj.httpMetadata?.contentType || 'image/jpeg';
+            photos[row.id] = `data:${mime};base64,${base64}`;
+            continue;
+          }
+        } catch (e) { console.error('R2 batch read failed:', e); }
+      }
+      if (row.photo_data?.startsWith('data:')) {
+        photos[row.id] = row.photo_data;
+      } else {
+        photos[row.id] = `data:${row.mime_type || 'image/jpeg'};base64,${row.photo_data}`;
+      }
+    }
+    return c.json({ photos });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // 특정 수업 기록의 사진 목록 조회
 app.get('/api/class-records/:recordId/photos', async (c) => {
   try {
@@ -2368,10 +2447,12 @@ app.get('/api/student/:studentId/activity-records', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const records = await c.env.DB.prepare(
-      `SELECT ar.*,
-        (SELECT COUNT(*) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _logCount,
-        (SELECT MAX(al.date) FROM activity_logs al WHERE al.activity_record_id = ar.id) as _lastLogDate
-       FROM activity_records ar WHERE ar.student_id = ? ORDER BY ar.created_at DESC`
+      `SELECT ar.*, COUNT(al.id) as _logCount, MAX(al.date) as _lastLogDate
+       FROM activity_records ar
+       LEFT JOIN activity_logs al ON al.activity_record_id = ar.id
+       WHERE ar.student_id = ?
+       GROUP BY ar.id
+       ORDER BY ar.created_at DESC`
     ).bind(studentId).all();
     return c.json({ records: records.results });
   } catch (e: any) {
@@ -2543,8 +2624,8 @@ app.get('/api/mentor/student/:studentId/all-records', async (c) => {
 
     const [classRecords, questionRecords, teachRecords, activityRecords, activityLogs, assignments, exams, examResults, reportRecords, classPhotos, myQuestions, feedbacks] = await Promise.all([
       c.env.DB.prepare('SELECT id, subject, date, content, keywords, understanding, memo, topic, pages, teacher_note, created_at FROM class_records WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM question_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
-      c.env.DB.prepare('SELECT * FROM teach_records WHERE student_id = ? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM question_records WHERE student_id = ? AND created_at >= ? AND created_at < datetime(?, \'+1 day\') ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT * FROM teach_records WHERE student_id = ? AND created_at >= ? AND created_at < datetime(?, \'+1 day\') ORDER BY created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
       c.env.DB.prepare('SELECT * FROM activity_records WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all(),
       c.env.DB.prepare('SELECT * FROM activity_logs WHERE student_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC, created_at DESC LIMIT 200').bind(studentId, dateFrom, dateTo).all(),
       c.env.DB.prepare('SELECT * FROM assignments WHERE student_id = ? ORDER BY due_date DESC LIMIT 100').bind(studentId).all(),
@@ -2552,7 +2633,7 @@ app.get('/api/mentor/student/:studentId/all-records', async (c) => {
       c.env.DB.prepare('SELECT er.*, e.name as exam_name FROM exam_results er JOIN exams e ON er.exam_id = e.id WHERE er.student_id = ? ORDER BY e.start_date DESC LIMIT 50').bind(studentId).all(),
       c.env.DB.prepare('SELECT * FROM report_records WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all(),
       c.env.DB.prepare('SELECT id, class_record_id, thumbnail, file_size, created_at FROM class_record_photos WHERE student_id = ? ORDER BY id DESC LIMIT 200').bind(studentId).all(),
-      c.env.DB.prepare('SELECT q.*, (SELECT COUNT(*) FROM my_answers a WHERE a.question_id = q.id) as answer_count FROM my_questions q WHERE q.student_id = ? AND DATE(q.created_at) BETWEEN ? AND ? ORDER BY q.created_at DESC LIMIT 100').bind(studentId, dateFrom, dateTo).all(),
+      c.env.DB.prepare('SELECT q.*, (SELECT COUNT(*) FROM my_answers a WHERE a.question_id = q.id) as answer_count FROM my_questions q WHERE q.student_id = ? AND q.created_at >= ? AND q.created_at < datetime(?, \'+1 day\') ORDER BY q.created_at DESC LIMIT 100').bind(studentId, dateFrom, dateTo).all(),
       c.env.DB.prepare('SELECT * FROM mentor_feedbacks WHERE student_id = ? ORDER BY created_at DESC LIMIT 100').bind(studentId).all().catch(() => ({ results: [] })),
     ]);
 
@@ -2847,13 +2928,16 @@ app.get('/api/student/:studentId/profile', async (c) => {
 
     if (!student) return c.json({ error: '학생을 찾을 수 없습니다' }, 404);
 
-    // 통계
-    const examCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM exams WHERE student_id = ?').bind(studentId).first();
-    const assignmentCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM assignments WHERE student_id = ?').bind(studentId).first();
-    const questionCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM question_records WHERE student_id = ?').bind(studentId).first();
-    const classCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ?').bind(studentId).first();
-    const teachCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM teach_records WHERE student_id = ?').bind(studentId).first();
-    const activityLogCount: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM activity_logs WHERE student_id = ?').bind(studentId).first();
+    // 통계 — 단일 쿼리로 6개 COUNT 통합
+    const stats: any = await c.env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM exams WHERE student_id = ?) as exam_cnt,
+        (SELECT COUNT(*) FROM assignments WHERE student_id = ?) as assign_cnt,
+        (SELECT COUNT(*) FROM question_records WHERE student_id = ?) as question_cnt,
+        (SELECT COUNT(*) FROM class_records WHERE student_id = ?) as class_cnt,
+        (SELECT COUNT(*) FROM teach_records WHERE student_id = ?) as teach_cnt,
+        (SELECT COUNT(*) FROM activity_logs WHERE student_id = ?) as activity_cnt
+    `).bind(studentId, studentId, studentId, studentId, studentId, studentId).first();
 
     return c.json({
       id: student.id,
@@ -2865,12 +2949,12 @@ app.get('/api/student/:studentId/profile', async (c) => {
       level: student.level,
       groupName: student.group_name,
       stats: {
-        exams: examCount.cnt,
-        assignments: assignmentCount.cnt,
-        questions: questionCount.cnt,
-        classRecords: classCount.cnt,
-        teachRecords: teachCount.cnt,
-        activityLogs: activityLogCount.cnt,
+        exams: stats?.exam_cnt || 0,
+        assignments: stats?.assign_cnt || 0,
+        questions: stats?.question_cnt || 0,
+        classRecords: stats?.class_cnt || 0,
+        teachRecords: stats?.teach_cnt || 0,
+        activityLogs: stats?.activity_cnt || 0,
       },
       lastLoginAt: student.last_login_at,
       createdAt: student.created_at,
@@ -3622,6 +3706,12 @@ app.get('/api/migrate', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_activity_logs_activity ON activity_logs(activity_record_id)`,
       `CREATE INDEX IF NOT EXISTS idx_activity_logs_student_date ON activity_logs(student_id, date)`,
       `CREATE INDEX IF NOT EXISTS idx_report_records_student ON report_records(student_id)`,
+      // 복합 인덱스 — 정렬 성능 최적화
+      `CREATE INDEX IF NOT EXISTS idx_question_records_student_created ON question_records(student_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_teach_records_student_created ON teach_records(student_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_my_answers_question_created ON my_answers(question_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_activity_logs_student_created ON activity_logs(student_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_wrong_answer_images_wa ON wrong_answer_images(wrong_answer_id, sort_order)`,
       // ===== 나만의 질문방 테이블 =====
       `CREATE TABLE IF NOT EXISTS my_questions (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, subject TEXT DEFAULT '기타', class_record_id INTEGER DEFAULT NULL, title TEXT NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, thumbnail_key TEXT DEFAULT NULL, status TEXT DEFAULT '미답변', question_level TEXT DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS my_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL, student_id INTEGER NOT NULL, content TEXT DEFAULT '', image_key TEXT DEFAULT NULL, resolve_hours REAL DEFAULT NULL, resolve_days INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (question_id) REFERENCES my_questions(id) ON DELETE CASCADE)`,
@@ -3824,7 +3914,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
 
     // 1차: Gemini Vision
     try {
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
         {
           method: 'POST',
@@ -4042,16 +4132,33 @@ app.post('/api/mentor/croquet-points/give-bulk', async (c) => {
     }
     if (amount > 10000) return c.json({ error: '1회 최대 10,000P까지 지급 가능합니다' }, 400);
 
-    const results: any[] = [];
-    for (const sid of studentIds) {
-      await c.env.DB.prepare('UPDATE students SET croquet_balance = croquet_balance + ? WHERE id = ?').bind(amount, sid).run();
-      const student: any = await c.env.DB.prepare('SELECT croquet_balance, name FROM students WHERE id = ?').bind(sid).first();
-      const newBalance = student?.croquet_balance || 0;
-      await c.env.DB.prepare(
+    // 배치 처리: UPDATE → SELECT → INSERT를 학생별로 batch 실행
+    const batchStmts = studentIds.flatMap(sid => [
+      c.env.DB.prepare('UPDATE students SET croquet_balance = croquet_balance + ? WHERE id = ?').bind(amount, sid),
+    ]);
+    await c.env.DB.batch(batchStmts);
+
+    // 업데이트된 잔액 일괄 조회
+    const placeholders = studentIds.map(() => '?').join(',');
+    const students = await c.env.DB.prepare(
+      `SELECT id, name, croquet_balance FROM students WHERE id IN (${placeholders})`
+    ).bind(...studentIds).all();
+    const studentMap: Record<number, any> = {};
+    (students.results as any[]).forEach(s => { studentMap[s.id] = s; });
+
+    // 이력 일괄 INSERT
+    const insertStmts = studentIds.map(sid => {
+      const s = studentMap[sid];
+      return c.env.DB.prepare(
         'INSERT INTO croquet_points (student_id, mentor_id, amount, reason, reason_detail, balance_after) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(sid, mentorId, amount, reason || '기타', reasonDetail || '', newBalance).run();
-      results.push({ studentId: sid, name: student?.name, newBalance, amount });
-    }
+      ).bind(sid, mentorId, amount, reason || '기타', reasonDetail || '', s?.croquet_balance || 0);
+    });
+    await c.env.DB.batch(insertStmts);
+
+    const results = studentIds.map(sid => {
+      const s = studentMap[sid];
+      return { studentId: sid, name: s?.name, newBalance: s?.croquet_balance || 0, amount };
+    });
 
     return c.json({ success: true, count: results.length, results });
   } catch (e: any) {
@@ -4161,25 +4268,31 @@ app.get('/api/my-questions/stats', async (c) => {
     const studentId = c.req.query('studentId')
     if (!studentId) return c.json({ error: 'studentId 필수' }, 400)
 
-    const [totalCount, unansweredCount, answeredCount, avgResolve, subjectStats, weeklyCount, weeklyAnswered] = await Promise.all([
-      c.env.DB.prepare('SELECT COUNT(*) as cnt FROM my_questions WHERE student_id = ?').bind(studentId).first(),
-      c.env.DB.prepare("SELECT COUNT(*) as cnt FROM my_questions WHERE student_id = ? AND status = '미답변'").bind(studentId).first(),
-      c.env.DB.prepare("SELECT COUNT(*) as cnt FROM my_questions WHERE student_id = ? AND status = '답변완료'").bind(studentId).first(),
+    // 통합 쿼리: 7개 → 3개로 최적화
+    const [combined, avgResolve, subjectStats] = await Promise.all([
+      c.env.DB.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = '미답변' THEN 1 ELSE 0 END) as unanswered,
+          SUM(CASE WHEN status = '답변완료' THEN 1 ELSE 0 END) as answered,
+          SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as weekly_total,
+          SUM(CASE WHEN status = '답변완료' AND created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as weekly_answered
+        FROM my_questions WHERE student_id = ?
+      `).bind(studentId).first(),
       c.env.DB.prepare('SELECT AVG(resolve_days) as avg_days, AVG(resolve_hours) as avg_hours FROM my_answers WHERE student_id = ?').bind(studentId).first(),
       c.env.DB.prepare('SELECT subject, COUNT(*) as cnt FROM my_questions WHERE student_id = ? GROUP BY subject ORDER BY cnt DESC').bind(studentId).all(),
-      c.env.DB.prepare("SELECT COUNT(*) as cnt FROM my_questions WHERE student_id = ? AND created_at >= datetime('now', '-7 days')").bind(studentId).first(),
-      c.env.DB.prepare("SELECT COUNT(*) as cnt FROM my_questions WHERE student_id = ? AND status = '답변완료' AND created_at >= datetime('now', '-7 days')").bind(studentId).first(),
     ])
 
+    const s = combined as any
     return c.json({
-      total: (totalCount as any)?.cnt || 0,
-      unanswered: (unansweredCount as any)?.cnt || 0,
-      answered: (answeredCount as any)?.cnt || 0,
+      total: s?.total || 0,
+      unanswered: s?.unanswered || 0,
+      answered: s?.answered || 0,
       avgResolveDays: Math.round(((avgResolve as any)?.avg_days || 0) * 10) / 10,
       avgResolveHours: Math.round(((avgResolve as any)?.avg_hours || 0) * 10) / 10,
       subjectStats: (subjectStats as any)?.results || [],
-      weeklyQuestions: (weeklyCount as any)?.cnt || 0,
-      weeklyAnswered: (weeklyAnswered as any)?.cnt || 0,
+      weeklyQuestions: s?.weekly_total || 0,
+      weeklyAnswered: s?.weekly_answered || 0,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -4610,7 +4723,7 @@ app.post('/api/ai/activity-analyze', async (c) => {
 
     // Step 1: Gemini
     try {
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
@@ -4731,7 +4844,7 @@ OCR 규칙:
 
     // Step 1: Gemini 시도
     try {
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
@@ -5057,7 +5170,7 @@ OCR 규칙:
 
     // Step 1: Gemini 시도
     try {
-      const geminiRes = await fetch(
+      const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
         {
           method: 'POST',

@@ -268,8 +268,7 @@ async function toggleResolved(id, currentStatus) {
     showXpPopup(5, '질문 해결! +5 XP');
     events.emit(EVENTS.XP_EARNED, { amount: 5, label: '질문 해결' });
   }
-  await DB.loadMyQuestions();
-  await DB.loadMyQuestionStats();
+  await Promise.all([DB.loadMyQuestions(), DB.loadMyQuestionStats()]);
   // 상세 캐시 갱신
   if (state._qbDetailCache && state._qbDetailCache[id]) {
     const detail = await DB.getMyQuestionDetail(id);

@@ -9,6 +9,20 @@ function escapeHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 
+// ==================== 토스트 알림 ====================
+function showToast(msg, type = 'info') {
+  const existing = document.getElementById('app-toast');
+  if (existing) existing.remove();
+  const colors = { info: '#3b82f6', error: '#ef4444', success: '#22c55e' };
+  const icons = { info: 'ℹ️', error: '⚠️', success: '✅' };
+  const el = document.createElement('div');
+  el.id = 'app-toast';
+  el.style.cssText = `position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 20px;border-radius:12px;background:${colors[type] || colors.info};color:#fff;font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,0.2);animation:toast-in 0.3s ease;max-width:90vw;text-align:center`;
+  el.textContent = `${icons[type] || ''} ${msg}`;
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+}
+
 // ==================== KST (한국 표준시) 유틸리티 ====================
 // new Date()는 브라우저 로컬 시간이지만, toISOString()은 UTC → 자정 근처 날짜 오류 방지
 function kstNow() {
@@ -1726,6 +1740,7 @@ const DB = {
       }).catch(e => console.error('DB lazy load error:', e));
     } catch (e) {
       console.error('DB loadAll error:', e);
+      try { showToast('데이터 로딩에 실패했어요. 새로고침해주세요.', 'error'); } catch(_){}
     }
   },
 

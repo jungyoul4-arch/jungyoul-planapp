@@ -113,29 +113,56 @@ export const DB = {
     } catch (e) { console.error('updateClassRecord:', e); }
   },
 
-  // 사진 참조(ref:ID) → 실제 base64로 해석
+  // 사진 참조(ref:ID) → 실제 base64로 해석 (배치 API 사용)
   async resolvePhotos(photos) {
     if (!photos || !Array.isArray(photos) || photos.length === 0) return [];
-    const resolved = [];
-    for (const p of photos) {
+
+    // ref:ID 사진들의 ID 수집
+    const refMap = {}; // index → photoId
+    for (let i = 0; i < photos.length; i++) {
+      const p = photos[i];
       if (typeof p === 'string' && p.startsWith('ref:')) {
-        const photoId = p.slice(4);
-        try {
-          const res = await fetch(`/api/photos/${photoId}`);
-          if (res.ok) {
-            const data = await res.json();
-            resolved.push(data.photoData || p);
-          } else {
-            resolved.push(p);
-          }
-        } catch (_) { resolved.push(p); }
-      } else if (typeof p === 'string' && p.startsWith('data:')) {
-        resolved.push(p); // 기존 base64 (레거시 호환)
-      } else {
-        resolved.push(p);
+        refMap[i] = p.slice(4);
       }
     }
-    return resolved;
+
+    const refIds = Object.values(refMap);
+    let batchResult = {};
+
+    // 배치 API로 한 번에 조회
+    if (refIds.length > 0) {
+      try {
+        const res = await fetch('/api/photos/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ photoIds: refIds })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          batchResult = data.photos || {};
+        }
+      } catch (e) {
+        console.error('resolvePhotos batch failed, falling back:', e);
+        // 폴백: 개별 조회
+        for (const id of refIds) {
+          try {
+            const res = await fetch(`/api/photos/${id}`);
+            if (res.ok) {
+              const data = await res.json();
+              batchResult[id] = data.photoData;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    // 결과 조합
+    return photos.map((p, i) => {
+      if (refMap[i] !== undefined) {
+        return batchResult[refMap[i]] || p;
+      }
+      return p;
+    });
   },
 
   // 개별 사진 삭제
@@ -226,17 +253,26 @@ export const DB = {
 
   // === AI Credit Log 분석 ===
   async analyzePhotos(images, subject, period, date, studentComment) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000); // 90초 타임아웃
     try {
       const res = await fetch('/api/ai/credit-log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images, subject, period, date, studentComment: studentComment || '' })
+        body: JSON.stringify({ images, subject, period, date, studentComment: studentComment || '' }),
+        signal: controller.signal
       });
       if (res.ok) {
         const data = await res.json();
         return data.data || data;
       }
-    } catch (e) { console.error('analyzePhotos:', e); }
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (90초)');
+      console.error('analyzePhotos:', e);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
     return null;
   },
 
@@ -746,17 +782,26 @@ export const DB = {
 
   // === 아하 리포트 ===
   async analyzeAhaReport(photos, subject, source, date) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
     try {
       const res = await fetch('/api/aha-report/analyze-v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos, subject, source, date })
+        body: JSON.stringify({ photos, subject, source, date }),
+        signal: controller.signal
       });
       if (res.ok) {
         const data = await res.json();
         return data;
       }
-    } catch (e) { console.error('analyzeAhaReport:', e); }
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('아하 리포트 분석 시간 초과');
+      console.error('analyzeAhaReport:', e);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
     return null;
   },
 

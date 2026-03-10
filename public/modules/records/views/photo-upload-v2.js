@@ -62,9 +62,21 @@ async function handleNoteUpload(input) {
   navigate(state.currentScreen, { replace: true });
 
   // 백그라운드에서 리사이즈 → 교체
-  const dataUrl = await resizeImage(file);
-  URL.revokeObjectURL(quickPreview);
-  state._classPhotos[0] = dataUrl;
+  try {
+    const dataUrl = await resizeImage(file);
+    URL.revokeObjectURL(quickPreview);
+    state._classPhotos[0] = dataUrl;
+  } catch (e) {
+    console.error('사진 리사이즈 실패:', e);
+    // quickPreview(blob URL)를 유지 — 업로드 시 다시 시도됨
+    URL.revokeObjectURL(quickPreview);
+    // 실패 사진 제거
+    if (state._classPhotos[0] === quickPreview) {
+      state._classPhotos.splice(0, 1);
+      state._classPhotoTags.splice(0, 1);
+    }
+    if (typeof _RM !== 'undefined' && _RM.toast) _RM.toast('사진 처리에 실패했어요. 다시 촬영해주세요.', 'error');
+  }
   state._photoProcessing = false;
   input.value = '';
   navigate(state.currentScreen, { replace: true });
@@ -102,13 +114,28 @@ async function handleRefUpload(input) {
   navigate(state.currentScreen, { replace: true });
 
   // 2단계: 백그라운드에서 리사이즈 → blob URL을 data URL로 교체
+  let failCount = 0;
   for (const { blobUrl, file } of previews) {
-    const dataUrl = await resizeImage(file);
-    const idx = state._classPhotos.indexOf(blobUrl);
-    if (idx >= 0) {
-      state._classPhotos[idx] = dataUrl;
+    try {
+      const dataUrl = await resizeImage(file);
+      const idx = state._classPhotos.indexOf(blobUrl);
+      if (idx >= 0) {
+        state._classPhotos[idx] = dataUrl;
+        URL.revokeObjectURL(blobUrl);
+      }
+    } catch (e) {
+      console.error('참고 사진 리사이즈 실패:', e);
+      const idx = state._classPhotos.indexOf(blobUrl);
+      if (idx >= 0) {
+        state._classPhotos.splice(idx, 1);
+        state._classPhotoTags.splice(idx, 1);
+      }
       URL.revokeObjectURL(blobUrl);
+      failCount++;
     }
+  }
+  if (failCount > 0 && typeof _RM !== 'undefined' && _RM.toast) {
+    _RM.toast(`${failCount}장의 사진 처리에 실패했어요.`, 'error');
   }
   state._photoProcessing = false;
   input.value = '';

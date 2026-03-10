@@ -79,12 +79,16 @@ async function runAnalysis() {
     } else {
       state._aiAnalyzing = false;
       state._aiAnalysisStep = 'error';
+      state._aiErrorMsg = 'AI 서버가 응답하지 않았어요. 잠시 후 다시 시도해주세요.';
       navigate(state.currentScreen, { replace: true });
     }
   } catch (e) {
     console.error('AI analysis failed:', e);
     state._aiAnalyzing = false;
     state._aiAnalysisStep = 'error';
+    state._aiErrorMsg = e.message?.includes('시간 초과')
+      ? '분석 시간이 초과되었어요. 다시 시도해주세요.'
+      : '네트워크 오류가 발생했어요. 인터넷 연결을 확인해주세요.';
     navigate(state.currentScreen, { replace: true });
   }
 }
@@ -322,7 +326,7 @@ export function renderAiLoading() {
         ${isError ? `
           <div class="al-error-icon">⚠️</div>
           <div class="al-step-text" style="color:#FF6B6B">AI 분석에 실패했습니다</div>
-          <p style="color:var(--text-muted);font-size:13px;margin:12px 0 24px">네트워크 상태를 확인하고 다시 시도해주세요</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:12px 0 24px">${state._aiErrorMsg || '네트워크 상태를 확인하고 다시 시도해주세요'}</p>
           <button class="btn-primary" onclick="_RM.retryAiAnalysis()" style="width:auto;padding:12px 32px">
             <i class="fas fa-redo" style="margin-right:8px"></i>다시 시도
           </button>

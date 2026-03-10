@@ -26,9 +26,21 @@ async function saveAndGoBack(RM) {
   const photos = state[`${prefix}Photos`] || [];
   const comment = state[`${prefix}Comment`] || '';
 
-  const logId = await DB.saveActivityLogWithPhotos(
-    type, TITLES[type] || type, photos, comment || result.summary || '활동 기록', null, result
-  );
+  let logId;
+  try {
+    logId = await DB.saveActivityLogWithPhotos(
+      type, TITLES[type] || type, photos, comment || result.summary || '활동 기록', null, result
+    );
+  } catch (e) {
+    console.error('활동 저장 실패:', e);
+    if (RM.toast) RM.toast('저장에 실패했어요. 다시 시도해주세요.', 'error');
+    return;
+  }
+
+  if (!logId) {
+    if (RM.toast) RM.toast('저장에 실패했어요. 다시 시도해주세요.', 'error');
+    return;
+  }
 
   // state 초기화
   state[`${prefix}Photos`] = [];
@@ -37,7 +49,7 @@ async function saveAndGoBack(RM) {
   state._activityAiResult = null;
   state._activityAiType = '';
 
-  if (logId && RM.toast) RM.toast(`${TITLES[type] || '활동'}이 저장되었습니다`);
+  if (RM.toast) RM.toast(`${TITLES[type] || '활동'}이 저장되었습니다`);
   RM.nav('record-activity');
 }
 
