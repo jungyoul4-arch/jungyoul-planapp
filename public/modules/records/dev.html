@@ -79,7 +79,8 @@
     <div class="dev-banner">
       <span>DEV MODE — iPad Pro 11" (1194×834)</span>
       <button onclick="location.reload()">Reload</button>
-      <button onclick="testPrintView()">인쇄물 테스트</button>
+      <button onclick="testPrintView()">수업기록 PDF</button>
+      <button onclick="testAhaPDF()">아하리포트 PDF</button>
     </div>
     <div id="records-root"></div>
   </div>
@@ -114,6 +115,26 @@
         assignment: { title: '구심력 실험 보고서', description: '원형 운동 실험 결과를 분석하고 구심력 공식을 검증하는 보고서 작성', dueDate: '2026-03-13', dueDateRaw: '다음주 금요일' }
       };
       generateCreditLogPDF(mockLog, '물리학I', '2026-03-06', '곽정율');
+    }
+
+    async function testAhaPDF() {
+      const { generateAhaReportPDF } = await import('./components/pdf-generator.js');
+      const mockResult = {
+        sa: '등속 원운동에서 물체가 원궤도를 따라 움직이는데, 속력이 일정하다면 왜 가속도가 존재하는지 이해가 되지 않았다. 관성의 법칙에 따르면 힘이 작용하지 않으면 등속직선운동을 해야 하는데, 등속 원운동에서는 속력이 변하지 않으면서도 힘(구심력)이 필요한 이유가 의문이었다.',
+        pa: [
+          '속력이 일정한 등속 원운동에서 가속도가 존재하는 이유는 무엇인가?',
+          '구심력이 하는 일이 0이라면, 구심력은 물체의 운동 에너지를 변화시키지 않는 것인가?',
+          '관성 좌표계에서의 구심력 분석과 비관성 좌표계에서의 원심력 분석은 동일한 현상을 어떻게 다르게 설명하는가?'
+        ],
+        da: '속도는 크기(속력)와 방향을 모두 가진 벡터량이다. 등속 원운동에서 속력은 일정하지만 운동 방향이 매 순간 변하므로, 속도 벡터는 계속 변한다. 속도가 변하면 가속도가 존재하며, 이 가속도는 항상 원의 중심을 향한다(구심 가속도). 구심력은 속도의 방향에 수직으로 작용하므로 일(W = F·d·cosθ)에서 θ = 90°이 되어 일이 0이다. 따라서 운동 에너지는 변하지 않고 속력이 유지된다.',
+        poa: '속도가 "벡터"라는 사실이 핵심이었다! 일상에서 속력과 속도를 혼용하지만, 물리학에서는 방향까지 포함한 속도 개념이 등속 원운동의 가속도를 이해하는 열쇠였다. 또한 구심력이 속도에 수직이라서 일을 하지 않는다는 점은, 힘이 작용해도 에너지가 변하지 않을 수 있다는 중요한 통찰을 제공했다.',
+        ppa: {
+          change: '처음에는 "등속 = 가속도 없음"이라고 단순하게 생각했지만, 속도의 벡터 성질을 이해한 후 "등속 원운동에서도 가속도가 존재하며 그 방향은 중심을 향한다"는 것을 깨달았다.',
+          lacking: '벡터와 스칼라의 구분이 부족했고, 일(Work)의 정의에서 cos θ 항의 물리적 의미를 제대로 이해하지 못하고 있었다.'
+        }
+      };
+      const mockFeedback = '등속 원운동에서 가속도의 존재 이유를 벡터 개념으로 정확히 파악한 점이 훌륭합니다. 특히 구심력이 일을 하지 않는다는 점까지 연결한 분석은 깊이 있는 사고를 보여줍니다. 다음 단계로 비등속 원운동(접선 가속도 포함)과 에너지 보존 법칙의 관계를 탐구해보면 좋겠습니다.';
+      generateAhaReportPDF(mockResult, '물리학I', '2026-03-06', mockFeedback, '곽정율');
     }
   </script>
 

@@ -64,7 +64,8 @@ export function registerHandlers(RM) {
       { sa: d.section_sa || '', pa, da: d.section_da || '', poa: d.section_poa || '', ppa },
       d.subject || '',
       d.date || d.created_at?.slice(0, 10) || '',
-      d.ai_feedback || ''
+      d.ai_feedback || '',
+      d.student_name || state.studentName || ''
     );
   };
 }

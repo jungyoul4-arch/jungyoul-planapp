@@ -198,7 +198,7 @@ async function saveReport() {
 function downloadPDF() {
   const r = state._ahaResult;
   if (!r) return;
-  generateAhaReportPDF(r, state._ahaSubject || '', state._ahaDate || kstToday(), state._ahaFeedback || '');
+  generateAhaReportPDF(r, state._ahaSubject || '', state._ahaDate || kstToday(), state._ahaFeedback || '', state.studentName || '');
 }
 
 function nl2br(text) {

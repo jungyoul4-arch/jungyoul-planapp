@@ -390,21 +390,9 @@ function _openPreviewWindow(html) {
   w.document.close();
 }
 
-function _openPrintWindow(html) {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('팝업이 차단되었습니다. 팝업을 허용해주세요.');
-    return;
-  }
-  printWindow.document.write(html);
-  printWindow.document.close();
-  printWindow.onload = () => {
-    printWindow.print();
-  };
-}
 
 // === 아하 리포트 PDF ===
-export function generateAhaReportPDF(result, subject, date, feedback) {
+export function generateAhaReportPDF(result, subject, date, feedback, studentName) {
   if (!result) return;
 
   const pa = result.pa || [];
@@ -415,119 +403,255 @@ export function generateAhaReportPDF(result, subject, date, feedback) {
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>아하 리포트 - ${subject} ${date}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>아하 리포트 · ${_esc(subject)} ${_esc(date)}</title>
 <style>
-  @page { size: A4; margin: 15mm; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Pretendard Variable', Pretendard, -apple-system, sans-serif;
-    color: #222; background: #fff; padding: 20px;
-  }
-  .aha-pdf-header {
-    text-align: center; margin-bottom: 24px; padding-bottom: 12px;
-    border-bottom: 3px solid #1a237e;
-  }
-  .aha-pdf-title {
-    font-size: 28px; font-weight: bold; letter-spacing: 8px; color: #1a237e;
-  }
-  .aha-pdf-subtitle {
-    font-size: 14px; letter-spacing: 6px; color: #666; margin-top: 4px;
-  }
-  .aha-pdf-meta { font-size: 14px; color: #888; margin-top: 8px; }
+:root {
+  --ink:    #1c1c1e;
+  --mid:    #48484a;
+  --faint:  #8e8e93;
+  --paper:  #faf9f6;
+  --rule:   #e2ddd6;
+  --accent: #c0392b;
+  --gold:   #a07028;
+  --teal:   #1a6060;
+  --serif:  Georgia, "Nanum Myeongjo", "Apple SD Gothic Neo", serif;
+  --sans:   -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --mono:   "SF Mono", "Fira Code", Consolas, monospace;
+}
 
-  .aha-pdf-section {
-    border: 1.5px solid #333; border-radius: 8px;
-    padding: 14px 16px; margin-bottom: 12px;
-  }
-  .aha-pdf-badge {
-    display: inline-block; font-size: 12px; font-weight: 700;
-    padding: 2px 10px; border-radius: 4px; margin-right: 8px;
-  }
-  .aha-pdf-label {
-    font-size: 15px; font-weight: bold; color: #333; margin-bottom: 8px;
-    display: flex; align-items: center;
-  }
-  .aha-pdf-value {
-    font-size: 15px; line-height: 1.8; color: #1a237e; font-weight: 500;
-    min-height: 24px;
-  }
+html { zoom: 0.72; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
-  .aha-pdf-pa-item {
-    margin-bottom: 8px; padding: 8px 12px;
-    background: #f0f0ff; border-radius: 6px;
-  }
-  .aha-pdf-pa-num { font-weight: 700; color: #5c4cdb; margin-right: 8px; }
+body {
+  font-family: var(--sans);
+  font-size: 28px;
+  line-height: 1.8;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+}
 
-  .aha-pdf-ppa-row {
-    margin-bottom: 8px; padding: 8px 12px; background: #f0f8ff; border-radius: 6px;
-  }
-  .aha-pdf-ppa-label { font-size: 12px; color: #888; font-weight: 600; margin-bottom: 4px; }
+.hd {
+  padding: 58px 8% 47px;
+  border-bottom: 2px solid var(--ink);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.hd-eyebrow {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.hd h1 {
+  font-family: var(--serif);
+  font-size: clamp(48px, 8vw, 80px);
+  font-weight: 400;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  color: var(--ink);
+}
+.hd h1 em { font-style: normal; color: var(--accent); }
+.hd-meta {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 20px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+  line-height: 1.9;
+}
+.hd-meta strong { color: var(--ink); display: block; font-size: 24px; }
 
-  .aha-pdf-feedback {
-    border: 1.5px solid #ff9f43; border-radius: 8px;
-    padding: 14px 16px; margin-bottom: 12px;
-    background: #fffbf0;
-  }
-  .aha-pdf-feedback-title { font-size: 15px; font-weight: 700; color: #e67e22; margin-bottom: 8px; }
-  .aha-pdf-feedback-body { font-size: 14px; line-height: 1.7; color: #555; }
+.strip {
+  padding: 18px 8%;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 22px;
+  color: var(--mid);
+  flex-wrap: wrap;
+}
+.strip-unit {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 3px 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.sec      { padding: 43px 8%; border-bottom: 1px solid var(--rule); }
+.sec-full { padding: 47px 8%; border-bottom: 1px solid var(--rule); }
+
+.sec-label {
+  font-family: var(--mono);
+  font-size: 17px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sec-label::after { content: ''; flex: 1; height: 1px; background: var(--rule); }
+
+.sec-badge {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 3px 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.sec-body { font-size: 26px; line-height: 1.85; color: var(--mid); }
+
+.q-list { list-style: none; }
+.q-list li {
+  display: grid; grid-template-columns: 44px 1fr; gap: 18px;
+  padding: 22px 0; border-bottom: 1px solid var(--rule); align-items: baseline;
+}
+.q-list li:first-child { padding-top: 0; }
+.q-list li:last-child  { border-bottom: none; padding-bottom: 0; }
+.q-n { font-family: var(--mono); font-size: 18px; color: var(--teal); font-weight: 700; }
+.q-txt { font-size: 26px; line-height: 1.75; color: var(--mid); }
+
+.ppa-block { margin-bottom: 28px; }
+.ppa-block:last-child { margin-bottom: 0; }
+.ppa-tag {
+  font-family: var(--mono); font-size: 18px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--faint);
+  border-bottom: 1px solid var(--rule); padding-bottom: 10px; margin-bottom: 16px;
+}
+.ppa-body { font-size: 26px; line-height: 1.8; color: var(--mid); }
+
+.feedback-sec {
+  padding: 43px 8%; border-bottom: 1px solid var(--rule);
+}
+.feedback-body {
+  font-size: 26px; line-height: 1.85; color: var(--mid);
+  padding-left: 22px; border-left: 3px solid var(--gold);
+}
+
+@media print {
+  html { zoom: 0.72; }
+  body { background: white; }
+  .print-fab { display: none !important; }
+}
+.print-fab {
+  position: fixed; bottom: 32px; right: 32px; z-index: 9999;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--accent); color: #fff; border: none;
+  font-size: 22px; cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  display: flex; align-items: center; justify-content: center;
+}
 </style>
 </head>
 <body>
-  <div class="aha-pdf-header">
-    <div class="aha-pdf-title">아 하 리 포 트</div>
-    <div class="aha-pdf-subtitle">A H A &nbsp; R E P O R T</div>
-    <div class="aha-pdf-meta">${subject}${date ? ' · ' + date : ''}</div>
+
+<header class="hd">
+  <div>
+    <div class="hd-eyebrow">AHA REPORT · ${_esc(subject)}</div>
+    <h1>아하<br><em>리포트</em></h1>
   </div>
+  <div class="hd-meta">
+    ${studentName ? `<strong>${_esc(studentName)}</strong>` : ''}
+    ${_esc(date)}
+  </div>
+</header>
+
+<div class="strip">
+  <span class="strip-unit">${_esc(subject)}</span>
+  아하 리포트${date ? ' · ' + _esc(date) : ''}
+</div>
+
+<main>
 
   ${result.sa ? `
-  <div class="aha-pdf-section">
-    <div class="aha-pdf-label">
-      <span class="aha-pdf-badge" style="background:#ffe0e0;color:#e53935">SA</span> 문제상황
+  <section class="sec-full">
+    <div class="sec-label">
+      <span class="sec-badge" style="background:#ffe0e0;color:#c0392b">SA</span>
+      문제상황 · situation analysis
     </div>
-    <div class="aha-pdf-value">${(result.sa || '').replace(/\n/g, '<br>')}</div>
-  </div>` : ''}
+    <div class="sec-body">${_esc(result.sa).replace(/\\n/g, '<br>')}</div>
+  </section>` : ''}
 
   ${pa.length > 0 ? `
-  <div class="aha-pdf-section">
-    <div class="aha-pdf-label">
-      <span class="aha-pdf-badge" style="background:#e8e0ff;color:#5c4cdb">PA</span> 탐구질문
+  <section class="sec">
+    <div class="sec-label">
+      <span class="sec-badge" style="background:#ede7f6;color:#5c4cdb">PA</span>
+      탐구질문 · problem analysis
     </div>
-    ${pa.map((q, i) => `<div class="aha-pdf-pa-item"><span class="aha-pdf-pa-num">Q${i + 1}.</span>${q}</div>`).join('')}
-  </div>` : ''}
+    <ul class="q-list">
+      ${pa.map((q, i) => `
+      <li>
+        <span class="q-n">Q${i + 1}</span>
+        <div class="q-txt">${_esc(q)}</div>
+      </li>`).join('')}
+    </ul>
+  </section>` : ''}
 
   ${result.da ? `
-  <div class="aha-pdf-section">
-    <div class="aha-pdf-label">
-      <span class="aha-pdf-badge" style="background:#d0f0e0;color:#00897b">DA</span> 탐구과정 & 결론
+  <section class="sec-full">
+    <div class="sec-label">
+      <span class="sec-badge" style="background:#e0f2f1;color:#1a6060">DA</span>
+      탐구과정 & 결론 · data analysis
     </div>
-    <div class="aha-pdf-value">${(result.da || '').replace(/\n/g, '<br>')}</div>
-  </div>` : ''}
+    <div class="sec-body">${_esc(result.da).replace(/\\n/g, '<br>')}</div>
+  </section>` : ''}
 
   ${result.poa ? `
-  <div class="aha-pdf-section">
-    <div class="aha-pdf-label">
-      <span class="aha-pdf-badge" style="background:#fff8e0;color:#f9a825">POA</span> 아하포인트
+  <section class="sec-full">
+    <div class="sec-label">
+      <span class="sec-badge" style="background:#fff8e1;color:#a07028">POA</span>
+      아하포인트 · point of awareness
     </div>
-    <div class="aha-pdf-value">${(result.poa || '').replace(/\n/g, '<br>')}</div>
-  </div>` : ''}
+    <div class="sec-body">${_esc(result.poa).replace(/\\n/g, '<br>')}</div>
+  </section>` : ''}
 
   ${ppa.change || ppa.lacking ? `
-  <div class="aha-pdf-section">
-    <div class="aha-pdf-label">
-      <span class="aha-pdf-badge" style="background:#e0f0ff;color:#1565c0">PPA</span> 성찰
+  <section class="sec">
+    <div class="sec-label">
+      <span class="sec-badge" style="background:#e3f2fd;color:#1565c0">PPA</span>
+      성찰 · personal procedural awareness
     </div>
-    ${ppa.change ? `<div class="aha-pdf-ppa-row"><div class="aha-pdf-ppa-label">🔄 전후 생각 변화</div><div class="aha-pdf-value">${ppa.change.replace(/\n/g, '<br>')}</div></div>` : ''}
-    ${ppa.lacking ? `<div class="aha-pdf-ppa-row"><div class="aha-pdf-ppa-label">📌 부족했던 것</div><div class="aha-pdf-value">${ppa.lacking.replace(/\n/g, '<br>')}</div></div>` : ''}
-  </div>` : ''}
+    ${ppa.change ? `
+    <div class="ppa-block">
+      <div class="ppa-tag">전후 생각 변화</div>
+      <div class="ppa-body">${_esc(ppa.change).replace(/\\n/g, '<br>')}</div>
+    </div>` : ''}
+    ${ppa.lacking ? `
+    <div class="ppa-block">
+      <div class="ppa-tag">부족했던 것</div>
+      <div class="ppa-body">${_esc(ppa.lacking).replace(/\\n/g, '<br>')}</div>
+    </div>` : ''}
+  </section>` : ''}
 
   ${feedback ? `
-  <div class="aha-pdf-feedback">
-    <div class="aha-pdf-feedback-title">🎯 아하 리포트 피드백</div>
-    <div class="aha-pdf-feedback-body">${feedback.replace(/\n/g, '<br>')}</div>
-  </div>` : ''}
+  <section class="feedback-sec">
+    <div class="sec-label">아하 리포트 피드백</div>
+    <div class="feedback-body">${_esc(feedback).replace(/\\n/g, '<br>')}</div>
+  </section>` : ''}
+
+</main>
+<button class="print-fab" onclick="window.print()" title="인쇄">&#x1F5A8;</button>
 </body>
 </html>`;
 
-  _openPrintWindow(printHtml);
+  _openPreviewWindow(printHtml);
 }
