@@ -203,6 +203,7 @@ async function callGeminiMultiImage(opts: {
   // STEP 1: Gemini OCR — 모든 사진을 병렬로 텍스트 추출
   let ocrText = ''
   let ocrSuccess = false
+  let ocrError = ''
 
   try {
     console.log(`[OCR] ${images.length}장 사진 Gemini OCR 시작`)
@@ -248,14 +249,20 @@ async function callGeminiMultiImage(opts: {
           return `--- 사진${i + 1} ${label} ${tag} ---`
         }).join('\n') + '\n\n' + rawOcr
         ocrSuccess = true
+      } else {
+        ocrError = `Gemini OCR ${geminiRes.status}: ${await geminiRes.text().catch(() => 'unknown')}`
+        console.log('[OCR] ' + ocrError)
       }
     }
     if (ocrSuccess) console.log(`[OCR] 완료 (${ocrText.length}자)`)
-  } catch (e) {
+  } catch (e: any) {
+    ocrError = `Gemini OCR error: ${e.message}`
     console.log('[OCR] Gemini OCR 실패:', e)
   }
 
   // STEP 2: Sonnet 분석 (OCR 성공 + Anthropic 키 있을 때)
+  let sonnetError = ''
+  let geminiAnalysisError = ''
   if (ocrSuccess && anthropicKey) {
     try {
       console.log('[분석] Sonnet 분석 시작')
@@ -264,7 +271,8 @@ async function callGeminiMultiImage(opts: {
       const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
       console.log('[분석] Sonnet 분석 완료')
       return { text, source: 'gemini-ocr+sonnet' }
-    } catch (e) {
+    } catch (e: any) {
+      sonnetError = e.message
       console.log('[분석] Sonnet 실패, Gemini 분석으로 폴백:', e)
     }
   }
@@ -320,12 +328,15 @@ async function callGeminiMultiImage(opts: {
         return { text, source: GEMINI_MODEL }
       }
     }
+    geminiAnalysisError = `${GEMINI_MODEL} 분석 실패`
     console.log(`${GEMINI_MODEL} 분석 실패, Claude로 폴백`)
-  } catch (e) {
+  } catch (e: any) {
+    geminiAnalysisError = `${GEMINI_MODEL} error: ${e.message}`
     console.log(`${GEMINI_MODEL} 에러, Claude로 폴백:`, e)
   }
 
   // STEP 2 폴백B: Claude (텍스트만)
+  let claudeError = ''
   if (anthropicKey) {
     try {
       const fallbackPrompt = ocrSuccess
@@ -333,12 +344,15 @@ async function callGeminiMultiImage(opts: {
         : prompt
       const text = await callSonnetAnalysis(anthropicKey, fallbackPrompt, '위 지시에 따라 JSON 형식으로만 응답하세요.', jsonMode, temperature)
       return { text, source: 'claude-fallback' }
-    } catch (e) {
+    } catch (e: any) {
+      claudeError = e.message
       console.log('Claude 폴백 실패:', e)
     }
+  } else {
+    claudeError = 'ANTHROPIC_API_KEY 없음'
   }
 
-  throw new Error(`모든 AI 폴백 실패 — Gemini + Claude 모두 실패`)
+  throw new Error(`모든 AI 실패 — OCR: ${ocrError || 'ok'} | Sonnet: ${sonnetError || 'skipped'} | Gemini분석: ${geminiAnalysisError || 'skipped'} | Claude폴백: ${claudeError}`)
 }
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================
