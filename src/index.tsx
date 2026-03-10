@@ -74,12 +74,14 @@ async function recordXp(db: D1Database, studentId: number, amount: number, sourc
 async function callGeminiWithFallback(opts: {
   geminiKey: string,
   openaiKey: string,
+  anthropicKey?: string,
   prompt: string,
   jsonMode?: boolean,
   temperature?: number,
   inlineData?: { mime_type: string, data: string },
 }) {
-  const { geminiKey, openaiKey, prompt, jsonMode = true, temperature = 0.3, inlineData } = opts
+  const { geminiKey, openaiKey, anthropicKey, prompt, jsonMode = true, temperature = 0.3, inlineData } = opts
+  let geminiError = ''
 
   // Step 1: Gemini 시도
   try {
@@ -107,37 +109,24 @@ async function callGeminiWithFallback(opts: {
       return { text, source: 'gemini' }
     }
 
-    // Gemini 실패 → 폴백으로 진행
-    console.log(`Gemini API 실패 (${geminiRes.status}), OpenAI로 폴백`)
-  } catch (e) {
-    console.log('Gemini API 에러, OpenAI로 폴백:', e)
+    geminiError = `Gemini ${geminiRes.status}: ${await geminiRes.text().catch(() => 'unknown')}`
+    console.log(`Gemini API 실패 (${geminiRes.status}), Claude로 폴백`)
+  } catch (e: any) {
+    geminiError = `Gemini error: ${e.message}`
+    console.log('Gemini API 에러, Claude로 폴백:', e)
   }
 
-  // Step 2: OpenAI 폴백 (이미지가 있는 경우 이미지 없이 텍스트만 전송)
-  const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'user', content: prompt }
-      ],
-      temperature,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
-    })
-  })
-
-  if (!openaiRes.ok) {
-    const err = await openaiRes.text()
-    throw new Error(`OpenAI 폴백도 실패: ${err}`)
+  // Step 2: Claude 폴백
+  if (anthropicKey) {
+    try {
+      const text = await callSonnetAnalysis(anthropicKey, prompt, '위 지시에 따라 응답하세요.', jsonMode, temperature)
+      return { text, source: 'claude-fallback' }
+    } catch (e) {
+      console.log('Claude 폴백 실패:', e)
+    }
   }
 
-  const openaiData: any = await openaiRes.json()
-  const text = openaiData.choices[0].message.content
-  return { text, source: 'openai' }
+  throw new Error(`AI 호출 실패 — ${geminiError}`)
 }
 
 // ==================== Gemini 2.5 Flash 다중 이미지 헬퍼 ====================
@@ -331,37 +320,25 @@ async function callGeminiMultiImage(opts: {
         return { text, source: GEMINI_MODEL }
       }
     }
-    console.log(`${GEMINI_MODEL} 분석 실패, OpenAI로 폴백`)
+    console.log(`${GEMINI_MODEL} 분석 실패, Claude로 폴백`)
   } catch (e) {
-    console.log(`${GEMINI_MODEL} 에러, OpenAI로 폴백:`, e)
+    console.log(`${GEMINI_MODEL} 에러, Claude로 폴백:`, e)
   }
 
-  // STEP 2 폴백B: OpenAI (텍스트만)
-  const fallbackPrompt = ocrSuccess
-    ? prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-    : prompt
-  const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: fallbackPrompt }],
-      temperature,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
-    })
-  })
-
-  if (!openaiRes.ok) {
-    const err = await openaiRes.text()
-    throw new Error(`모든 AI 폴백 실패: ${err}`)
+  // STEP 2 폴백B: Claude (텍스트만)
+  if (anthropicKey) {
+    try {
+      const fallbackPrompt = ocrSuccess
+        ? prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
+        : prompt
+      const text = await callSonnetAnalysis(anthropicKey, fallbackPrompt, '위 지시에 따라 JSON 형식으로만 응답하세요.', jsonMode, temperature)
+      return { text, source: 'claude-fallback' }
+    } catch (e) {
+      console.log('Claude 폴백 실패:', e)
+    }
   }
 
-  const openaiData: any = await openaiRes.json()
-  const text = openaiData.choices[0].message.content
-  return { text, source: 'openai' }
+  throw new Error(`모든 AI 폴백 실패 — Gemini + Claude 모두 실패`)
 }
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================
@@ -618,6 +595,7 @@ app.post('/api/image-analyze', async (c) => {
     const { text } = await callGeminiWithFallback({
       geminiKey: c.env.GEMINI_API_KEY,
       openaiKey: c.env.OPENAI_API_KEY,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
       prompt: fullPrompt,
       jsonMode: true,
       temperature: 0.3,
@@ -823,6 +801,7 @@ app.post('/api/exam-coach', async (c) => {
     const { text } = await callGeminiWithFallback({
       geminiKey: c.env.GEMINI_API_KEY,
       openaiKey: c.env.OPENAI_API_KEY,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
       prompt,
       jsonMode: false,
       temperature: 0.7,
@@ -876,6 +855,7 @@ app.post('/api/report-diagnose', async (c) => {
     const { text } = await callGeminiWithFallback({
       geminiKey: c.env.GEMINI_API_KEY,
       openaiKey: c.env.OPENAI_API_KEY,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
       prompt: fullPrompt,
       jsonMode: true,
       temperature: 0.3,
@@ -4343,6 +4323,7 @@ ${question.content ? `추가 설명: ${question.content}` : ''}
     const { text } = await callGeminiWithFallback({
       geminiKey: c.env.GEMINI_API_KEY,
       openaiKey: c.env.OPENAI_API_KEY,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
       prompt,
       jsonMode: false,
       temperature: 0.4,
