@@ -218,9 +218,13 @@ function _showArchiveModule(isTablet) {
       classmates: state.classmates || [],
     });
     _archiveModuleActive = true;
+  } else if (_archiveModuleActive && window.ArchiveModule) {
+    // 이미 init된 상태에서 다시 진입 — dashboard로 이동 + 리렌더
+    window.ArchiveModule.navigate('dashboard');
   }
 }
 
+let _hidingArchive = false;
 function _hideArchiveModule() {
   const phoneRec = document.getElementById('archive-container-phone');
   const tabletRec = document.getElementById('archive-container-tablet');
@@ -232,11 +236,13 @@ function _hideArchiveModule() {
   if (tabletContent) tabletContent.style.display = '';
   // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
   // 아카이브에서 홈으로 돌아올 때 DB 기록 반영하여 시간표 done 상태 갱신
-  if (_archiveModuleActive && state._authUser?.id) {
+  if (_archiveModuleActive && state._authUser?.id && !_hidingArchive) {
+    _hidingArchive = true;
     DB.loadClassRecords().then(() => {
       syncTodayRecords();
+      _hidingArchive = false;
       renderScreen();
-    }).catch(() => {});
+    }).catch(() => { _hidingArchive = false; });
   }
 }
 
