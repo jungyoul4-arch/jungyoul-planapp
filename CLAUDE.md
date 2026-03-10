@@ -69,7 +69,7 @@
 ## 3. 폴더 구조
 
 ```
-credit-planner-v8/
+jungyoul-planapp
 ├── src/
 │   ├── index.ts          # Hono 라우터 (모든 API 엔드포인트)
 │   ├── migrate.ts        # D1 마이그레이션 (14개 테이블)
@@ -218,6 +218,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 ### 프론트엔드 관련
 <!-- 실수 발생 시 아래에 추가 -->
+- [2026-03-11] 아카이브 모듈 탭 재진입 시 DB 새로고침 필수: `_showArchiveModule()`에서 `_archiveModuleActive`가 true이면 `init()`을 건너뛰고 `navigate('dashboard')`만 호출하는데, `navigate()`는 화면만 바꾸고 DB 데이터를 다시 불러오지 않음. 반드시 `ArchiveModule.refresh()`를 호출하여 `DB.loadAll()` + `_buildTodayRecords()` + `render()` 실행해야 함. 모듈이 stateful 재진입을 지원할 때는 항상 데이터 새로고침 로직을 포함할 것
 - [2026-03-06] 모듈 임베드 시 CSS 셀렉터 스코프 불일치: Records 모듈을 `#records-container-tablet`에 마운트하면, 메인앱 `app.css`의 `#tablet-content .xxx` 셀렉터가 매칭되지 않아 레이아웃이 깨짐. 모듈을 별도 컨테이너에 넣을 때는 반드시 새 컨테이너 ID를 타겟하는 CSS 룰을 추가할 것. 미디어쿼리보다 ID 셀렉터 + `!important`가 확실. 코드만 보고 "완료" 선언하지 말고 반드시 브라우저에서 시각적 확인 필수
 - [2026-03-05] 모듈 init 시 파생 상태 빌드 누락: `state.timetable`을 저장했지만 `state.todayRecords`를 빌드하지 않아 "오늘은 수업이 없습니다" 표시. config 데이터를 state에 넣을 때, 그 데이터에서 파생되는 상태(todayRecords 등)도 반드시 init 시점에 빌드해야 함
 - [2026-03-05] class-record-edit vs class-record-detail 상태 키 차이: `class-record-detail`은 `state._viewingDbRecord` (DB id) 사용, `class-record-edit`는 `state._editingClassRecordIdx` (todayRecords 인덱스) + `todayRecords[idx]._dbRecordId` 사용. 수정 화면으로 이동 시 반드시 todayRecords에 DB 데이터를 로드하고 `_editingClassRecordIdx`를 설정해야 함
@@ -258,6 +259,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-04] `.dev.vars` 키 범위: 로컬 개발 시 `.dev.vars`에 필요한 API 키가 모두 있는지 확인. `callGeminiMultiImage`는 `GEMINI_API_KEY` + `OPENAI_API_KEY` 둘 다 필요 (Gemini 실패 시 OpenAI 폴백). 프로덕션은 `wrangler pages secret put`으로 별도 설정
 - [2026-03-04] git merge 충돌 해결: `src/index.tsx`와 `public/static/app.js`에서 충돌 발생 시, main의 에러 메시지/UI 문구는 main 채택, feature 브랜치의 신규 API/기능은 feature 채택. stash → merge → stash pop 순서로 안전하게 진행
+- [2026-03-11] **절대 규칙 — 배포는 반드시 `npm run deploy` 사용**: `wrangler pages deploy public` 직접 실행 금지! 이 프로젝트는 Vite 빌드(`vite build`)가 필수 — `public/`에는 `index.html`과 `_worker.js`가 없고, 빌드 후 `dist/`에 생성됨. `npm run deploy` = `vite build` + `wrangler pages deploy`가 올바른 배포 명령. 빌드 없이 `public/`을 직접 배포하면 사이트 전체 404 발생 (프로덕션 장애)
 
 
 ---
@@ -266,8 +268,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 | 역할 | 정보 |
 |------|------|
-| 멘토 로그인 | ID: `jycc_admin` / PW: `jycc2026` |
-| 초대코드 | `JYCC-X2Z8-2ND7` |
+| 
 | 학생 로그인 | 이름: `곽정율` / PW: `1234` |
 
 ---

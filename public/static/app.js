@@ -219,8 +219,9 @@ function _showArchiveModule(isTablet) {
     });
     _archiveModuleActive = true;
   } else if (_archiveModuleActive && window.ArchiveModule) {
-    // 이미 init된 상태에서 다시 진입 — dashboard로 이동 + 리렌더
+    // 이미 init된 상태에서 다시 진입 — DB 새로고침 후 dashboard로 이동
     window.ArchiveModule.navigate('dashboard');
+    window.ArchiveModule.refresh();
   }
 }
 

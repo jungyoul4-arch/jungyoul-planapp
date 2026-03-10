@@ -311,6 +311,7 @@ const ArchiveModule = {
   async refresh() {
     if (state.studentId) {
       await DB.loadAll();
+      _buildTodayRecords();
       events.emit(EVENTS.DATA_LOADED);
       render();
     }
