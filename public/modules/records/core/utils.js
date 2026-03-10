@@ -188,3 +188,65 @@ export function getAssignmentDisplayText(assignment) {
   }
   return '';
 }
+
+// === 토스트 알림 ===
+export function showToast(icon, message, duration = 3000) {
+  const existing = document.querySelector('.toast-notification');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast-notification';
+  toast.innerHTML = `<span class="toast-icon">${icon}</span><span>${message}</span>`;
+
+  // .archive-module 컨테이너 안에 추가
+  const container = document.querySelector('.archive-module') || document.body;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// === 스켈레톤 HTML 생성 ===
+export function skeletonCards(count = 3) {
+  return Array.from({ length: count }, () => `
+    <div class="skeleton-card">
+      <div class="skeleton skeleton-thumb"></div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <div class="skeleton skeleton-chip"></div>
+        <div class="skeleton skeleton-chip" style="width:40px"></div>
+      </div>
+      <div class="skeleton skeleton-text long"></div>
+      <div class="skeleton skeleton-text medium"></div>
+      <div class="skeleton skeleton-text short"></div>
+    </div>
+  `).join('');
+}
+
+export function skeletonDetail() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" disabled><i class="fas fa-arrow-left"></i></button>
+        <div class="skeleton skeleton-text medium" style="height:20px;margin:0"></div>
+      </div>
+      <div class="form-body">
+        <div class="skeleton-card" style="border-left:4px solid rgba(255,255,255,0.1)">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="skeleton skeleton-circle"></div>
+            <div style="flex:1">
+              <div class="skeleton skeleton-text medium" style="height:18px"></div>
+              <div class="skeleton skeleton-text short" style="height:12px"></div>
+            </div>
+          </div>
+        </div>
+        <div class="skeleton skeleton-text long" style="height:16px;margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium" style="height:14px"></div>
+        <div class="skeleton skeleton-thumb" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text long" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+    </div>`;
+}

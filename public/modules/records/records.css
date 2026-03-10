@@ -3070,3 +3070,136 @@
   transition: all 0.15s;
 }
 .archive-module .aha-add-float-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+
+
+/* ================================================================
+   UX 개선: 스켈레톤 로딩 + 업로드 오버레이 + 토스트
+   ================================================================ */
+
+/* === 스켈레톤 로딩 === */
+@keyframes rm-skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.archive-module .skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 200% 100%;
+  animation: rm-skeleton-shimmer 1.5s infinite ease-in-out;
+  border-radius: 8px;
+}
+.archive-module .skeleton-text {
+  height: 14px; margin-bottom: 8px; border-radius: 4px;
+}
+.archive-module .skeleton-text.short { width: 40%; }
+.archive-module .skeleton-text.medium { width: 65%; }
+.archive-module .skeleton-text.long { width: 90%; }
+.archive-module .skeleton-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.archive-module .skeleton-thumb {
+  width: 100%; aspect-ratio: 16/9;
+  border-radius: 10px; margin-bottom: 12px;
+}
+.archive-module .skeleton-chip {
+  display: inline-block; width: 56px; height: 24px;
+  border-radius: 12px; margin-right: 6px;
+}
+.archive-module .skeleton-circle {
+  width: 44px; height: 44px; border-radius: 12px;
+}
+
+/* 스켈레톤 카드 그리드 (class-history) */
+.archive-module .skeleton-grid {
+  display: flex; flex-direction: column; gap: 12px; padding: 0 16px;
+}
+
+/* === 사진 업로드 오버레이 === */
+.archive-module .pu-photo-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  border-radius: inherit; z-index: 2;
+  transition: opacity 0.3s;
+}
+.archive-module .pu-photo-spinner {
+  width: 28px; height: 28px;
+  border: 3px solid rgba(255,255,255,0.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: rm-spin 0.7s linear infinite;
+}
+@keyframes rm-spin {
+  to { transform: rotate(360deg); }
+}
+.archive-module .pu-photo-status {
+  font-size: 11px; color: rgba(255,255,255,0.9);
+  margin-top: 6px; font-weight: 600;
+}
+.archive-module .pu-photo-done-icon {
+  font-size: 28px; animation: rm-pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes rm-pop-in {
+  0% { transform: scale(0); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* 저장 버튼 진행 상태 */
+.archive-module .cl-save-btn.saving {
+  position: relative; pointer-events: none; opacity: 0.85;
+}
+.archive-module .cl-save-btn.saving::after {
+  content: ''; position: absolute; left: 0; bottom: 0;
+  height: 3px; background: rgba(255,255,255,0.5);
+  border-radius: 0 0 8px 8px;
+  animation: rm-save-progress 3s ease-out forwards;
+}
+@keyframes rm-save-progress {
+  0% { width: 0%; }
+  60% { width: 70%; }
+  100% { width: 95%; }
+}
+
+/* === 토스트 알림 === */
+.archive-module .toast-notification {
+  position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: rgba(22,27,34,0.95); border: 1px solid var(--border-light);
+  border-radius: 14px; padding: 12px 20px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  z-index: 9999; opacity: 0;
+  animation: rm-toast-in 0.4s 0.1s forwards cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.archive-module .toast-notification.toast-out {
+  animation: rm-toast-out 0.3s forwards ease-in;
+}
+@keyframes rm-toast-in {
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes rm-toast-out {
+  to { opacity: 0; transform: translateX(-50%) translateY(20px); }
+}
+.archive-module .toast-icon {
+  font-size: 20px; flex-shrink: 0;
+}
+
+/* === 사진 로딩 플레이스홀더 (detail) === */
+.archive-module .detail-photo-loading {
+  width: 85%; aspect-ratio: 4/3; flex-shrink: 0;
+  border-radius: 14px; scroll-snap-align: center;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: rgba(30,34,40,0.5); border: 1px solid var(--border);
+}
+.archive-module .detail-photo-loading .pu-photo-spinner {
+  width: 32px; height: 32px;
+}
+.archive-module .detail-photo-loading-text {
+  font-size: 12px; color: var(--text-muted);
+  margin-top: 8px; font-weight: 500;
+}

@@ -1982,6 +1982,19 @@ app.post('/api/student/:studentId/class-records', async (c) => {
   }
 });
 
+// 수업 기록 삭제
+app.delete('/api/student/class-records/:recordId', async (c) => {
+  try {
+    const recordId = c.req.param('recordId')
+    // 관련 사진도 삭제
+    await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(recordId).run()
+    await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(recordId).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // 수업 기록 수정
 app.put('/api/student/class-records/:recordId', async (c) => {
   try {
@@ -3451,6 +3464,28 @@ app.get('/api/seed-test-data', async (c) => {
   } catch (e: any) {
     console.error('Seed error:', e);
     return c.json({ error: e.message, stack: e.stack }, 500);
+  }
+});
+
+// 임시: 중복 수업기록 정리 (GET으로 호출 가능)
+app.get('/api/admin/cleanup-duplicate-records', async (c) => {
+  try {
+    // 같은 student_id + date + subject 조합에서 가장 높은 id만 남기고 삭제
+    const dupes = await c.env.DB.prepare(`
+      SELECT id FROM class_records
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM class_records GROUP BY student_id, date, subject
+      )
+    `).all()
+    const ids = (dupes.results as any[]).map((r: any) => r.id)
+    if (ids.length === 0) return c.json({ success: true, message: 'No duplicates found', deleted: 0 })
+    for (const id of ids) {
+      await c.env.DB.prepare('DELETE FROM class_record_photos WHERE class_record_id = ?').bind(id).run()
+      await c.env.DB.prepare('DELETE FROM class_records WHERE id = ?').bind(id).run()
+    }
+    return c.json({ success: true, deleted: ids.length, deletedIds: ids })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
   }
 });
 

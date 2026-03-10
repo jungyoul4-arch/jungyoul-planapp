@@ -62,30 +62,36 @@ export function registerHandlers(RM) {
 }
 
 function _rebuildRecordsForDate(dateStr) {
-  const dt = new Date(dateStr + 'T00:00:00+09:00');
-  let dayIdx = dt.getDay() - 1; // 0=월 ~ 4=금
+  const dt = new Date(dateStr + 'T00:00:00Z');
+  const jsDay = dt.getUTCDay();
+  const dayIdx = jsDay === 0 ? -1 : jsDay - 1; // 0=월 ~ 4=금
   if (dayIdx < 0 || dayIdx > 4) {
     state.todayRecords = [];
     return;
   }
   const tt = state.timetable || {};
-  const daySchedule = (tt.school || [])[dayIdx] || [];
+  const school = tt.school || [];
   const dbRecords = state._dbClassRecords || [];
+  const newRecords = [];
 
-  state.todayRecords = daySchedule.map((subject, i) => {
+  // school[교시][요일] 형태: school[pi][dayIdx] = 해당 교시의 해당 요일 과목
+  for (let pi = 0; pi < school.length; pi++) {
+    const subject = (school[pi] || [])[dayIdx];
+    if (!subject) continue;
     const existing = dbRecords.find(r => r.date === dateStr && r.subject === subject);
-    return {
-      period: i + 1,
-      subject: subject,
+    newRecords.push({
+      period: pi + 1,
+      subject,
       teacher: (tt.teachers || {})[subject] || '',
       color: (tt.subjectColors || {})[subject] || '#636e72',
-      startTime: (tt.periodTimes || [])[i]?.start || '',
-      endTime: (tt.periodTimes || [])[i]?.end || '',
+      startTime: (tt.periodTimes || [])[pi]?.start || '',
+      endTime: (tt.periodTimes || [])[pi]?.end || '',
       done: !!existing,
       summary: existing ? (existing.topic || existing.content || '수업 기록 완료') : '',
       _dbRecordId: existing ? existing.id : null,
-    };
-  });
+    });
+  }
+  state.todayRecords = newRecords;
 }
 
 function _getActiveRecords() {
