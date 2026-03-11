@@ -12899,21 +12899,34 @@ function renderCommunityTab() {
 
 let _growthAhaLoading = false;
 async function loadGrowthAhaClasses() {
-  if (_growthAhaLoading || (state._growthAhaClasses && state._growthAhaClasses.length > 0)) return;
+  console.log('[GrowthAha] loadGrowthAhaClasses called, loading:', _growthAhaLoading, 'classes:', state._growthAhaClasses);
+  if (_growthAhaLoading) return;
+  // 이미 로드된 데이터가 있으면 스킵 (null이면 아직 로드 안 됨, []면 로드했지만 데이터 없음)
+  if (state._growthAhaClasses !== null && state._growthAhaClasses.length > 0) return;
   _growthAhaLoading = true;
   state._growthAhaClasses = null; // 로딩 상태
   renderScreen();
   try {
     const extId = state._externalUserId || state._authUser?.external_user_id;
-    if (!extId) { state._growthAhaClasses = []; renderScreen(); _growthAhaLoading = false; return; }
+    console.log('[GrowthAha] extId:', extId);
+    if (!extId) {
+      console.log('[GrowthAha] No extId, setting empty array');
+      state._growthAhaClasses = [];
+      _growthAhaLoading = false;
+      renderScreen();
+      return;
+    }
+    console.log('[GrowthAha] Fetching classes...');
     const res = await fetch(`/api/student/classes?user_id=${extId}`);
     const data = await res.json();
+    console.log('[GrowthAha] API response:', data);
     state._growthAhaClasses = data.success ? (data.classes || []) : [];
   } catch (e) {
     console.error('[GrowthAha] Failed to load classes:', e);
     state._growthAhaClasses = [];
   }
   _growthAhaLoading = false;
+  console.log('[GrowthAha] Load complete, classes:', state._growthAhaClasses);
   renderScreen();
 }
 
