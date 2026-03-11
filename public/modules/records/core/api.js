@@ -266,6 +266,9 @@ export const DB = {
         const data = await res.json();
         return data.data || data;
       }
+      // 서버 에러 응답 처리
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `AI 서버 오류 (${res.status})`);
     } catch (e) {
       if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (90초)');
       console.error('analyzePhotos:', e);
@@ -273,7 +276,6 @@ export const DB = {
     } finally {
       clearTimeout(timer);
     }
-    return null;
   },
 
   // === 질문 코칭 기록 ===

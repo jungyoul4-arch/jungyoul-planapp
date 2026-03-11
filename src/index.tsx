@@ -297,7 +297,7 @@ async function callGeminiMultiImage(opts: {
   // STEP 2 폴백A: Gemini 자체 분석 (OCR 텍스트 있으면 텍스트만, 없으면 이미지 포함)
   try {
     if (ocrSuccess) {
-      console.log('[분석] Gemini 텍스트 분석 폴백')
+      console.log('[분석] Gemini 텍스트 분석 시도')
       const textPrompt = prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
       const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
@@ -308,19 +308,25 @@ async function callGeminiMultiImage(opts: {
             contents: [{ parts: [{ text: textPrompt }] }],
             generationConfig: {
               temperature,
-              ...(jsonMode ? { responseMimeType: 'application/json' } : { maxOutputTokens: 8192 })
+              maxOutputTokens: 8192,
+              ...(jsonMode ? { responseMimeType: 'application/json' } : {})
             }
           })
-        }
+        },
+        60000 // 60초
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+        console.log('[분석] Gemini 텍스트 분석 성공')
         return { text, source: `${GEMINI_MODEL}-fallback` }
       }
+      const errBody = await geminiRes.text().catch(() => 'unknown')
+      geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
+      console.log(`[분석] Gemini 텍스트 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
     } else {
       // OCR도 실패: 이미지 직접 전송
-      console.log('[분석] Gemini 이미지 직접 분석 폴백')
+      console.log('[분석] Gemini 이미지 직접 분석 시도')
       const parts: any[] = [{ text: prompt }]
       for (const img of images) {
         parts.push({ inline_data: img })
@@ -334,19 +340,23 @@ async function callGeminiMultiImage(opts: {
             contents: [{ parts }],
             generationConfig: {
               temperature,
-              ...(jsonMode ? { responseMimeType: 'application/json' } : { maxOutputTokens: 4096 })
+              maxOutputTokens: 8192,
+              ...(jsonMode ? { responseMimeType: 'application/json' } : {})
             }
           })
-        }
+        },
+        60000
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
         return { text, source: GEMINI_MODEL }
       }
+      const errBody = await geminiRes.text().catch(() => 'unknown')
+      geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
+      console.log(`[분석] Gemini 이미지 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
     }
-    geminiAnalysisError = `${GEMINI_MODEL} 분석 실패`
-    console.log(`${GEMINI_MODEL} 분석 실패, Claude로 폴백`)
+    console.log(`Gemini 분석 실패: ${geminiAnalysisError}`)
   } catch (e: any) {
     geminiAnalysisError = `${GEMINI_MODEL} error: ${e.message}`
     console.log(`${GEMINI_MODEL} 에러, Claude로 폴백:`, e)
@@ -757,8 +767,9 @@ app.post('/api/ai/credit-log', async (c) => {
       }
 
       return c.json({ success: true, data: result })
-    } catch {
-      return c.json({ success: true, data: { rawOcrText: text, topic: '', pages: '', highlights: '', seteuk_questions: [], exam_questions: [], keywords: [], assignment: null, summary: '', teacher_insight: '' } })
+    } catch (parseErr: any) {
+      console.error('credit-log JSON parse error:', parseErr, 'raw text:', text?.substring(0, 500))
+      return c.json({ success: false, error: `AI 응답 파싱 실패: ${text?.substring(0, 100) || 'empty'}` }, 500)
     }
   } catch (e: any) {
     console.error('credit-log AI error:', e)

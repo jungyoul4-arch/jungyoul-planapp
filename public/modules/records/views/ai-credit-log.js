@@ -86,9 +86,13 @@ async function runAnalysis() {
     console.error('AI analysis failed:', e);
     state._aiAnalyzing = false;
     state._aiAnalysisStep = 'error';
-    state._aiErrorMsg = e.message?.includes('시간 초과')
-      ? '분석 시간이 초과되었어요. 다시 시도해주세요.'
-      : '네트워크 오류가 발생했어요. 인터넷 연결을 확인해주세요.';
+    if (e.message?.includes('시간 초과')) {
+      state._aiErrorMsg = '분석 시간이 초과되었어요. 다시 시도해주세요.';
+    } else if (e.message?.includes('AI 서버') || e.message?.includes('AI 응답') || e.message?.includes('모든 AI')) {
+      state._aiErrorMsg = e.message;
+    } else {
+      state._aiErrorMsg = '네트워크 오류가 발생했어요. 인터넷 연결을 확인해주세요.';
+    }
     navigate(state.currentScreen, { replace: true });
   }
 }
@@ -169,9 +173,20 @@ async function saveCreditLog() {
       ai_credit_log: log, photo_tags: normalizedTags,
     });
 
-    // 2단계: 낙관적 UI — 즉시 todayRecords 업데이트 + 대시보드 이동
+    // DB 저장 실패 시 에러 표시 + 현재 화면 유지
+    if (!recordId) {
+      state._savingCreditLog = false;
+      if (saveBtn) {
+        saveBtn.classList.remove('saving');
+        saveBtn.textContent = '기록 완료 +15 XP ✨';
+      }
+      showToast('⚠️', '기록 저장에 실패했습니다. 다시 시도해주세요.');
+      return;
+    }
+
+    // 2단계: DB 저장 성공 확인 후 todayRecords 업데이트 + 대시보드 이동
     record.done = true;
-    record._dbRecordId = recordId || null;
+    record._dbRecordId = recordId;
     record.summary = log.topic || log.keywords?.join(', ') || '수업 기록 완료';
 
     if (state.missions && state.missions[0]) {
