@@ -236,15 +236,16 @@ const ArchiveModule = {
 
     setContainer(el);
 
-    // 상태 초기화
+    // 상태 초기화 — initialScreen이 지정되면 dashboard 대신 해당 화면으로 시작
+    const startScreen = config.initialScreen || 'dashboard';
     setState({
       studentId: studentId || null,
       studentName: studentName || '',
       timetable: timetable || state.timetable,
       classmates: classmates || [],
       standalone: !!standalone,
-      currentScreen: 'dashboard',
-      _screenHistory: [],
+      currentScreen: startScreen,
+      _screenHistory: startScreen !== 'dashboard' ? ['dashboard'] : [],
     });
 
     // 화면 등록
@@ -270,21 +271,49 @@ const ArchiveModule = {
     initCarousel();
     initDetailGalleryScroll();
 
+    // 메인 앱에서 전달받은 DB 데이터가 있으면 state에 직접 주입 (API 중복 호출 제거)
+    const preloaded = config.preloadedData;
+    if (preloaded) {
+      state._dbClassRecords = preloaded.classRecords || [];
+      state._dbQuestionRecords = preloaded.questionRecords || [];
+      state._dbTeachRecords = preloaded.teachRecords || [];
+      state._dbActivityRecords = preloaded.activityRecords || [];
+      state._dbReportRecords = preloaded.reportRecords || [];
+    }
+
     // 오늘의 시간표 → todayRecords 빌드
     _buildTodayRecords();
 
     // 데이터 로드
+    const skipRender = !!config.skipInitialRender;
     if (studentId) {
-      DB.loadAll().then(() => {
-        // DB 로드 후 todayRecords done 상태 복원
-        _buildTodayRecords();
-        events.emit(EVENTS.DATA_LOADED);
-        render();
-      }).catch(err => {
-        console.error('[ArchiveModule] loadAll failed:', err);
-        render();
-      });
+      if (preloaded) {
+        // 메인 앱 데이터를 이미 주입했으므로 DB 호출 스킵 — 아카이브 전용 데이터만 로드
+        ArchiveModule._initReady = Promise.all([
+          DB.loadMyQuestions(),
+          DB.loadMyQuestionStats(),
+          DB.loadAhaReports(),
+        ]).then(() => {
+          _buildTodayRecords();
+          events.emit(EVENTS.DATA_LOADED);
+          if (!skipRender) render();
+        }).catch(err => {
+          console.error('[ArchiveModule] partial load failed:', err);
+          if (!skipRender) render();
+        });
+      } else {
+        // standalone 모드 등: 전체 DB 로드
+        ArchiveModule._initReady = DB.loadAll().then(() => {
+          _buildTodayRecords();
+          events.emit(EVENTS.DATA_LOADED);
+          if (!skipRender) render();
+        }).catch(err => {
+          console.error('[ArchiveModule] loadAll failed:', err);
+          if (!skipRender) render();
+        });
+      }
     } else {
+      ArchiveModule._initReady = Promise.resolve();
       render();
     }
 
@@ -307,13 +336,31 @@ const ArchiveModule = {
     navigate(screen, opts);
   },
 
-  /** API 데이터 새로고침 */
-  async refresh() {
+  /** API 데이터 새로고침
+   * @param {Object} opts
+   * @param {boolean} opts.skipRender - true면 데이터만 갱신하고 render 생략 (직후 navigate 예정 시)
+   * @param {Object} opts.preloadedData - 메인 앱 DB 데이터 주입 (API 중복 호출 방지)
+   */
+  async refresh({ skipRender = false, preloadedData } = {}) {
     if (state.studentId) {
-      await DB.loadAll();
+      if (preloadedData) {
+        // 메인 앱 데이터 주입 → 아카이브 전용 데이터만 로드
+        state._dbClassRecords = preloadedData.classRecords || [];
+        state._dbQuestionRecords = preloadedData.questionRecords || [];
+        state._dbTeachRecords = preloadedData.teachRecords || [];
+        state._dbActivityRecords = preloadedData.activityRecords || [];
+        state._dbReportRecords = preloadedData.reportRecords || [];
+        await Promise.all([
+          DB.loadMyQuestions(),
+          DB.loadMyQuestionStats(),
+          DB.loadAhaReports(),
+        ]);
+      } else {
+        await DB.loadAll();
+      }
       _buildTodayRecords();
       events.emit(EVENTS.DATA_LOADED);
-      render();
+      if (!skipRender) render();
     }
   },
 

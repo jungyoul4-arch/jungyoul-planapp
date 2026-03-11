@@ -9,6 +9,36 @@ function escapeHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 
+// ==================== XSS-safe onclick 래퍼 ====================
+function startBackfillRecordFromData(el) {
+  startBackfillRecord(el.dataset.backfillDate, parseInt(el.dataset.backfillPeriod), el.dataset.backfillSubject);
+}
+function viewRecordFromData(el) {
+  state._viewingDbRecord = el.dataset.recordId;
+  goScreen('class-record-detail');
+}
+function viewRecordFromGallery(el) {
+  if (el.dataset.recordSource === 'today') {
+    state._viewingTodayRecordIdx = parseInt(el.dataset.recordTodayIdx);
+  } else {
+    state._viewingDbRecord = el.dataset.recordId;
+  }
+  goScreen('class-record-detail');
+}
+function setRecordGalleryFilter(el) {
+  state._recordGalleryFilter = el.dataset.galleryFilter;
+  renderScreen();
+}
+function pickPeriodSubjectFromData(el) {
+  pickPeriodSubject(el.dataset.periodSubject);
+}
+function openGrowthAhaReportFromData(el) {
+  openGrowthAhaReport(parseInt(el.dataset.ahaClassId), el.dataset.ahaClassName);
+}
+function ttRemoveSubjectFromData(el) {
+  ttRemoveSubject(el.dataset.ttRemoveSubject);
+}
+
 // ==================== 토스트 알림 ====================
 function showToast(msg, type = 'info') {
   const existing = document.getElementById('app-toast');
@@ -213,7 +243,7 @@ function getDevicePreviewClass() {
 // ==================== Archive Module 통합 ====================
 let _archiveModuleActive = false;
 
-function _showArchiveModule(isTablet) {
+function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender = false } = {}) {
   const containerId = isTablet ? 'archive-container-tablet' : 'archive-container-phone';
   const contentId = isTablet ? 'tablet-content' : 'app-content';
   const recEl = document.getElementById(containerId);
@@ -230,12 +260,31 @@ function _showArchiveModule(isTablet) {
       studentName: state._authUser?.name || '',
       timetable: state.timetable || {},
       classmates: state.classmates || [],
+      skipInitialRender: skipInitialRender,
+      // 메인 앱에서 이미 로드한 DB 데이터 전달 → 아카이브 모듈의 중복 API 호출 제거
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+        exams: state.exams || [],
+        assignments: state._dbAssignments || [],
+      },
     });
     _archiveModuleActive = true;
-  } else if (_archiveModuleActive && window.ArchiveModule) {
-    // 이미 init된 상태에서 다시 진입 — DB 새로고침 후 dashboard로 이동
+  } else if (_archiveModuleActive && window.ArchiveModule && !skipRefresh) {
+    // 이미 init된 상태에서 다시 진입 — 메인 앱 데이터 주입 + dashboard로 이동
     window.ArchiveModule.navigate('dashboard');
-    window.ArchiveModule.refresh();
+    window.ArchiveModule.refresh({
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+      },
+    });
   }
 }
 
@@ -251,38 +300,61 @@ function _hideArchiveModule() {
   if (tabletContent) tabletContent.style.display = '';
   // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
   // 아카이브에서 홈으로 돌아올 때 DB 기록 반영하여 시간표 done 상태 갱신
+  // 먼저 즉시 렌더 → 백그라운드로 DB 갱신 (깜빡임 방지)
   if (_archiveModuleActive && state._authUser?.id && !_hidingArchive) {
     _hidingArchive = true;
     DB.loadClassRecords().then(() => {
       syncTodayRecords();
       _hidingArchive = false;
+      // 데이터 변경이 있을 때만 다시 렌더
       renderScreen();
     }).catch(() => { _hidingArchive = false; });
   }
 }
 
 // ==================== 홈 → 아카이브 기록 플로우 브릿지 ====================
+// 브릿지 진행 중 플래그 — renderScreen 내부에서 _showArchiveModule 재호출 방지
+let _bridgeInProgress = false;
+
 // 아카이브 모듈이 준비될 때까지 대기 후 콜백 실행
 function _waitForArchiveReady(callback) {
   const wasActive = _archiveModuleActive;
-  const isTablet = window.innerWidth >= 768;
-  
+  // isNativeMode()일 때는 항상 tabletContainer 사용 (모바일 폰 포함)
+  const isTablet = isNativeMode();
+
   state.studentTab = 'archive';
   state.currentScreen = 'main';
-  _showArchiveModule(isTablet);
+  // 브릿지에서 직접 _showArchiveModule을 호출하므로, renderScreen 내부 재호출 차단
+  // ★ renderScreen()은 requestAnimationFrame으로 비동기 실행되므로,
+  //    _bridgeInProgress는 여기서 리셋하지 않고 _renderScreenImpl 안에서 리셋
+  _bridgeInProgress = true;
+  _showArchiveModule(isTablet, { skipRefresh: wasActive, skipInitialRender: !wasActive });
   renderScreen();
-  
+
   if (wasActive && window._RM) {
-    // 이미 활성화됨 → 약간의 딜레이 후 실행 (DOM 업데이트 대기)
-    setTimeout(() => { if (window._RM) callback(); }, 50);
+    // 이미 활성화됨 → 메인 앱 데이터 주입 후 콜백 실행 (API 중복 호출 방지)
+    window.ArchiveModule.refresh({
+      skipRender: true,
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+      },
+    }).then(() => {
+      callback();
+    });
   } else {
-    // 처음 초기화 → DB 로딩 완료까지 대기 (최대 3초)
+    // 처음 초기화 → _RM 준비 + DB 로딩 완료까지 대기 (최대 3초)
     let tries = 0;
     const check = setInterval(() => {
       tries++;
       if (window._RM) {
         clearInterval(check);
-        callback();
+        // DB 로딩 완료까지 대기한 후 콜백 실행 (빈 화면 깜빡임 방지)
+        const ready = window.ArchiveModule?._initReady || Promise.resolve();
+        ready.then(() => callback());
       } else if (tries > 30) {
         clearInterval(check);
         console.warn('[Bridge] ArchiveModule not ready after 3s');
@@ -316,6 +388,7 @@ let _renderTimer = null;
 let _renderForced = false;
 // 이전 렌더링 상태 추적 - 같은 화면이면 innerHTML 교체 스킵
 let _lastRenderedKey = '';
+
 function renderScreen(force) {
   if (force) { _renderForced = true; }
   if (_renderTimer) cancelAnimationFrame(_renderTimer);
@@ -327,13 +400,22 @@ function renderScreen(force) {
   });
 }
 function _renderScreenImpl(forced) {
-  // 초기 로딩 인디케이터 제거
-  const _il = document.getElementById('initial-loader');
-  const _ilt = document.getElementById('initial-loader-tablet');
-  const _ild = document.getElementById('initial-loader-desktop');
-  if (_il) _il.remove();
-  if (_ilt) _ilt.remove();
-  if (_ild) _ild.remove();
+  // 브릿지 진행 중 플래그: _showArchiveModule 중복 호출 방지에 사용된 후 여기서 리셋
+  // (renderScreen은 requestAnimationFrame 비동기이므로 호출부에서 리셋하면 안됨)
+  const wasBridge = _bridgeInProgress;
+  _bridgeInProgress = false;
+
+  // 자동 로그인 데이터 로딩 중이면 렌더 스킵 → initial-loader가 계속 표시됨
+  if (_autoLoginDataLoading) return;
+
+  // 초기 로딩 인디케이터 페이드아웃 제거
+  ['initial-loader', 'initial-loader-tablet', 'initial-loader-desktop'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.opacity = '0';
+      setTimeout(() => el.remove(), 300);
+    }
+  });
 
   // renderScreen 전에 질문 입력 내용 보존
   const prevQuestionInput = document.getElementById('question-input');
@@ -410,40 +492,22 @@ function _renderScreenImpl(forced) {
         } else {
           sidebarEl.style.display = 'flex';
           sidebarEl.innerHTML = renderSidebar();
-          // 사이드바 네비 이벤트
-          sidebarEl.querySelectorAll('.sidebar-nav-item').forEach(btn => {
-            btn.addEventListener('click', () => {
-              const tab = btn.dataset.tab;
-              if (tab === 'myqa') {
-                openMyQaIframe();
-                return;
-              }
-              if (tab === 'community') {
-                openCommunityNewTab();
-                return;
-              }
-              state._communityOpened = false;
-              // 이미 아카이브 탭인 상태에서 아카이브 클릭 → 대시보드로 복귀
-              if (tab === 'archive' && state.studentTab === 'archive' && _archiveModuleActive && window.ArchiveModule) {
-                window.ArchiveModule.navigate('dashboard');
-                return;
-              }
-              state.studentTab = tab;
-              state.currentScreen = 'main';
-              renderScreen();
-            });
-          });
+          // 사이드바 네비 이벤트 → document 레벨 위임 (1회만 등록)
         }
       }
       // Records 모듈 탭 전환
+      // wasBridge=true면 브릿지가 이미 _showArchiveModule을 호출했으므로 중복 호출 방지
       if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
-        _showArchiveModule(true);
+        if (!wasBridge) _showArchiveModule(true);
         initMobileBottomTab();
       } else {
         _hideArchiveModule();
-        tabletContent.innerHTML = renderStudentApp();
-        initStudentEvents(tabletContent);
-        initAuthEvents(tabletContent);
+        // 깜빡임 방지: skipFullRender일 때 DOM 교체 스킵
+        if (!skipFullRender) {
+          tabletContent.innerHTML = renderStudentApp();
+          initStudentEvents(tabletContent);
+          initAuthEvents(tabletContent);
+        }
         initMobileBottomTab();
         setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
         setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); loadGrowthAhaClasses(); } }, 100);
@@ -463,13 +527,17 @@ function _renderScreenImpl(forced) {
       phoneContainer.style.display = 'flex';
       tabletContainer.style.display = 'none';
       // Records 모듈 탭 전환
+      // wasBridge=true면 브릿지가 이미 _showArchiveModule을 호출했으므로 중복 호출 방지
       if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
-        _showArchiveModule(false);
+        if (!wasBridge) _showArchiveModule(false);
       } else {
         _hideArchiveModule();
-        container.innerHTML = renderStudentApp();
-        initStudentEvents(container);
-        initAuthEvents(container);
+        // 깜빡임 방지: skipFullRender일 때 DOM 교체 스킵
+        if (!skipFullRender) {
+          container.innerHTML = renderStudentApp();
+          initStudentEvents(container);
+          initAuthEvents(container);
+        }
         setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
         setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); loadGrowthAhaClasses(); } }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
@@ -732,22 +800,7 @@ function initMobileBottomTab() {
   const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'timetable-onboarding' || state.currentScreen.startsWith('register') || state.currentScreen === 'login-mentor' || state.currentScreen === 'login-director';
   if (isAuthScreen) { el.innerHTML = ''; return; }
   el.innerHTML = renderMobileBottomTab();
-  el.querySelectorAll('.mob-tab-item').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tab = btn.dataset.tab;
-      if (tab === 'myqa') { openMyQaIframe(); return; }
-      if (tab === 'community') { openCommunityNewTab(); return; }
-      state._communityOpened = false;
-      // 이미 아카이브 탭인 상태에서 아카이브 클릭 → 대시보드로 복귀
-      if (tab === 'archive' && state.studentTab === 'archive' && _archiveModuleActive && window.ArchiveModule) {
-        window.ArchiveModule.navigate('dashboard');
-        return;
-      }
-      state.studentTab = tab;
-      state.currentScreen = 'main';
-      renderScreen();
-    });
-  });
+  // 이벤트 리스너는 document 레벨 위임으로 처리 (아래 _initDelegatedNavEvents)
 }
 
 function renderFab() {
@@ -1544,6 +1597,9 @@ async function externalLogin(userId, deviceMode) {
   }
 }
 
+// 자동 로그인 시 데이터 로딩 중 플래그 — true면 renderScreen이 initial-loader를 유지
+let _autoLoginDataLoading = false;
+
 function autoLogin() {
   try {
     const saved = localStorage.getItem('cp_auth');
@@ -1569,27 +1625,29 @@ function autoLogin() {
 
     // 서버에 프로필 검증 (비동기) - 실패 시 로그인 화면으로
     if (auth.role === 'student' && auth.user.id) {
-      fetch(`/api/student/${auth.user.id}/profile`).then(res => {
-        if (!res.ok) throw new Error('Profile check failed');
-        return res.json();
-      }).then(() => {
-        // 학기 데이터 확인 → 없으면 시간표 온보딩
-        return fetch(`/api/student/${auth.user.id}/semesters`).then(r => r.json()).then(sd => {
-          if (sd.success && (!sd.data || sd.data.length === 0)) {
-            state.currentScreen = 'timetable-onboarding';
-            state._ttOnboardingStep = 'intro';
-            renderScreen();
-            return;
-          }
-        }).catch(() => {});
-      }).then(() => {
-        if (state.currentScreen === 'timetable-onboarding') return;
-        DB.loadAll().then(() => refreshDataWidgets());
+      // 핵심 데이터 로딩 전까지 renderScreen 차단 → initial-loader 유지 (깜빡임 방지)
+      _autoLoginDataLoading = true;
+      // 학기 데이터 확인 + DB 전체 로드를 한 번에 실행 (API 중복 호출 제거)
+      Promise.all([
+        fetch(`/api/student/${auth.user.id}/semesters`).then(r => r.json()).catch(() => null),
+        DB.loadAll(),
+      ]).then(([semData]) => {
+        // 학기 없으면 시간표 온보딩
+        if (semData?.success && (!semData.data || semData.data.length === 0)) {
+          state.currentScreen = 'timetable-onboarding';
+          state._ttOnboardingStep = 'intro';
+          _autoLoginDataLoading = false;
+          renderScreen();
+          return;
+        }
+        refreshDataWidgets();
+        _autoLoginDataLoading = false;
+        renderScreen();
         startClassEndChecker();
         startAutoSync();
       }).catch(() => {
-        // 서버 검증 실패 → 로그아웃
-        console.log('Auto-login verification failed, logging out');
+        // DB 로드 실패 (profile 404 등) → 로그아웃
+        console.log('Auto-login data load failed, logging out');
         localStorage.removeItem('cp_auth');
         state._authUser = null;
         state._authToken = null;
@@ -1597,6 +1655,7 @@ function autoLogin() {
         state._authGroup = null;
         state._loginError = '';
         state.currentScreen = 'login';
+        _autoLoginDataLoading = false;
         renderScreen();
       });
     } else if (auth.role === 'mentor') {
@@ -1714,29 +1773,27 @@ const DB = {
     if (!sid) return;
     try {
       // DB 마이그레이션은 배포 시 1회만 실행 (매 로딩마다 호출하면 40초+ 지연)
-      // 즉시 필요한 데이터만 먼저 로딩 (홈탭 + 기록탭)
+      // 홈 화면에 필요한 데이터를 모두 한 번에 로딩 (시험 포함 — 홈에 시험 카드 표시)
       await Promise.all([
         this.loadProfile(),
         this.loadClassRecords(),
         this.loadAssignments(),
         this.loadMentorFeedbacks(),
         this.loadTimetable(),
+        this.loadExams(),
       ]);
       // 시간표 + DB 기록 모두 로드 완료 → done 상태 동기화
       syncTodayRecords();
       // 즉시 UI 갱신 (프로필 XP/레벨 + 수업기록 반영)
       try { refreshDataWidgets(); } catch(_){}
-      // 나머지는 백그라운드에서 지연 로딩
+      // 나머지는 백그라운드에서 지연 로딩 (홈 화면에 직접 표시 안 되는 것들)
       Promise.all([
-        this.loadExams(),
         this.loadQuestionRecords(),
         this.loadTeachRecords(),
         this.loadActivityRecords(),
         this.loadReportRecords(),
       ]).then(() => {
         try { refreshDataWidgets(); } catch(_){}
-        // 모든 데이터 로드 완료 후 강제 화면 갱신 (skipFullRender 우회)
-        try { _lastRenderedKey = ''; renderScreen(); } catch(_){}
       }).catch(e => console.error('DB lazy load error:', e));
     } catch (e) {
       console.error('DB loadAll error:', e);
@@ -2815,8 +2872,9 @@ function renderRecordStatus() {
               <div class="rs-period-list">
                 ${day.periods.map(p => `
                   <div class="rs-period-cell ${p.recorded ? 'recorded' : ''} ${p.isFuture ? 'future' : ''} ${!p.recorded && !p.isFuture ? 'missed' : ''}"
-                       onclick="${!p.isFuture && !p.recorded ? `startBackfillRecord(&quot;${day.date}&quot;,${p.period},&quot;${p.subject}&quot;)` : ''}"
-                       title="${p.period}교시 ${p.subject}${p.teacher ? ' (' + p.teacher + ')' : ''}">
+                       data-backfill-date="${day.date}" data-backfill-period="${p.period}" data-backfill-subject="${escapeHtml(p.subject)}"
+                       onclick="${!p.isFuture && !p.recorded ? 'startBackfillRecordFromData(this)' : ''}"
+                       title="${p.period}교시 ${escapeHtml(p.subject)}${p.teacher ? ' (' + escapeHtml(p.teacher) + ')' : ''}">
                     <div class="rs-period-num">${p.period}</div>
                     <div class="rs-period-subject" style="color:${p.color}">${p.subject}</div>
                     <div class="rs-period-status">
@@ -2913,7 +2971,7 @@ function renderPhotoAlbum() {
       ` : `
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
           ${photosWithMeta.map(p => `
-            <div style="border-radius:10px;overflow:hidden;background:var(--bg-card);border:1px solid var(--border);cursor:pointer" onclick="state._viewingDbRecord='${p.recordId}';goScreen('class-record-detail')">
+            <div style="border-radius:10px;overflow:hidden;background:var(--bg-card);border:1px solid var(--border);cursor:pointer" data-record-id="${p.recordId}" onclick="viewRecordFromData(this)">
               <img src="${p.url}" style="width:100%;height:120px;object-fit:cover" onerror="this.style.display='none'" />
               <div style="padding:6px 8px">
                 <div style="font-size:11px;font-weight:600;color:var(--text-primary)">${p.subject}</div>
@@ -3015,7 +3073,7 @@ function renderClassRecordHistory() {
           ${filterSubjects.map(sub => {
             const isActive = sub === currentFilter;
             const chipColor = sub === '전체' ? 'var(--primary-light)' : (subjectColors[sub] || '#636e72');
-            return '<button class="record-filter-chip' + (isActive ? ' active' : '') + '" style="' + (isActive ? 'background:' + chipColor + ';color:#fff;border-color:' + chipColor : 'border-color:' + chipColor + '40;color:' + chipColor) + '" onclick="state._recordGalleryFilter=\'' + sub + '\';renderScreen()">' + sub + (sub !== '전체' ? ' <span class="record-filter-count">' + allRecords.filter(r => r.subject === sub).length + '</span>' : '') + '</button>';
+            return '<button class="record-filter-chip' + (isActive ? ' active' : '') + '" style="' + (isActive ? 'background:' + chipColor + ';color:#fff;border-color:' + chipColor : 'border-color:' + chipColor + '40;color:' + chipColor) + '" data-gallery-filter="' + escapeHtml(sub) + '" onclick="setRecordGalleryFilter(this)">' + sub + (sub !== '전체' ? ' <span class="record-filter-count">' + allRecords.filter(r => r.subject === sub).length + '</span>' : '') + '</button>';
           }).join('')}
         </div>
         ` : ''}
@@ -3045,13 +3103,13 @@ function renderClassRecordHistory() {
               const d = new Date(r.date);
               const dayNames = ['일','월','화','수','목','금','토'];
               const dateStr = (r.date || '').slice(5).replace('-','/') + ' (' + dayNames[d.getDay()] + ')';
-              const clickAction = r._source === 'today' 
-                ? "state._viewingTodayRecordIdx=" + r._todayIdx + ";goScreen('class-record-detail')"
-                : "state._viewingDbRecord='" + String(r.id) + "';goScreen('class-record-detail')";
+              const recordDataAttrs = r._source === 'today'
+                ? `data-record-source="today" data-record-today-idx="${r._todayIdx}"`
+                : `data-record-source="db" data-record-id="${String(r.id)}"`;
               const carouselId = 'rc-carousel-' + cardIdx;
               return `
               <div class="record-gallery-card">
-                <div class="record-gallery-thumb" style="border-bottom:3px solid ${color}" onclick="${clickAction}">
+                <div class="record-gallery-thumb" style="border-bottom:3px solid ${color}" ${recordDataAttrs} onclick="viewRecordFromGallery(this)">
                   ${photoCount > 1 ? `
                     <div class="rc-carousel" id="${carouselId}" data-idx="0" data-total="${photoCount}">
                       <div class="rc-carousel-track" style="width:${photoCount * 100}%;transform:translateX(0%)">
@@ -3068,7 +3126,7 @@ function renderClassRecordHistory() {
                     <div class="record-gallery-placeholder"><span style="font-size:36px">📝</span><span style="font-size:12px;color:var(--text-muted);margin-top:4px">사진 없음</span></div>
                   `}
                 </div>
-                <div class="record-gallery-info" onclick="${clickAction}">
+                <div class="record-gallery-info" ${recordDataAttrs} onclick="viewRecordFromGallery(this)">
                   <div class="record-gallery-subject">
                     <span class="record-gallery-subject-tag" style="background:${color}18;color:${color};border:1px solid ${color}35">${r.subject}</span>
                     ${memo.period ? '<span class="record-gallery-period">' + memo.period + '교시</span>' : ''}
@@ -7384,7 +7442,7 @@ function openPeriodPicker(date, period) {
   if (gridEl) {
     gridEl.innerHTML = examSubjects.map(s => {
       const c = _subjectColorMap[s] || '#888';
-      return `<button class="ea-pp-subj-btn" style="--subj-color:${c}" onclick="pickPeriodSubject('${s}')">${s}</button>`;
+      return `<button class="ea-pp-subj-btn" style="--subj-color:${c}" data-period-subject="${escapeHtml(s)}" onclick="pickPeriodSubjectFromData(this)">${s}</button>`;
     }).join('');
   }
 
@@ -12988,7 +13046,7 @@ function renderMyTab() {
           ${state._growthAhaClasses === null ? '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>' : 
             state._growthAhaClasses.length === 0 ? '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>' :
             state._growthAhaClasses.map(cls => `
-              <div class="my-menu-item" style="cursor:pointer" onclick="openGrowthAhaReport(${cls.class_id}, '${escapeHtml(cls.class_name)}')">
+              <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
                 <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
                   <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
                 </div>
@@ -14336,124 +14394,15 @@ function showXpPopup(amount, label, options) {
 // ==================== EVENT HANDLERS ====================
 
 function initStudentEvents(root) {
-  // FAB
+  // 대부분의 이벤트 리스너는 document 레벨 위임으로 처리 (_initDelegatedEvents)
+  // 여기서는 위임 불가능한 것만 처리
+
+  // FAB - 매 렌더마다 새 DOM 생성되므로 여기서 처리
   const fab = document.getElementById('fab-btn');
-  if (fab) fab.addEventListener('click', () => { state.studentTab = 'archive'; state.currentScreen = 'main'; renderScreen(); });
-
-  // Mood buttons
-  document.querySelectorAll('.mood-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      state.mood = btn.dataset.mood;
-    });
-  });
-
-  // Question level rows
-  document.querySelectorAll('.q-level-row').forEach(row => {
-    row.addEventListener('click', () => {
-      document.querySelectorAll('.q-level-row').forEach(r => r.classList.remove('selected'));
-      row.classList.add('selected');
-    });
-  });
-
-  // Career buttons
-  document.querySelectorAll('.career-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.career-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // Activity type
-  document.querySelectorAll('.activity-type-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.activity-type-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // Chips
-  document.querySelectorAll('.chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const siblings = chip.parentElement.querySelectorAll('.chip');
-      siblings.forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      
-      // 질문 코칭 과목 chip 선택 시 state 업데이트
-      if (chip.dataset.qsubject) {
-        state._questionSubject = chip.dataset.qsubject;
-      }
-    });
-  });
-
-  // Grid select buttons
-  document.querySelectorAll('.grid-select-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const siblings = btn.parentElement.querySelectorAll('.grid-select-btn');
-      siblings.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // Planner view toggle
-  document.querySelectorAll('[data-pview]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.plannerView = btn.dataset.pview;
-      renderScreen();
-    });
-  });
-
-  // Planner category chips
-  document.querySelectorAll('.planner-cat-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.planner-cat-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // Assignment type buttons
-  document.querySelectorAll('.assignment-type-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.assignment-type-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // Assignment filter chips
-  document.querySelectorAll('[data-afilter]').forEach(chip => {
-    chip.addEventListener('click', () => {
-      state.assignmentFilter = chip.dataset.afilter;
-      renderScreen();
-    });
-  });
-
-  // Assignment subject chips
-  document.querySelectorAll('#assignment-subject-chips .chip').forEach(chip => {
-    chip.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.querySelectorAll('#assignment-subject-chips .chip').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-    });
-  });
-
-  // Teach student list
-  document.querySelectorAll('.teach-student-item').forEach(item => {
-    item.addEventListener('click', () => {
-      document.querySelectorAll('.teach-student-item').forEach(i => {
-        i.classList.remove('selected');
-        const check = i.querySelector('.fa-check-circle');
-        if (check) check.remove();
-      });
-      item.classList.add('selected');
-      if (!item.querySelector('.fa-check-circle')) {
-        const check = document.createElement('i');
-        check.className = 'fas fa-check-circle';
-        check.style.cssText = 'color:var(--success);margin-left:auto';
-        item.appendChild(check);
-      }
-    });
-  });
+  if (fab && !fab._delegated) {
+    fab.addEventListener('click', () => { state.studentTab = 'archive'; state.currentScreen = 'main'; renderScreen(); });
+    fab._delegated = true;
+  }
 
   // Growth chart
   const chartCanvas = document.getElementById('growth-chart');
@@ -14481,62 +14430,12 @@ function initStudentEvents(root) {
 }
 
 function initMentorEvents() {
-  // 탭 전환
-  document.querySelectorAll('[data-mtab]').forEach(btn => {
-    btn.addEventListener('click', () => { state.mentorTab = btn.dataset.mtab; renderScreen(); });
-  });
-  // 반(그룹) 전환
-  document.querySelectorAll('[data-mgroup]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      _mentor.selectedGroupId = parseInt(btn.dataset.mgroup);
-      _mentor._relayLoaded = false;
-      if (typeof _checkRelayEligibility === 'function') await _checkRelayEligibility();
-      mentorLoadGroupSummary();
-    });
-  });
-  // 학생 클릭 → 학생 플래너 뷰어 진입
-  document.querySelectorAll('.m-student-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const sid = row.dataset.studentId;
-      const sname = row.dataset.studentName;
-      const semoji = row.dataset.studentEmoji || '🐻';
-      if (sid) mentorEnterStudentView(parseInt(sid), sname, semoji);
-    });
-  });
-  // 경보 배너 클릭 → 학생 플래너 뷰어 진입
-  document.querySelectorAll('[data-alert-student]').forEach(el => {
-    el.addEventListener('click', () => {
-      const sid = el.dataset.alertStudent;
-      const sname = el.dataset.alertName;
-      if (sid) mentorEnterStudentView(parseInt(sid), sname, '🐻');
-    });
-  });
-  // 학생 상세 탭 전환
-  document.querySelectorAll('[data-mdetail]').forEach(btn => {
-    btn.addEventListener('click', () => { _mentor.detailTab = btn.dataset.mdetail; renderScreen(); });
-  });
-  // 타임라인 피드백 버튼
-  document.querySelectorAll('.m-fb-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _mentor.feedbackRecordType = btn.dataset.fbType || 'general';
-      _mentor.feedbackRecordId = btn.dataset.fbId ? parseInt(btn.dataset.fbId) : null;
-      _mentor.detailTab = 'feedback';
-      renderScreen();
-      setTimeout(() => { document.getElementById('m-fb-input')?.focus(); }, 100);
-    });
-  });
-  // 피드백 입력 싱크
-  const fbInput = document.getElementById('m-fb-input');
-  if (fbInput) {
-    fbInput.addEventListener('input', () => { _mentor.feedbackDraft = fbInput.value; });
-  }
+  // 대부분의 이벤트 리스너는 document 레벨 위임으로 처리 (_initDelegatedEvents)
+  // 여기서는 위임 불가능한 것만 처리
 }
 
 function initDirectorEvents() {
-  document.querySelectorAll('[data-dtab]').forEach(btn => {
-    btn.addEventListener('click', () => { state.directorTab = btn.dataset.dtab; renderScreen(); });
-  });
+  // document 레벨 위임으로 처리 (_initDelegatedEvents)
 }
 
 // ==================== MODE SWITCHER & INIT ====================
@@ -14615,7 +14514,12 @@ if (_urlParams.user_id) {
   // 일반 접속 → localStorage 기반 자동 로그인
   autoLogin();
 }
-renderScreen();
+// 자동 로그인 데이터 로딩 중이 아닐 때만 즉시 렌더
+// (로딩 중이면 initial-loader를 유지하고, 완료 시점에 renderScreen 호출됨)
+if (!_autoLoginDataLoading) {
+  // 비인증 상태: 스플래시 잠깐 유지 후 로그인 화면 표시 (깜빡임 방지)
+  setTimeout(() => renderScreen(), 150);
+}
 
 // ==================== 시간표 온보딩 (시간표 사진 → 과목 자동 등록) ====================
 // state._ttOnboardingStep: 'intro' → 'photo' → 'loading' → 'confirm' → 'done'
@@ -14939,7 +14843,7 @@ function _renderTTConfirmSchool() {
               <div style="width:8px;height:8px;border-radius:50%;background:${bg};flex-shrink:0"></div>
               <input class="input-field tt-subject-name" value="${escapeHtml(s)}" data-original="${escapeHtml(s)}" style="flex:1;font-size:14px;padding:4px 8px;margin:0">
               <span style="font-size:11px;color:var(--text-muted);white-space:nowrap">${count}시간</span>
-              <button onclick="ttRemoveSubject('${escapeHtml(s).replace(/'/g, "\\'")}');" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
+              <button data-tt-remove-subject="${escapeHtml(s)}" onclick="ttRemoveSubjectFromData(this);" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
             </div>`;
           }).join('')}
         </div>
@@ -15123,7 +15027,10 @@ function _renderTTDone() {
     setTimeout(() => { if (document.body.contains(toast)) toast.remove(); }, 15000);
   };
 
-  // --- 6. CSS 애니메이션 추가 (기존 스타일 시트에 영향 없음) ---
+  // --- 6. 이벤트 위임 등록 (메모리 누수 방지 — 1회만 실행) ---
+  _initDelegatedEvents();
+
+  // --- 7. CSS 애니메이션 추가 (기존 스타일 시트에 영향 없음) ---
   const style = document.createElement('style');
   style.textContent = `
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -15131,3 +15038,229 @@ function _renderTTDone() {
   `;
   document.head.appendChild(style);
 })();
+
+// ==================== 이벤트 위임 (메모리 누수 방지) ====================
+// document 레벨에서 1회만 등록하여, renderScreen() 호출 시 리스너가 쌓이지 않도록 함
+function _initDelegatedEvents() {
+  if (window._delegatedEventsAttached) return;
+
+  // --- 사이드바 + 모바일 하단 탭 공통 핸들러 ---
+  function _handleNavTabClick(tab) {
+    if (tab === 'myqa') { openMyQaIframe(); return; }
+    if (tab === 'community') { openCommunityNewTab(); return; }
+    state._communityOpened = false;
+    if (tab === 'archive' && state.studentTab === 'archive' && typeof _archiveModuleActive !== 'undefined' && _archiveModuleActive && window.ArchiveModule) {
+      window.ArchiveModule.navigate('dashboard');
+      return;
+    }
+    state.studentTab = tab;
+    state.currentScreen = 'main';
+    renderScreen();
+  }
+
+  // 사이드바 네비 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sidebar-nav-item');
+    if (!btn) return;
+    _handleNavTabClick(btn.dataset.tab);
+  });
+
+  // 모바일 하단 탭 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.mob-tab-item');
+    if (!btn) return;
+    _handleNavTabClick(btn.dataset.tab);
+  });
+
+  // --- Student Events 위임 ---
+
+  // Mood buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.mood-btn');
+    if (!btn) return;
+    document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mood = btn.dataset.mood;
+  });
+
+  // Question level rows
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('.q-level-row');
+    if (!row) return;
+    document.querySelectorAll('.q-level-row').forEach(r => r.classList.remove('selected'));
+    row.classList.add('selected');
+  });
+
+  // Career buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.career-btn');
+    if (!btn) return;
+    document.querySelectorAll('.career-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Activity type buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.activity-type-btn');
+    if (!btn) return;
+    document.querySelectorAll('.activity-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Chips (general)
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    // assignment-subject-chips는 별도 처리
+    if (chip.closest('#assignment-subject-chips')) {
+      e.stopPropagation();
+      document.querySelectorAll('#assignment-subject-chips .chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      return;
+    }
+    const siblings = chip.parentElement.querySelectorAll('.chip');
+    siblings.forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    if (chip.dataset.qsubject) {
+      state._questionSubject = chip.dataset.qsubject;
+    }
+  });
+
+  // Grid select buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.grid-select-btn');
+    if (!btn) return;
+    const siblings = btn.parentElement.querySelectorAll('.grid-select-btn');
+    siblings.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Planner view toggle
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-pview]');
+    if (!btn) return;
+    state.plannerView = btn.dataset.pview;
+    renderScreen();
+  });
+
+  // Planner category chips
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.planner-cat-btn');
+    if (!btn) return;
+    document.querySelectorAll('.planner-cat-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Assignment type buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.assignment-type-btn');
+    if (!btn) return;
+    document.querySelectorAll('.assignment-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Assignment filter chips
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-afilter]');
+    if (!chip) return;
+    state.assignmentFilter = chip.dataset.afilter;
+    renderScreen();
+  });
+
+  // Teach student list
+  document.addEventListener('click', (e) => {
+    const item = e.target.closest('.teach-student-item');
+    if (!item) return;
+    document.querySelectorAll('.teach-student-item').forEach(i => {
+      i.classList.remove('selected');
+      const check = i.querySelector('.fa-check-circle');
+      if (check) check.remove();
+    });
+    item.classList.add('selected');
+    if (!item.querySelector('.fa-check-circle')) {
+      const check = document.createElement('i');
+      check.className = 'fas fa-check-circle';
+      check.style.cssText = 'color:var(--success);margin-left:auto';
+      item.appendChild(check);
+    }
+  });
+
+  // --- Mentor Events 위임 ---
+
+  // 멘토 탭 전환
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mtab]');
+    if (!btn) return;
+    state.mentorTab = btn.dataset.mtab;
+    renderScreen();
+  });
+
+  // 반(그룹) 전환
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-mgroup]');
+    if (!btn) return;
+    if (typeof _mentor !== 'undefined') {
+      _mentor.selectedGroupId = parseInt(btn.dataset.mgroup);
+      _mentor._relayLoaded = false;
+      if (typeof _checkRelayEligibility === 'function') await _checkRelayEligibility();
+      if (typeof mentorLoadGroupSummary === 'function') mentorLoadGroupSummary();
+    }
+  });
+
+  // 학생 행 클릭
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('.m-student-row');
+    if (!row) return;
+    const sid = row.dataset.studentId;
+    const sname = row.dataset.studentName;
+    const semoji = row.dataset.studentEmoji || '🐻';
+    if (sid && typeof mentorEnterStudentView === 'function') mentorEnterStudentView(parseInt(sid), sname, semoji);
+  });
+
+  // 경보 배너 클릭
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-alert-student]');
+    if (!el) return;
+    const sid = el.dataset.alertStudent;
+    const sname = el.dataset.alertName;
+    if (sid && typeof mentorEnterStudentView === 'function') mentorEnterStudentView(parseInt(sid), sname, '🐻');
+  });
+
+  // 학생 상세 탭 전환
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mdetail]');
+    if (!btn) return;
+    if (typeof _mentor !== 'undefined') { _mentor.detailTab = btn.dataset.mdetail; renderScreen(); }
+  });
+
+  // 타임라인 피드백 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.m-fb-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    if (typeof _mentor !== 'undefined') {
+      _mentor.feedbackRecordType = btn.dataset.fbType || 'general';
+      _mentor.feedbackRecordId = btn.dataset.fbId ? parseInt(btn.dataset.fbId) : null;
+      _mentor.detailTab = 'feedback';
+      renderScreen();
+      setTimeout(() => { document.getElementById('m-fb-input')?.focus(); }, 100);
+    }
+  });
+
+  // 피드백 입력 싱크
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'm-fb-input' && typeof _mentor !== 'undefined') {
+      _mentor.feedbackDraft = e.target.value;
+    }
+  });
+
+  // --- Director Events 위임 ---
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-dtab]');
+    if (!btn) return;
+    state.directorTab = btn.dataset.dtab;
+    renderScreen();
+  });
+
+  window._delegatedEventsAttached = true;
+}

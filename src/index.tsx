@@ -5674,6 +5674,7 @@ app.get('/', (c) => {
   <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
   <style>
     @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.95)} }
+    @keyframes rm-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
     #initial-loader, #initial-loader-tablet, #initial-loader-desktop {
       transition: opacity 0.3s ease;
     }
@@ -5720,9 +5721,11 @@ app.get('/', (c) => {
             <span><i class="fas fa-signal"></i> <i class="fas fa-wifi"></i> <i class="fas fa-battery-full"></i></span>
           </div>
           <div id="app-content">
-            <div id="initial-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px">
-              <img src="/static/logo.png" alt="" style="width:56px;height:56px;border-radius:14px;animation:pulse 1.5s ease-in-out infinite">
-              <div style="font-size:15px;color:#888;font-weight:500">로딩 중...</div>
+            <div id="initial-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:12px;transition:opacity 0.3s ease">
+              <img src="/static/logo.png" alt="" style="width:64px;height:64px;border-radius:16px;box-shadow:0 4px 16px rgba(108,92,231,0.2);animation:pulse 1.5s ease-in-out infinite">
+              <div style="font-size:17px;font-weight:700;color:#6C5CE7;margin-top:4px">고교학점플래너</div>
+              <div style="font-size:12px;color:#aaa;font-weight:400;letter-spacing:0.5px">정율사관학원</div>
+              <div style="margin-top:16px;width:32px;height:32px;border:3px solid #e8e5ff;border-top-color:#6C5CE7;border-radius:50%;animation:rm-spin 0.7s linear infinite"></div>
             </div>
           </div>
           <div id="archive-container-phone" class="archive-module" style="display:none;flex:1;overflow-y:auto;height:100%"></div>
@@ -5794,9 +5797,12 @@ app.get('/', (c) => {
           .catch(err => console.log('SW registration failed:', err));
       });
       // 컨트롤러 변경 시 자동 새로고침 (새 SW 활성화 완료 = 새 버전 적용)
+      let refreshing = false;
+      const hadController = !!navigator.serviceWorker.controller;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (window._swReloading) return;
-        window._swReloading = true;
+        if (refreshing) return;
+        if (!hadController) return; // 첫 설치 시에는 reload 불필요
+        refreshing = true;
         console.log('[PWA] New version activated, reloading...');
         window.location.reload();
       });
