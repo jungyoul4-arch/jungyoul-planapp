@@ -15058,6 +15058,10 @@ function _initDelegatedEvents() {
     state.studentTab = tab;
     state.currentScreen = 'main';
     renderScreen();
+    // 성장 탭 진입 시 아하 리포트 클래스 로드
+    if (tab === 'growth') {
+      loadGrowthAhaClasses();
+    }
   }
 
   // 사이드바 네비 버튼
