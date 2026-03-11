@@ -277,24 +277,8 @@ async function callGeminiMultiImage(opts: {
     console.log('[OCR] Gemini OCR 실패:', e)
   }
 
-  // STEP 2: Sonnet 분석 (OCR 성공 + Anthropic 키 있을 때)
-  let sonnetError = ''
+  // STEP 2: Gemini 분석 (1순위 — OCR 성공 시 텍스트만, 실패 시 이미지 포함)
   let geminiAnalysisError = ''
-  if (ocrSuccess && anthropicKey) {
-    try {
-      console.log('[분석] Sonnet 분석 시작')
-      const sysPrompt = systemPrompt || prompt
-      const usrPrompt = (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-      const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
-      console.log('[분석] Sonnet 분석 완료')
-      return { text, source: 'gemini-ocr+sonnet' }
-    } catch (e: any) {
-      sonnetError = e.message
-      console.log('[분석] Sonnet 실패, Gemini 분석으로 폴백:', e)
-    }
-  }
-
-  // STEP 2 폴백A: Gemini 자체 분석 (OCR 텍스트 있으면 텍스트만, 없으면 이미지 포함)
   try {
     if (ocrSuccess) {
       console.log('[분석] Gemini 텍스트 분석 시도')
@@ -313,19 +297,19 @@ async function callGeminiMultiImage(opts: {
             }
           })
         },
-        60000 // 60초
+        90000 // 90초 (thinking 모델이라 여유있게)
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
         console.log('[분석] Gemini 텍스트 분석 성공')
-        return { text, source: `${GEMINI_MODEL}-fallback` }
+        return { text, source: `gemini-ocr+analysis` }
       }
       const errBody = await geminiRes.text().catch(() => 'unknown')
       geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
       console.log(`[분석] Gemini 텍스트 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
     } else {
-      // OCR도 실패: 이미지 직접 전송
+      // OCR 실패: 이미지 직접 전송
       console.log('[분석] Gemini 이미지 직접 분석 시도')
       const parts: any[] = [{ text: prompt }]
       for (const img of images) {
@@ -345,7 +329,7 @@ async function callGeminiMultiImage(opts: {
             }
           })
         },
-        60000
+        90000
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
@@ -356,30 +340,30 @@ async function callGeminiMultiImage(opts: {
       geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
       console.log(`[분석] Gemini 이미지 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
     }
-    console.log(`Gemini 분석 실패: ${geminiAnalysisError}`)
   } catch (e: any) {
     geminiAnalysisError = `${GEMINI_MODEL} error: ${e.message}`
-    console.log(`${GEMINI_MODEL} 에러, Claude로 폴백:`, e)
+    console.log(`${GEMINI_MODEL} 분석 에러:`, e)
   }
 
-  // STEP 2 폴백B: Claude (텍스트만)
-  let claudeError = ''
+  // STEP 3 폴백: Sonnet (Gemini 분석 실패 시에만)
+  let sonnetError = ''
   if (anthropicKey) {
     try {
-      const fallbackPrompt = ocrSuccess
-        ? prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-        : prompt
-      const text = await callSonnetAnalysis(anthropicKey, fallbackPrompt, '위 지시에 따라 JSON 형식으로만 응답하세요.', jsonMode, temperature)
-      return { text, source: 'claude-fallback' }
+      console.log('[분석] Sonnet 폴백 시도')
+      const sysPrompt = systemPrompt || prompt
+      const usrPrompt = ocrSuccess
+        ? (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
+        : '위 지시에 따라 JSON 형식으로만 응답하세요.'
+      const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
+      console.log('[분석] Sonnet 폴백 성공')
+      return { text, source: 'sonnet-fallback' }
     } catch (e: any) {
-      claudeError = e.message
-      console.log('Claude 폴백 실패:', e)
+      sonnetError = e.message
+      console.log('[분석] Sonnet 폴백 실패:', e.message?.substring(0, 100))
     }
-  } else {
-    claudeError = 'ANTHROPIC_API_KEY 없음'
   }
 
-  throw new Error(`모든 AI 실패 — OCR: ${ocrError || 'ok'} | Sonnet: ${sonnetError || 'skipped'} | Gemini분석: ${geminiAnalysisError || 'skipped'} | Claude폴백: ${claudeError}`)
+  throw new Error(`AI 분석 실패 — Gemini: ${geminiAnalysisError || 'unknown'} | Sonnet: ${sonnetError || 'skipped'}`)
 }
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================

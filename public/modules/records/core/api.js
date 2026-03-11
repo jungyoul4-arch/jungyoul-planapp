@@ -254,7 +254,7 @@ export const DB = {
   // === AI Credit Log 분석 ===
   async analyzePhotos(images, subject, period, date, studentComment) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90000); // 90초 타임아웃
+    const timer = setTimeout(() => controller.abort(), 150000); // 150초 타임아웃 (OCR+분석 파이프라인)
     try {
       const res = await fetch('/api/ai/credit-log', {
         method: 'POST',
@@ -270,7 +270,7 @@ export const DB = {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `AI 서버 오류 (${res.status})`);
     } catch (e) {
-      if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (90초)');
+      if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (150초)');
       console.error('analyzePhotos:', e);
       throw e;
     } finally {
