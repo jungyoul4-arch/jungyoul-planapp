@@ -277,11 +277,27 @@ async function callGeminiMultiImage(opts: {
     console.log('[OCR] Gemini OCR 실패:', e)
   }
 
-  // STEP 2: Gemini 분석 (1순위 — OCR 성공 시 텍스트만, 실패 시 이미지 포함)
+  // STEP 2: Sonnet 분석 (1순위 — OCR 텍스트 기반 구조화 분석)
+  let sonnetError = ''
+  if (ocrSuccess && anthropicKey) {
+    try {
+      console.log('[분석] Sonnet 4.6 분석 시작')
+      const sysPrompt = systemPrompt || prompt
+      const usrPrompt = (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
+      const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
+      console.log('[분석] Sonnet 4.6 분석 성공')
+      return { text, source: 'gemini-ocr+sonnet' }
+    } catch (e: any) {
+      sonnetError = e.message
+      console.log('[분석] Sonnet 실패:', sonnetError?.substring(0, 200))
+    }
+  }
+
+  // STEP 3 폴백: Gemini 분석 (Sonnet 실패 시)
   let geminiAnalysisError = ''
   try {
     if (ocrSuccess) {
-      console.log('[분석] Gemini 텍스트 분석 시도')
+      console.log('[분석] Gemini 텍스트 분석 폴백 시도')
       const textPrompt = prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
       const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
@@ -297,7 +313,7 @@ async function callGeminiMultiImage(opts: {
             }
           })
         },
-        90000 // 90초 (thinking 모델이라 여유있게)
+        90000
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
@@ -309,8 +325,8 @@ async function callGeminiMultiImage(opts: {
       geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
       console.log(`[분석] Gemini 텍스트 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
     } else {
-      // OCR 실패: 이미지 직접 전송
-      console.log('[분석] Gemini 이미지 직접 분석 시도')
+      // OCR도 실패: 이미지 직접 전송
+      console.log('[분석] Gemini 이미지 직접 분석 폴백 시도')
       const parts: any[] = [{ text: prompt }]
       for (const img of images) {
         parts.push({ inline_data: img })
@@ -345,25 +361,7 @@ async function callGeminiMultiImage(opts: {
     console.log(`${GEMINI_MODEL} 분석 에러:`, e)
   }
 
-  // STEP 3 폴백: Sonnet (Gemini 분석 실패 시에만)
-  let sonnetError = ''
-  if (anthropicKey) {
-    try {
-      console.log('[분석] Sonnet 폴백 시도')
-      const sysPrompt = systemPrompt || prompt
-      const usrPrompt = ocrSuccess
-        ? (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-        : '위 지시에 따라 JSON 형식으로만 응답하세요.'
-      const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
-      console.log('[분석] Sonnet 폴백 성공')
-      return { text, source: 'sonnet-fallback' }
-    } catch (e: any) {
-      sonnetError = e.message
-      console.log('[분석] Sonnet 폴백 실패:', e.message?.substring(0, 100))
-    }
-  }
-
-  throw new Error(`AI 분석 실패 — Gemini: ${geminiAnalysisError || 'unknown'} | Sonnet: ${sonnetError || 'skipped'}`)
+  throw new Error(`AI 분석 실패 — Sonnet: ${sonnetError || 'skipped'} | Gemini: ${geminiAnalysisError || 'unknown'}`)
 }
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================
