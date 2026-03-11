@@ -46,6 +46,7 @@ import { registerHandlers as autonomyUploadHandlers, renderAutonomyUpload } from
 import { registerHandlers as readingUploadHandlers, renderReadingUpload } from './views/reading-upload.js';
 import { registerHandlers as volunteerUploadHandlers, renderVolunteerUpload } from './views/volunteer-upload.js';
 import { registerHandlers as activityResultHandlers, renderActivityLoading, renderActivityResult } from './views/activity-result.js';
+import { renderCareerDetail } from './views/career-detail.js';
 
 // ── Components ──
 import { initCarousel, initDetailGalleryScroll } from './components/photo-upload.js';
@@ -93,6 +94,7 @@ const SCREEN_MAP = {
   'volunteer-upload':      renderVolunteerUpload,
   'activity-loading':      renderActivityLoading,
   'activity-result':       renderActivityResult,
+  'career-detail':         renderCareerDetail,
 };
 
 // ── _RM 글로벌 네임스페이스 (인라인 onclick 핸들러) ──
@@ -279,6 +281,7 @@ const ArchiveModule = {
       state._dbTeachRecords = preloaded.teachRecords || [];
       state._dbActivityRecords = preloaded.activityRecords || [];
       state._dbReportRecords = preloaded.reportRecords || [];
+      if (preloaded.careerProfile !== undefined) state._careerProfile = preloaded.careerProfile;
     }
 
     // 오늘의 시간표 → todayRecords 빌드
@@ -350,6 +353,7 @@ const ArchiveModule = {
         state._dbTeachRecords = preloadedData.teachRecords || [];
         state._dbActivityRecords = preloadedData.activityRecords || [];
         state._dbReportRecords = preloadedData.reportRecords || [];
+        if (preloadedData.careerProfile !== undefined) state._careerProfile = preloadedData.careerProfile;
         await Promise.all([
           DB.loadMyQuestions(),
           DB.loadMyQuestionStats(),

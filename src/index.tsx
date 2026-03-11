@@ -597,8 +597,11 @@ const CAREER_PDF_PARSE_PROMPT = `이 이미지는 앱티핏(aptifit) 전공적�
 
 app.post('/api/analyze', async (c) => {
   try {
-    const { question, subject, axis } = await c.req.json()
+    const { question, subject, axis, studentId } = await c.req.json()
     if (!question) return c.json({ error: '질문 내용이 필요합니다' }, 400)
+
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -609,7 +612,7 @@ app.post('/api/analyze', async (c) => {
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT_ANALYZE },
+          { role: 'system', content: SYSTEM_PROMPT_ANALYZE + careerCtx },
           { role: 'user', content: `과목: ${subject || '미지정'}\n질문 축: ${axis === 'reflection' ? '축2(성찰)' : '축1(호기심)'}\n\n학생 질문: "${question}"` }
         ],
         temperature: 0.3,
@@ -635,8 +638,11 @@ app.post('/api/analyze', async (c) => {
 
 app.post('/api/coaching', async (c) => {
   try {
-    const { messages, subject, currentLevel } = await c.req.json()
+    const { messages, subject, currentLevel, studentId } = await c.req.json()
     if (!messages || messages.length === 0) return c.json({ error: '대화 내용이 필요합니다' }, 400)
+
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
     const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -648,7 +654,7 @@ app.post('/api/coaching', async (c) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
-        system: SYSTEM_PROMPT_COACHING + `\n\n현재 학생의 질문 단계: ${currentLevel || 'A-2'}\n과목: ${subject || '미지정'}`,
+        system: SYSTEM_PROMPT_COACHING + `\n\n현재 학생의 질문 단계: ${currentLevel || 'A-2'}\n과목: ${subject || '미지정'}` + careerCtx,
         messages: messages.map((m: any) => ({
           role: m.role,
           content: m.content
@@ -721,8 +727,11 @@ app.post('/api/image-analyze', async (c) => {
 
 app.post('/api/ai/credit-log', async (c) => {
   try {
-    const { images, subject, period, date, studentComment } = await c.req.json()
+    const { images, subject, period, date, studentComment, studentId } = await c.req.json()
     if (!images || images.length === 0) return c.json({ success: false, error: '사진이 필요합니다' }, 400)
+
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
     // base64 prefix 제거 + inline_data 배열 생성
     const inlineImages = images.map((img: any) => ({
@@ -737,7 +746,7 @@ app.post('/api/ai/credit-log', async (c) => {
     }).join('\n')
 
     // [Subject] 동적 치환 — system prompt와 user prompt 분리
-    const systemPrompt = SYSTEM_PROMPT_CREDIT_LOG.replace(/\[Subject\]/g, subject || '미지정')
+    const systemPrompt = SYSTEM_PROMPT_CREDIT_LOG.replace(/\[Subject\]/g, subject || '미지정') + careerCtx
     const userContext = `[Subject]: ${subject || '미지정'}\n교시: ${period || '미지정'}교시\n날짜: ${date || '미지정'}\n${studentComment ? `[Student_Comment]: ${studentComment}\n` : ''}사진 구성:\n${tagInfo}`
     // Gemini용 (system+user 합침)
     const fullPrompt = systemPrompt + `\n\n---\n${userContext}\n\n위 JSON 형식으로만 응답하세요.`
@@ -845,8 +854,11 @@ app.post('/api/ai/credit-log', async (c) => {
 
 app.post('/api/deep-analyze', async (c) => {
   try {
-    const { question, subject, context } = await c.req.json()
+    const { question, subject, context, studentId } = await c.req.json()
     if (!question) return c.json({ error: '질문 내용이 필요합니다' }, 400)
+
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
     const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -870,7 +882,7 @@ app.post('/api/deep-analyze', async (c) => {
   "hint": "핵심 힌트",
   "commonMistakes": ["흔한 실수1"],
   "relatedTopics": ["관련 주제1"]
-}`,
+}` + careerCtx,
         messages: [
           { role: 'user', content: `과목: ${subject}\n${context ? `배경: ${context}\n` : ''}\n질문: ${question}` }
         ]
@@ -3876,8 +3888,9 @@ app.get('/api/migrate', async (c) => {
       `CREATE TABLE IF NOT EXISTS career_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, test_provider TEXT DEFAULT 'aptifit', test_date TEXT, raw_data TEXT DEFAULT '{}', top_departments TEXT DEFAULT '[]', dream_department TEXT DEFAULT '{}', field_profile TEXT DEFAULT '{}', major_profile TEXT DEFAULT '{}', career_advice TEXT DEFAULT '', careers TEXT DEFAULT '[]', pdf_r2_key TEXT DEFAULT NULL, parse_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_career_profiles_student ON career_profiles(student_id)`,
     ];
+    const errors: string[] = [];
     for (const sql of stmts) {
-      try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
+      try { await c.env.DB.prepare(sql).run(); } catch(e: any) { errors.push(e.message || String(e)); }
     }
 
     // croquet_points 테이블 마이그레이션: mentor_id를 nullable로 변경 (자동 지급 지원)
@@ -3908,7 +3921,10 @@ app.get('/api/migrate', async (c) => {
       }
     } catch(_) { /* director account may already exist */ }
 
-    return c.json({ success: true, message: 'Migration completed', tables: 17 });
+    // 실제 테이블 수 확인
+    const tblResult: any = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").all();
+    const tableNames = tblResult.results?.map((r: any) => r.name) || [];
+    return c.json({ success: true, message: 'Migration completed', tables: tableNames.length, tableNames, errors: errors.length > 0 ? errors : undefined });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -3941,21 +3957,23 @@ app.get('/api/student/:id/career-profile', async (c) => {
   }
 })
 
-// POST /api/student/:id/career-profile/upload — PDF base64 업로드 → R2 저장 → Gemini 파싱 → DB 저장
+// POST /api/student/:id/career-profile/upload — PDF 업로드 → R2 저장 → Gemini 이미지 파싱 → DB 저장
 app.post('/api/student/:id/career-profile/upload', async (c) => {
   const studentId = Number(c.req.param('id'))
   try {
-    const { pdfBase64 } = await c.req.json()
-    if (!pdfBase64) return c.json({ success: false, error: 'PDF 데이터가 필요합니다' }, 400)
+    const { pdfBase64, pageImages } = await c.req.json()
+    if (!pageImages || !Array.isArray(pageImages) || pageImages.length === 0) {
+      return c.json({ success: false, error: 'PDF 페이지 이미지가 필요합니다' }, 400)
+    }
 
     const geminiKey = c.env.GEMINI_API_KEY
     if (!geminiKey) return c.json({ success: false, error: 'Gemini API 키가 설정되지 않았습니다' }, 500)
 
-    // 1. R2에 PDF 저장
+    // 1. R2에 원본 PDF 저장
     let pdfR2Key = ''
-    const rawBase64 = pdfBase64.replace(/^data:application\/pdf;base64,/, '')
-    if (c.env.R2) {
+    if (pdfBase64 && c.env.R2) {
       try {
+        const rawBase64 = pdfBase64.replace(/^data:application\/pdf;base64,/, '')
         pdfR2Key = `career_profiles/${studentId}/${Date.now()}.pdf`
         const binary = Uint8Array.from(atob(rawBase64), ch => ch.charCodeAt(0))
         await c.env.R2.put(pdfR2Key, binary, { httpMetadata: { contentType: 'application/pdf' } })
@@ -3965,9 +3983,13 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
       }
     }
 
-    // 2. PDF → Gemini Vision으로 파싱 (base64 inline_data)
+    // 2. 페이지 이미지 → Gemini Vision으로 파싱 (이미지는 한국 지역에서도 작동)
     let parsedData: any = null
     try {
+      const imageParts = pageImages.map((img: string) => ({
+        inline_data: { mime_type: 'image/jpeg', data: img }
+      }))
+
       const geminiRes = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
         {
@@ -3977,18 +3999,18 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
             contents: [{
               parts: [
                 { text: CAREER_PDF_PARSE_PROMPT },
-                { inline_data: { mime_type: 'application/pdf', data: rawBase64 } }
+                ...imageParts
               ]
             }],
             generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
           })
         },
-        60000
+        90000
       )
 
       if (!geminiRes.ok) {
         const errText = await geminiRes.text()
-        throw new Error(`Gemini API ${geminiRes.status}: ${errText.substring(0, 200)}`)
+        throw new Error(`Gemini API ${geminiRes.status}: ${errText.substring(0, 300)}`)
       }
 
       const geminiData: any = await geminiRes.json()
@@ -4946,16 +4968,20 @@ app.post('/api/ai/activity-analyze', async (c) => {
     const geminiKey = c.env.GEMINI_API_KEY
     if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
 
-    const { photos, activityType, comment } = await c.req.json<{
+    const { photos, activityType, comment, studentId } = await c.req.json<{
       photos: string[],
       activityType: string,
-      comment?: string
+      comment?: string,
+      studentId?: number
     }>()
 
     if (!photos || photos.length === 0) return c.json({ error: '사진이 필요합니다.' }, 400)
 
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
+
     const promptTemplate = ACTIVITY_PROMPTS[activityType] || ACTIVITY_PROMPTS.general
-    const promptText = `${promptTemplate}\n\n---\n활동 유형: ${activityType}\n${comment ? `학생 소감: ${comment}\n` : ''}위 JSON 형식으로만 응답하세요.`
+    const promptText = `${promptTemplate}${careerCtx}\n\n---\n활동 유형: ${activityType}\n${comment ? `학생 소감: ${comment}\n` : ''}위 JSON 형식으로만 응답하세요.`
 
     const parts: any[] = [{ text: promptText }]
     const imageDataList: { mime_type: string, data: string }[] = []
@@ -5031,15 +5057,19 @@ app.post('/api/aha-report/analyze-v2', async (c) => {
     const geminiKey = c.env.GEMINI_API_KEY
     if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
 
-    const { photos, subject, source, date } = await c.req.json<{
+    const { photos, subject, source, date, studentId } = await c.req.json<{
       photos: string[],
       subject?: string,
       source?: string,
-      date?: string
+      date?: string,
+      studentId?: number
     }>()
 
     if (!photos || photos.length === 0) return c.json({ error: '사진이 필요합니다.' }, 400)
     if (photos.length > 3) return c.json({ error: '사진은 최대 3장까지 가능합니다.' }, 400)
+
+    // 진로 프로파일 컨텍스트 로드
+    const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
     const systemPrompt = `당신은 고교학점제 전문가이자 학생들의 학습 멘토입니다.
 학생이 작성한 아하 리포트(AHA-Report) 사진을 분석합니다.
@@ -5077,7 +5107,7 @@ OCR 규칙:
   "student_name": "인식된 학생 이름"
 }`
 
-    const promptText = `${systemPrompt}\n\n---\n과목: ${subject || '미선택'}\n출처: ${source || '미입력'}\n날짜: ${date || '미입력'}`
+    const promptText = `${systemPrompt}${careerCtx}\n\n---\n과목: ${subject || '미선택'}\n출처: ${source || '미입력'}\n날짜: ${date || '미입력'}`
     const parts: any[] = [{ text: promptText }]
 
     const imageDataList: { mime_type: string, data: string }[] = []

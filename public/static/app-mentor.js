@@ -1289,6 +1289,21 @@ function __renderMentorStudentDetail() {
       <div class="stat-card"><div class="stat-label">교학상장</div><div class="stat-value" style="color:var(--teach-green)">${s.teachRecords || 0}</div><div class="stat-change" style="font-size:11px;color:var(--text-muted)">전체 기간</div></div>
       <div class="stat-card"><div class="stat-label">사진·과제·활동</div><div class="stat-value">${(s.classPhotos||0) + (s.assignments||0) + (s.activityRecords||0)}</div><div class="stat-change" style="font-size:11px;color:var(--text-muted)">📸${s.classPhotos||0} 📋${s.assignments||0} 🎯${s.activityRecords||0}</div></div>
     </div>
+    <!-- 진로 프로파일 업로드 배너 -->
+    <div style="padding:12px 28px 0">
+      <div id="career-upload-banner" style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:14px;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.06));border:1px solid rgba(99,102,241,0.15)">
+        <div style="width:40px;height:40px;border-radius:12px;background:rgba(99,102,241,0.12);display:flex;align-items:center;justify-content:center;font-size:20px">🧭</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:var(--text-primary)" id="career-banner-title">진로 프로파일</div>
+          <div style="font-size:12px;color:var(--text-secondary)" id="career-banner-desc">앱티핏 전공적성 검사 PDF를 업로드하세요</div>
+        </div>
+        <label style="cursor:pointer;padding:8px 16px;border-radius:10px;background:rgba(99,102,241,0.15);color:#818cf8;font-size:13px;font-weight:600;white-space:nowrap">
+          <input type="file" accept="application/pdf" style="display:none" onchange="handleCareerPdfUpload(this, ${sid})">
+          PDF 업로드
+        </label>
+      </div>
+      <div id="career-upload-status" style="display:none;padding:8px 0;text-align:center;font-size:13px;color:var(--text-secondary)"></div>
+    </div>
     <div class="desk-tabs">
       ${tabs.map(t => `<button class="desk-tab ${_mentor.detailTab===t.id?'active':''}" data-mdetail="${t.id}">${t.label}</button>`).join('')}
     </div>
@@ -1841,4 +1856,92 @@ var _renderMentorNetwork = __renderMentorNetwork;
 var _renderMentorCroquet = __renderMentorCroquet;
 var _renderMentorRelay = __renderMentorRelay;
 var _renderMentorStudentDetail = __renderMentorStudentDetail;
+
+// ==================== 진로 프로파일 PDF 업로드 ====================
+async function handleCareerPdfUpload(input, studentId) {
+  const file = input.files?.[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') {
+    alert('PDF 파일만 업로드할 수 있습니다.');
+    input.value = '';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert('파일 크기가 10MB를 초과합니다.');
+    input.value = '';
+    return;
+  }
+
+  const statusEl = document.getElementById('career-upload-status');
+  const bannerEl = document.getElementById('career-upload-banner');
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PDF를 이미지로 변환 중...';
+  }
+  if (bannerEl) bannerEl.style.opacity = '0.5';
+
+  try {
+    // PDF.js 로드 (CDN)
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      document.head.appendChild(script);
+      await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; });
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // PDF → 페이지별 이미지 변환
+    const arrayBuf = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuf }).promise;
+    const pageImages = [];
+    const maxPages = Math.min(pdf.numPages, 3);
+    for (let i = 1; i <= maxPages; i++) {
+      if (statusEl) statusEl.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 페이지 ${i}/${maxPages} 변환 중...`;
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pageImages.push(canvas.toDataURL('image/jpeg', 0.6).replace(/^data:image\/jpeg;base64,/, ''));
+    }
+
+    if (statusEl) statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> AI 분석 중... (최대 30초 소요)';
+
+    const res = await fetch(`/api/student/${studentId}/career-profile/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageImages }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (statusEl) {
+        statusEl.innerHTML = '✅ 진로 프로파일 등록 완료!';
+        statusEl.style.color = '#10b981';
+      }
+      // 배너 업데이트
+      const titleEl = document.getElementById('career-banner-title');
+      const descEl = document.getElementById('career-banner-desc');
+      const dream = data.data?.dream_department || {};
+      if (titleEl) titleEl.textContent = `🧭 ${dream.department || '진로 프로파일'} (${dream.score || 0}%)`;
+      if (descEl) descEl.textContent = '등록 완료 · 다시 업로드하면 덮어씁니다';
+      if (bannerEl) bannerEl.style.opacity = '1';
+    } else {
+      if (statusEl) {
+        statusEl.innerHTML = `❌ ${data.error || '업로드 실패'}`;
+        statusEl.style.color = '#ef4444';
+      }
+      if (bannerEl) bannerEl.style.opacity = '1';
+    }
+  } catch (e) {
+    console.error('Career PDF upload error:', e);
+    if (statusEl) {
+      statusEl.innerHTML = '❌ 네트워크 오류. 다시 시도해주세요.';
+      statusEl.style.color = '#ef4444';
+    }
+    if (bannerEl) bannerEl.style.opacity = '1';
+  }
+  input.value = '';
+}
 

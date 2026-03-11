@@ -7,6 +7,33 @@ import { state } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { getDday, formatDate } from '../core/utils.js';
 
+/* ---- Career Profile Summary Banner ---- */
+function _renderCareerBanner() {
+  const cp = state._careerProfile;
+  if (!cp) return '';
+  const dream = cp.dream_department || {};
+  const majorProf = cp.major_profile || {};
+  const keywords = [
+    ...(majorProf.abilities || []).slice(0, 1),
+    ...(majorProf.personality || []).slice(0, 1),
+    ...(majorProf.values || []).slice(0, 1),
+  ].filter(Boolean);
+
+  return `
+    <div class="skill-card" style="--glow-color:#6366f1;--glow-rgb:99,102,241;margin-bottom:8px;background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08));border-color:rgba(99,102,241,0.2)"
+         onclick="_RM.nav('career-detail')">
+      <div class="skill-card-glow"></div>
+      <div class="skill-icon-wrap" style="--icon-bg:rgba(99,102,241,0.15);color:#6366f1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m16 10-5.5 5.5L8 13"/></svg>
+      </div>
+      <div class="skill-card-info">
+        <h3 style="color:#a5b4fc">🧭 ${dream.department || '진로 프로파일'}</h3>
+        <p>${dream.score ? `적합도 ${dream.score}%` : ''}${keywords.length > 0 ? (dream.score ? ' · ' : '') + keywords.join(' · ') : ''}</p>
+      </div>
+      <span class="skill-badge" style="background:rgba(99,102,241,0.12);color:#818cf8;border-color:rgba(99,102,241,0.2)">상세 →</span>
+    </div>`;
+}
+
 // _RM namespace handlers
 export function registerHandlers(RM) {
   RM.goDashboard = () => navigate('dashboard');
@@ -140,6 +167,8 @@ export function renderDashboard() {
       <div class="screen-header">
         <h1>📝 아카이브</h1>
       </div>
+
+      ${_renderCareerBanner()}
 
       <div class="skill-card-grid">
         ${DASHBOARD_CARDS.map((card, i) => _renderSkillCard(card, i)).join('')}

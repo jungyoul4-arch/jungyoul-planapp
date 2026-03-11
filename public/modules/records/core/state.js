@@ -28,6 +28,7 @@ const _initialState = {
   _dbTeachRecords: [],
   _dbActivityRecords: [],
   _dbReportRecords: [],
+  _careerProfile: null,
 
   // 미션
   missions: [

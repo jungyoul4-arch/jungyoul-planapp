@@ -259,7 +259,7 @@ export const DB = {
       const res = await fetch('/api/ai/credit-log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images, subject, period, date, studentComment: studentComment || '' }),
+        body: JSON.stringify({ images, subject, period, date, studentComment: studentComment || '', studentId: studentId() }),
         signal: controller.signal
       });
       if (res.ok) {
@@ -387,7 +387,7 @@ export const DB = {
       const res = await fetch('/api/ai/activity-analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos, activityType, comment: comment || '' })
+        body: JSON.stringify({ photos, activityType, comment: comment || '', studentId: studentId() })
       });
       if (res.ok) {
         const data = await res.json();
@@ -790,7 +790,7 @@ export const DB = {
       const res = await fetch('/api/aha-report/analyze-v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos, subject, source, date }),
+        body: JSON.stringify({ photos, subject, source, date, studentId: studentId() }),
         signal: controller.signal
       });
       if (res.ok) {

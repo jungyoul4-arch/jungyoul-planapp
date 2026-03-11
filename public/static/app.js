@@ -270,6 +270,7 @@ function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender =
         reportRecords: state._dbReportRecords || [],
         exams: state.exams || [],
         assignments: state._dbAssignments || [],
+        careerProfile: state._careerProfile || null,
       },
     });
     _archiveModuleActive = true;
@@ -283,6 +284,7 @@ function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender =
         teachRecords: state._dbTeachRecords || [],
         activityRecords: state._dbActivityRecords || [],
         reportRecords: state._dbReportRecords || [],
+        careerProfile: state._careerProfile || null,
       },
     }).then(() => {
       window.ArchiveModule.navigate('dashboard');
@@ -343,6 +345,7 @@ function _waitForArchiveReady(callback) {
         teachRecords: state._dbTeachRecords || [],
         activityRecords: state._dbActivityRecords || [],
         reportRecords: state._dbReportRecords || [],
+        careerProfile: state._careerProfile || null,
       },
     }).then(() => {
       callback();
@@ -1796,6 +1799,7 @@ const DB = {
         this.loadTeachRecords(),
         this.loadActivityRecords(),
         this.loadReportRecords(),
+        this.loadCareerProfile(),
       ]).then(() => {
         try { refreshDataWidgets(); } catch(_){}
       }).catch(e => console.error('DB lazy load error:', e));
@@ -2285,6 +2289,19 @@ const DB = {
         }));
       }
     } catch (e) { console.error('loadReportRecords:', e); }
+  },
+
+  // === 진로 프로파일 ===
+  async loadCareerProfile() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/career-profile`);
+      if (res.ok) {
+        const data = await res.json();
+        state._careerProfile = data.data || null;
+      }
+    } catch (e) { console.error('loadCareerProfile:', e); }
   },
 
   // === 시험 삭제 ===
@@ -4917,7 +4934,8 @@ async function ahaSubmit() {
       body: JSON.stringify({
         photos: aha.photos,
         subject: aha.subject,
-        unit: aha.unit
+        unit: aha.unit,
+        studentId: state.studentId
       })
     });
 
@@ -10091,7 +10109,7 @@ function analyzeQuestion() {
   fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: questionText, subject, axis })
+    body: JSON.stringify({ question: questionText, subject, axis, studentId: state.studentId })
   })
   .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
   .then(result => {
@@ -10143,7 +10161,7 @@ function analyzeWithImage(questionText, subject, axis) {
     return fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: enrichedQuestion, subject: subject, axis })
+      body: JSON.stringify({ question: enrichedQuestion, subject: subject, axis, studentId: state.studentId })
     });
   })
   .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
@@ -10189,7 +10207,8 @@ function sendSocratesMessage() {
     body: JSON.stringify({
       messages: apiMessages,
       subject,
-      currentLevel: state._diagResult ? state._diagResult.level : 'A-2'
+      currentLevel: state._diagResult ? state._diagResult.level : 'A-2',
+      studentId: state.studentId
     })
   })
   .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
@@ -10297,7 +10316,7 @@ function submitChallenge() {
   fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: text, subject, axis })
+    body: JSON.stringify({ question: text, subject, axis, studentId: state.studentId })
   })
   .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
   .then(result => {
@@ -10336,7 +10355,8 @@ function startSocrates() {
     body: JSON.stringify({
       messages: state._socratesMessages,
       subject,
-      currentLevel
+      currentLevel,
+      studentId: state.studentId
     })
   })
   .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
@@ -12963,6 +12983,162 @@ function openGrowthAhaReport(classId, className) {
 
 // ==================== MY TAB (M-01~M-05) ====================
 
+async function handleStudentCareerPdfUpload(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') {
+    alert('PDF 파일만 업로드할 수 있습니다.');
+    input.value = '';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert('파일 크기가 10MB를 초과합니다.');
+    input.value = '';
+    return;
+  }
+  const sid = state.studentId || state._authUser?.id;
+  if (!sid) { alert('로그인 정보를 확인할 수 없습니다.'); return; }
+
+  const statusEl = document.getElementById('student-career-upload-status');
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PDF를 이미지로 변환 중...';
+    statusEl.style.color = 'var(--text-secondary)';
+  }
+
+  try {
+    // PDF.js 로드 (CDN)
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      document.head.appendChild(script);
+      await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; });
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // PDF → 페이지별 이미지 변환
+    const arrayBuf = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuf }).promise;
+    const pageImages = [];
+    const maxPages = Math.min(pdf.numPages, 3); // 최대 3페이지
+    for (let i = 1; i <= maxPages; i++) {
+      if (statusEl) statusEl.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 페이지 ${i}/${maxPages} 변환 중...`;
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pageImages.push(canvas.toDataURL('image/jpeg', 0.6).replace(/^data:image\/jpeg;base64,/, ''));
+    }
+
+    if (statusEl) statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> AI 분석 중... (최대 30초 소요)';
+
+    const res = await fetch(`/api/student/${sid}/career-profile/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageImages }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (statusEl) {
+        statusEl.innerHTML = '✅ 진로 프로파일 등록 완료!';
+        statusEl.style.color = '#10b981';
+      }
+      // 새 프로파일 로드 후 화면 갱신
+      await DB.loadCareerProfile();
+      setTimeout(() => renderScreen(), 800);
+    } else {
+      if (statusEl) {
+        statusEl.innerHTML = '❌ ' + (data.error || '업로드 실패');
+        statusEl.style.color = '#ef4444';
+      }
+    }
+  } catch (e) {
+    console.error('Career PDF upload error:', e);
+    if (statusEl) {
+      statusEl.innerHTML = '❌ 네트워크 오류';
+      statusEl.style.color = '#ef4444';
+    }
+  }
+  input.value = '';
+}
+
+function _renderCareerCard(cp) {
+  if (!cp) return '';
+  const dream = cp.dream_department || {};
+  const topDepts = cp.top_departments || [];
+  const fieldProfile = cp.field_profile || {};
+  const majorProfile = cp.major_profile || {};
+
+  // 계열 적성 상위 3개
+  const topFields = Object.entries(fieldProfile)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 4);
+
+  // 핵심 키워드 추출 (역량 + 개인특성 + 가치)
+  const keywords = [
+    ...(majorProfile.abilities || []).slice(0, 2),
+    ...(majorProfile.personality || []).slice(0, 1),
+    ...(majorProfile.values || []).slice(0, 1),
+  ];
+
+  return `
+    <div class="card stagger-2 animate-in" style="background:linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.08) 100%);border:1px solid rgba(99,102,241,0.2)">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="width:48px;height:48px;border-radius:14px;background:rgba(99,102,241,0.15);display:flex;align-items:center;justify-content:center;font-size:24px">🧭</div>
+        <div style="flex:1">
+          <div style="font-size:13px;color:var(--text-secondary);font-weight:600">꿈의 전공</div>
+          <div style="font-size:20px;font-weight:800;color:#a5b4fc">${dream.department || '미등록'}</div>
+        </div>
+        ${dream.score ? `<div style="font-size:24px;font-weight:800;color:#6366f1">${dream.score}%</div>` : ''}
+      </div>
+
+      ${topDepts.length > 0 ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">TOP 학과 적합도</div>
+        ${topDepts.slice(0, 5).map((d, i) => `
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="font-size:12px;font-weight:700;color:${i===0?'#fbbf24':'var(--text-secondary)'};min-width:18px">${d.rank || i+1}</span>
+            <span style="font-size:13px;color:var(--text-primary);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${d.department}</span>
+            <div style="width:60px;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${d.score}%;background:${i===0?'#6366f1':i<3?'#818cf8':'#a5b4fc'};border-radius:3px"></div>
+            </div>
+            <span style="font-size:11px;color:var(--text-secondary);min-width:28px;text-align:right">${d.score}%</span>
+          </div>
+        `).join('')}
+      </div>` : ''}
+
+      ${topFields.length > 0 ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">계열 적성</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${topFields.map(([k, v], i) => `
+            <span style="font-size:12px;padding:4px 10px;border-radius:12px;background:${i===0?'rgba(99,102,241,0.15)':'rgba(255,255,255,0.06)'};color:${i===0?'#a5b4fc':'var(--text-secondary)'};font-weight:${i===0?700:500}">${k} ${v}</span>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      ${keywords.length > 0 ? `
+      <div style="display:flex;flex-wrap:wrap;gap:4px">
+        ${keywords.map(k => `<span style="font-size:11px;padding:3px 8px;border-radius:8px;background:rgba(139,92,246,0.1);color:#c4b5fd">🔑 ${k}</span>`).join('')}
+      </div>` : ''}
+
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn-ghost" style="flex:1;font-size:13px;color:#818cf8"
+          onclick="state.studentTab='archive';state._archiveScreen='career-detail';renderScreen();">
+          상세 보기 →
+        </button>
+        <label style="display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 14px;border-radius:8px;background:rgba(99,102,241,0.1);color:#a5b4fc;font-size:12px;cursor:pointer;transition:background 0.2s" onmouseover="this.style.background='rgba(99,102,241,0.2)'" onmouseout="this.style.background='rgba(99,102,241,0.1)'">
+          <input type="file" accept="application/pdf" style="display:none" onchange="handleStudentCareerPdfUpload(this)">
+          <i class="fas fa-sync-alt"></i> 재업로드
+        </label>
+      </div>
+      <div id="student-career-upload-status" style="display:none;padding:6px 0;margin-top:6px;text-align:center;font-size:13px;color:var(--text-secondary)"></div>
+    </div>`;
+}
+
 function renderMyTab() {
   const userName = state._authUser?.name || '학생';
   const userEmoji = state._authUser?.emoji || '🎓';
@@ -13012,7 +13188,19 @@ function renderMyTab() {
         </div>
       </div>
 
-      <div class="card stagger-2 animate-in">
+      ${state._careerProfile ? _renderCareerCard(state._careerProfile) : `
+      <div class="card stagger-2 animate-in" style="border:1px dashed rgba(255,255,255,0.15);text-align:center;padding:24px">
+        <div style="font-size:32px;margin-bottom:8px">🧭</div>
+        <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:4px">진로 프로파일 미등록</div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">앱티핏 전공적성 검사 결과 PDF를 업로드하세요</div>
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:12px;background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:14px;font-weight:600;cursor:pointer;transition:background 0.2s" onmouseover="this.style.background='rgba(99,102,241,0.25)'" onmouseout="this.style.background='rgba(99,102,241,0.15)'">
+          <input type="file" accept="application/pdf" style="display:none" onchange="handleStudentCareerPdfUpload(this)">
+          <i class="fas fa-file-pdf"></i> PDF 업로드
+        </label>
+        <div id="student-career-upload-status" style="display:none;padding:8px 0;margin-top:8px;font-size:13px;color:var(--text-secondary)"></div>
+      </div>`}
+
+      <div class="card stagger-3 animate-in">
         <div class="card-title">🏅 레벨 진행</div>
         <div class="level-progress-header">
           <span>Lv.${currentLevel} ${currentTierName}</span>
