@@ -1,4 +1,35 @@
-# CLAUDE.md — 고교학점플래너 (HS CreditPlanner)
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+# 고교학점플래너 (HS CreditPlanner)
+
+## 공통 명령어 (Common Commands)
+
+```bash
+# 개발 서버 실행 (Vite + Hono)
+npm run dev
+
+# 프로덕션 빌드
+npm run build
+
+# 배포 (반드시 이 명령어 사용! wrangler pages deploy 직접 실행 금지)
+npm run deploy
+
+# 로컬 프리뷰
+npm run preview
+
+# Cloudflare bindings 타입 생성
+npm run cf-typegen
+
+# 기록 모듈 독립 테스트 (로그인 불필요)
+# 브라우저에서 http://localhost:5173/modules/records/dev.html 접속
+```
+
+---
+
 ## 🧠 Claude Code 운영 원칙 (Boris 방식 기반)
 
 ### 1. 코딩 전 반드시 계획 먼저
@@ -36,13 +67,6 @@
 
 ---
 
-## 📋 실수 노트
-<!-- 실수 발생 시 아래에 날짜와 함께 추가 -->
-> 이 파일은 Claude Code가 프로젝트를 이해하고 작업하기 위한 **상시 가이드**입니다.
-> 실수가 발생할 때마다 [실수 노트] 섹션을 업데이트하여 같은 실수를 반복하지 않습니다.
-
----
-
 ## 1. 프로젝트 개요
 
 - **이름**: 고교학점플래너 (HS CreditPlanner)
@@ -69,20 +93,33 @@
 ## 3. 폴더 구조
 
 ```
-jungyoul-planapp
+jungyoul-planapp/
 ├── src/
-│   ├── index.ts          # Hono 라우터 (모든 API 엔드포인트)
-│   ├── migrate.ts        # D1 마이그레이션 (14개 테이블)
-│   └── ...
+│   ├── index.tsx         # Hono 라우터 (모든 API 엔드포인트 — 단일 파일 280K+)
+│   └── renderer.tsx      # Vite 빌드용 렌더러
 ├── public/
-│   ├── index.html        # 메인 SPA (단일 HTML)
-│   ├── app.js            # 프론트엔드 핵심 로직
-│   ├── styles.css        # 커스텀 스타일
-│   ├── manifest.json     # PWA 매니페스트
-│   └── sw.js             # 서비스워커
-├── wrangler.toml         # Cloudflare 설정
+│   ├── static/
+│   │   ├── app.js        # 메인 앱 프론트엔드 로직 (700K+)
+│   │   ├── app.css       # 메인 앱 스타일
+│   │   └── app-mentor.js # 멘토 대시보드 전용
+│   ├── modules/
+│   │   └── records/      # 기록 모듈 (독립 SPA)
+│   │       ├── records.js
+│   │       ├── records.css
+│   │       ├── core/     # 상태관리, API, 라우터
+│   │       ├── views/    # 각 화면별 렌더러
+│   │       └── dev.html  # 모듈 독립 테스트용
+│   └── styles/           # 추가 스타일
+├── dist/                 # 빌드 출력 (vite build)
+├── wrangler.jsonc        # Cloudflare Pages 설정
 └── CLAUDE.md             # ← 이 파일
 ```
+
+### 아키텍처 노트
+- **백엔드 (src/index.tsx)**: 단일 파일에 모든 API 엔드포인트 정의. Hono 라우터 사용
+- **프론트엔드 (public/static/app.js)**: Vanilla JS SPA. 글로벌 상태 + 함수 기반
+- **기록 모듈 (public/modules/records/)**: ES Module 기반 독립 SPA. `_RM` 네임스페이스로 격리
+- **빌드**: Vite가 src/index.tsx를 Cloudflare Pages Functions로 빌드 → dist/ 출력
 
 ---
 
@@ -296,5 +333,5 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 ---
 
-*마지막 업데이트: 2026-03-04*
+*마지막 업데이트: 2026-03-11*
 *이 파일은 프로젝트와 함께 계속 성장합니다.*

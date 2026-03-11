@@ -510,7 +510,8 @@ function _renderScreenImpl(forced) {
         }
         initMobileBottomTab();
         setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
-        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); loadGrowthAhaClasses(); } }, 100);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); } }, 100);
+        setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
         // Home tab GSAP stagger animation
@@ -539,7 +540,8 @@ function _renderScreenImpl(forced) {
           initAuthEvents(container);
         }
         setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
-        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); loadGrowthAhaClasses(); } }, 100);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); } }, 100);
+        setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
         // Home tab GSAP stagger animation (phone)
@@ -12596,8 +12598,29 @@ function renderGrowthTab() {
         <h1>📈 나의 성장</h1>
       </div>
 
-      <!-- 성장 카드 스탯 (2축 기반) -->
+      <!-- 성장 아하 리포트 -->
       <div class="card stagger-1 animate-in">
+        <div class="card-title">📊 성장 아하 리포트</div>
+        <div id="growth-aha-report-list" style="margin-top:8px">
+          ${state._growthAhaClasses === null ? '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>' :
+            state._growthAhaClasses.length === 0 ? '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>' :
+            state._growthAhaClasses.map(cls => `
+              <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
+                <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
+                  <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
+                </div>
+                <div class="my-menu-text">
+                  <span class="my-menu-title">${escapeHtml(cls.class_name)}</span>
+                  <span class="my-menu-desc">성장 분석 리포트 보기</span>
+                </div>
+                <i class="fas fa-external-link-alt" style="color:var(--text-muted);font-size:12px"></i>
+              </div>
+            `).join('')}
+        </div>
+      </div>
+
+      <!-- 성장 카드 스탯 (2축 기반) -->
+      <div class="card stagger-2 animate-in">
         <div class="card-title">🃏 2축 성장 카드</div>
         <div class="growth-stats-2axis">
           <div class="growth-stat-box">
@@ -12626,7 +12649,7 @@ function renderGrowthTab() {
       </div>
 
       <!-- 축1: 호기심 사다리 분포 -->
-      <div class="card stagger-2 animate-in">
+      <div class="card stagger-3 animate-in">
         <div class="card-header-row">
           <span class="card-title">🪜 호기심 사다리 분포</span>
           <span class="card-subtitle">이번 달</span>
@@ -12642,7 +12665,7 @@ function renderGrowthTab() {
       </div>
 
       <!-- 축2: 성찰 질문 분포 -->
-      <div class="card stagger-3 animate-in">
+      <div class="card stagger-4 animate-in">
         <div class="card-header-row">
           <span class="card-title">🪞 성찰 질문 분포</span>
           <span class="card-subtitle">이번 달</span>
@@ -12658,7 +12681,7 @@ function renderGrowthTab() {
       </div>
 
       <!-- 질문 진화 콤보 (2축 기반) -->
-      <div class="card stagger-4 animate-in">
+      <div class="card stagger-5 animate-in">
         <div class="card-title">🏆 질문 진화 콤보</div>
         <div class="combo-card">
           <div class="combo-header">
@@ -12704,7 +12727,7 @@ function renderGrowthTab() {
       </div>
 
       <!-- 효과 측정 지표 -->
-      <div class="card stagger-5 animate-in">
+      <div class="card stagger-6 animate-in">
         <div class="card-title">📊 핵심 효과 지표</div>
         <div class="kpi-grid">
           <div class="kpi-item">
@@ -12731,7 +12754,7 @@ function renderGrowthTab() {
       </div>
 
       <!-- 나만의 질문방 통계 -->
-      <div class="card stagger-6 animate-in">
+      <div class="card stagger-7 animate-in">
         <div class="card-header-row">
           <span class="card-title">❓ 나만의 질문방</span>
           <button class="card-link" onclick="state.studentTab='myqa';goScreen('main')">전체보기 →</button>
@@ -12756,7 +12779,7 @@ function renderGrowthTab() {
         </div>` : ''}
       </div>
 
-      <div class="card stagger-7 animate-in">
+      <div class="card stagger-8 animate-in">
         <div class="card-title">🤝 교학상장 통계</div>
         <div class="teach-stat-grid">
           <div class="teach-stat-item">
@@ -12771,7 +12794,7 @@ function renderGrowthTab() {
         <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">주로 가르치는 과목: 수학(8), 과학(4)</p>
       </div>
 
-      <div class="card stagger-8 animate-in">
+      <div class="card stagger-9 animate-in">
         <div class="card-title">📚 과목별 기록 현황</div>
         ${[
           {subject:'수학', records:32, questions:15, bc:'72%', color:'#6C5CE7'},
@@ -13036,27 +13059,6 @@ function renderMyTab() {
         </div>
         <div class="pause-card-info">
           😴 쉼표 카드 (주 1회) — 하루 쉬어도 스트릭 유지!
-        </div>
-      </div>
-
-      <!-- 성장 아하 리포트 -->
-      <div class="card stagger-4b animate-in">
-        <div class="card-title">📊 성장 아하 리포트</div>
-        <div id="growth-aha-report-list" style="margin-top:8px">
-          ${state._growthAhaClasses === null ? '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>' : 
-            state._growthAhaClasses.length === 0 ? '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>' :
-            state._growthAhaClasses.map(cls => `
-              <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
-                <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
-                  <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
-                </div>
-                <div class="my-menu-text">
-                  <span class="my-menu-title">${escapeHtml(cls.class_name)}</span>
-                  <span class="my-menu-desc">성장 분석 리포트 보기</span>
-                </div>
-                <i class="fas fa-external-link-alt" style="color:var(--text-muted);font-size:12px"></i>
-              </div>
-            `).join('')}
         </div>
       </div>
 
