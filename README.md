@@ -7,7 +7,7 @@
 - **핵심 철학**: 학생이 기록한 모든 데이터는 DB에 날짜별로 차곡차곡 저장, 관리자가 언제든지 조회 가능
 
 ## URLs
-- **Production**: https://credit-planner-v8.pages.dev
+- **Production**: https://credit-planner-v8-359.pages.dev
 - **GitHub**: 배포 완료
 
 ## 완료된 기능

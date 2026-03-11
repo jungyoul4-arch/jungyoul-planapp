@@ -274,9 +274,9 @@ function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender =
     });
     _archiveModuleActive = true;
   } else if (_archiveModuleActive && window.ArchiveModule && !skipRefresh) {
-    // 이미 init된 상태에서 다시 진입 — 메인 앱 데이터 주입 + dashboard로 이동
-    window.ArchiveModule.navigate('dashboard');
+    // 이미 init된 상태에서 다시 진입 — 데이터 주입 완료 후 navigate 1회만 실행 (깜빡임 방지)
     window.ArchiveModule.refresh({
+      skipRender: true,
       preloadedData: {
         classRecords: state._dbClassRecords || [],
         questionRecords: state._dbQuestionRecords || [],
@@ -284,6 +284,8 @@ function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender =
         activityRecords: state._dbActivityRecords || [],
         reportRecords: state._dbReportRecords || [],
       },
+    }).then(() => {
+      window.ArchiveModule.navigate('dashboard');
     });
   }
 }
@@ -2059,6 +2061,9 @@ const DB = {
           photos: (() => { try { return JSON.parse(r.photos || '[]'); } catch(e) { return []; } })(),
           teacher_note: r.teacher_note || '',
           created_at: r.created_at || '',
+          ai_credit_log: (() => { try { return r.ai_credit_log ? JSON.parse(r.ai_credit_log) : null; } catch(e) { return null; } })(),
+          photo_tags: (() => { try { return JSON.parse(r.photo_tags || '[]'); } catch(e) { return []; } })(),
+          photo_count: r.photo_count || 0,
         }));
       }
     } catch (e) { console.error('loadClassRecords:', e); }
@@ -14590,7 +14595,14 @@ async function ttAnalyze() {
   renderScreen(true);
 }
 
+let _ttSaving = false;
 async function ttSave() {
+  if (_ttSaving) return; // 중복 클릭 방지
+  _ttSaving = true;
+  // 저장 버튼 비활성화 + 로딩 표시
+  const saveBtn = document.querySelector('.btn-primary.btn-glow');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:8px"></i> 저장 중...'; }
+
   const mode = state._ttMode || 'school';
 
   if (mode === 'academy') {
@@ -14616,9 +14628,10 @@ async function ttSave() {
         });
       }
     });
-    saveTimetableToStorage();
+    DB.saveTimetable();
     state._ttSavedSubjects = items.map(s => ({ name: s.name + ' (' + (s.academy || '학원') + ')' }));
     state._ttOnboardingStep = 'done';
+    _ttSaving = false;
     renderScreen(true);
     return;
   }
@@ -14668,13 +14681,14 @@ async function ttSave() {
     state.timetable.school = newSchool;
     state.timetable.teachers = newTeachers;
     state.timetable.subjectColors = newColors;
-    DB.saveTimetable();
+    await DB.saveTimetable();
     syncTodayRecords();
 
     state._ttOnboardingStep = 'done';
   } catch (err) {
     alert('저장 실패: ' + err.message);
   }
+  _ttSaving = false;
   renderScreen(true);
 }
 
@@ -14938,8 +14952,8 @@ function _renderTTDone() {
   const subjects = state._ttSavedSubjects || [];
   const returnTo = state._ttReturnTo;
   const doneAction = returnTo === 'timetable-manage'
-    ? "state._ttReturnTo=null;state.currentScreen='timetable-manage';renderScreen(true);"
-    : "state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();";
+    ? "state._ttReturnTo=null;syncTodayRecords();state.currentScreen='timetable-manage';renderScreen(true);"
+    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
   const doneLabel = returnTo === 'timetable-manage' ? '시간표 관리로 돌아가기' : '시작하기';
   return `
     <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">

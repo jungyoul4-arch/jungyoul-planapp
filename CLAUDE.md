@@ -245,6 +245,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 ### API 관련
 <!-- 실수 발생 시 아래에 추가 -->
+- [2026-03-11] 메인앱↔모듈 데이터 전달 시 필드 동기화: app.js의 `DB.loadClassRecords()`와 records 모듈의 `api.js loadClassRecords()`가 매핑하는 필드가 달라 `preloadedData` 전달 시 누락 발생. 두 곳의 필드 목록을 반드시 동기화할 것
 - [2026-03-04] SELECT 필드 누락: `class_records` INSERT에 `photos, ai_credit_log, photo_tags`를 저장하지만 GET SELECT에서 해당 필드 누락 → 프론트에서 항상 빈 값. INSERT와 SELECT 필드 목록을 반드시 동기화할 것
 - [2026-03-04] 프론트-백엔드 필드명 불일치: 프론트엔드 `imageData`(base64) → 백엔드 DB 컬럼 `image_key`. api.js에서 반드시 매핑 `payload.imageKey = payload.imageData; delete payload.imageData;` 처리. 필드명 불일치는 데이터가 사라지는 원인
 - [2026-03-04] 응답 필드 체이닝: 백엔드가 `{ questionId: N }` 반환 시 api.js에서 `d.data?.id || d.questionId || d.id`처럼 가능한 모든 형태를 체인으로 처리할 것. 엔드포인트마다 응답 구조가 미묘하게 다를 수 있음

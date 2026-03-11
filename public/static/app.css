@@ -286,7 +286,7 @@ body {
 }
 /* tablet-landscape preview에서 사이드바 슬림 표시 */
 #device-preview-frame.preview-tablet-landscape #tablet-sidebar {
-  width: 120px !important; min-width: 120px !important;
+  width: 160px !important; min-width: 160px !important;
   height: 834px !important;
 }
 #device-preview-frame.preview-tablet-landscape .sidebar-logo {
@@ -715,9 +715,9 @@ body {
 /* ==================== LANDSCAPE: 사이드바 확장 (아이콘+텍스트) ==================== */
 @media (orientation: landscape) and (min-width: 768px) and (min-height: 480px) {
   #tablet-sidebar {
-    width: 128px !important;
-    min-width: 128px !important;
-    max-width: 128px !important;
+    width: 160px !important;
+    min-width: 160px !important;
+    max-width: 160px !important;
     overflow-x: visible !important;
   }
   .sidebar-logo {

@@ -187,6 +187,10 @@ async function saveCreditLog() {
     // 2단계: DB 저장 성공 확인 후 todayRecords 업데이트 + 대시보드 이동
     record.done = true;
     record._dbRecordId = recordId;
+    record._topic = log.topic || '';
+    record._pages = log.pages || '';
+    record._keywords = log.keywords || [];
+    record._teacherNote = log.highlights || '';
     record.summary = log.topic || log.keywords?.join(', ') || '수업 기록 완료';
 
     if (state.missions && state.missions[0]) {

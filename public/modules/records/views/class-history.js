@@ -104,6 +104,7 @@ function _buildRecords() {
   const today = kstToday();
 
   const todayDone = (state.todayRecords || []).filter(r => r.done).map((r, idx) => {
+    if (r._dbRecordId && dbRecords.some(db => String(db.id) === String(r._dbRecordId))) return null;
     const topic = r._topic || '';
     const alreadyInDb = dbRecords.some(db => db.date === today && db.subject === r.subject && (db.topic === topic || db.content === topic));
     if (alreadyInDb) return null;

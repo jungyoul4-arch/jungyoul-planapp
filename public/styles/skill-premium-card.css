@@ -97,9 +97,9 @@
   position: relative;
   z-index: 1;
   flex-shrink: 0;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -107,8 +107,8 @@
   color: var(--glow-color, #6366f1);
 }
 .archive-module .skill-icon-wrap svg {
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
 }
 
 /* ==================== Card Info ==================== */
@@ -119,27 +119,26 @@
   min-width: 0;
 }
 .archive-module .skill-card-info h3 {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 800;
   color: var(--text-primary, #F0F6FC);
-  margin: 0 0 2px;
+  margin: 0 0 4px;
 }
 .archive-module .skill-card-info p {
-  font-size: 12px;
-  color: var(--text-muted, #484F58);
+  font-size: 14px;
+  color: var(--text-secondary, #8B949E);
   margin: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 /* ==================== Badge (XP pill) ==================== */
 .archive-module .skill-badge {
   position: relative;
   z-index: 1;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: 20px;
   background: rgba(255, 215, 0, 0.08);
   color: #fbbf24;
@@ -153,7 +152,7 @@
 .archive-module .skill-count {
   position: relative;
   z-index: 1;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--glow-color, var(--skill-accent-1));
   flex-shrink: 0;
@@ -180,26 +179,32 @@
 #archive-container-tablet .skill-card {
   flex-direction: column !important;
   text-align: center !important;
-  padding: 24px 16px !important;
+  padding: 28px 20px !important;
   gap: 0 !important;
 }
 #archive-container-tablet .skill-icon-wrap {
-  width: 56px !important;
-  height: 56px !important;
-  margin: 0 auto 10px !important;
+  width: 64px !important;
+  height: 64px !important;
+  margin: 0 auto 14px !important;
+  border-radius: 16px !important;
 }
 #archive-container-tablet .skill-icon-wrap svg {
-  width: 26px !important;
-  height: 26px !important;
+  width: 30px !important;
+  height: 30px !important;
 }
 #archive-container-tablet .skill-card-info {
-  margin-bottom: 8px !important;
+  margin-bottom: 10px !important;
 }
 #archive-container-tablet .skill-card-info h3 {
-  font-size: 15px !important;
+  font-size: 18px !important;
+  font-weight: 800 !important;
+  margin-bottom: 6px !important;
 }
 #archive-container-tablet .skill-card-info p {
   white-space: normal !important;
+  font-size: 14px !important;
+  color: var(--text-secondary, #8B949E) !important;
+  line-height: 1.5 !important;
 }
 #archive-container-tablet .skill-badge {
   margin: 0 auto !important;
@@ -216,8 +221,8 @@
 }
 #archive-container-tablet .skill-card-wide .skill-icon-wrap {
   margin: 0 !important;
-  width: 52px !important;
-  height: 52px !important;
+  width: 60px !important;
+  height: 60px !important;
 }
 #archive-container-tablet .skill-card-wide .skill-card-info {
   margin-bottom: 0 !important;
@@ -225,7 +230,10 @@
   min-width: 0 !important;
 }
 #archive-container-tablet .skill-card-wide .skill-card-info h3 {
-  font-size: 16px !important;
+  font-size: 18px !important;
+}
+#archive-container-tablet .skill-card-wide .skill-card-info p {
+  font-size: 14px !important;
 }
 #archive-container-tablet .skill-card-wide .skill-badge {
   margin: 0 !important;

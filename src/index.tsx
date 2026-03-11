@@ -183,7 +183,7 @@ async function callSonnetAnalysis(anthropicKey: string, systemPrompt: string, us
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
+      max_tokens: 4096,
       temperature,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
@@ -510,6 +510,87 @@ const SYSTEM_PROMPT_IMAGE = `당신은 학생이 올린 문제지/풀이 이미�
   "handwritingCheck": "필기 확인 결과 (필기가 있을 경우)",
   "suggestedQuestion": "이 문제에 대해 B단계 이상의 좋은 질문 예시"
 }`;
+
+
+// ==================== 진로 프로파일 컨텍스트 헬퍼 ====================
+async function getStudentCareerContext(db: D1Database, studentId: number): Promise<string> {
+  try {
+    const row: any = await db.prepare(
+      'SELECT dream_department, top_departments, field_profile, major_profile, career_advice, careers FROM career_profiles WHERE student_id = ? AND parse_status = ?'
+    ).bind(studentId, 'success').first()
+    if (!row) return ''
+
+    const dream = typeof row.dream_department === 'string' ? JSON.parse(row.dream_department || '{}') : row.dream_department
+    const topDepts = typeof row.top_departments === 'string' ? JSON.parse(row.top_departments || '[]') : row.top_departments
+    const fieldProf = typeof row.field_profile === 'string' ? JSON.parse(row.field_profile || '{}') : row.field_profile
+    const majorProf = typeof row.major_profile === 'string' ? JSON.parse(row.major_profile || '{}') : row.major_profile
+    const careers = typeof row.careers === 'string' ? JSON.parse(row.careers || '[]') : row.careers
+
+    let ctx = `\n\n[학생 진로 프로파일]\n`
+    if (dream.department) ctx += `- 꿈의 전공: ${dream.department} (${dream.field || ''}, 적합도 ${dream.score || 0}%)\n`
+    if (Array.isArray(topDepts) && topDepts.length > 0) {
+      ctx += `- TOP 학과: ${topDepts.slice(0, 3).map((d: any) => `${d.department}(${d.score}%)`).join(', ')}\n`
+    }
+    if (fieldProf && Object.keys(fieldProf).length > 0) {
+      const topFields = Object.entries(fieldProf).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3)
+      ctx += `- 강점 계열: ${topFields.map(([k, v]) => `${k}(${v})`).join(', ')}\n`
+    }
+    if (majorProf) {
+      const abilities = majorProf.abilities || []
+      const personality = majorProf.personality || []
+      const values = majorProf.values || []
+      if (abilities.length > 0) ctx += `- 핵심 역량: ${abilities.slice(0, 3).join(', ')}\n`
+      if (personality.length > 0) ctx += `- 개인 특성: ${personality.slice(0, 3).join(', ')}\n`
+      if (values.length > 0) ctx += `- 가치관: ${values.slice(0, 3).join(', ')}\n`
+    }
+    if (Array.isArray(careers) && careers.length > 0) {
+      ctx += `- 추천 커리어: ${careers.slice(0, 3).join(', ')}\n`
+    }
+    if (row.career_advice) ctx += `- 진로 조언: ${(row.career_advice as string).substring(0, 100)}\n`
+
+    return ctx
+  } catch (e) {
+    console.error('getStudentCareerContext error:', e)
+    return ''
+  }
+}
+
+// ==================== 진로 PDF 파싱 프롬프트 ====================
+const CAREER_PDF_PARSE_PROMPT = `이 이미지는 앱티핏(aptifit) 전공적성 검사 결과입니다. 모든 정보를 정확히 읽어서 아래 JSON 형식으로 반환해주세요.
+
+{
+  "student_name": "학생 이름",
+  "test_date": "검사 일자 YYYY-MM-DD",
+  "dream_department": {
+    "field": "계열(자연/인문/사회 등)",
+    "department": "학과명",
+    "score": 100
+  },
+  "top_departments": [
+    {"rank": 1, "field": "계열", "department": "학과명", "score": 100},
+    {"rank": 2, "field": "계열", "department": "학과명", "score": 91}
+  ],
+  "field_profile": {
+    "자연": 82, "사회": 68, "공학": 64, "교육": 60, "의약": 56, "인문": 50, "예체능": 44, "상경": 38
+  },
+  "major_profile": {
+    "abilities": ["관찰력", "정보활용능력"],
+    "values": ["자기실현", "지적탐구"],
+    "personality": ["이성적인", "주도적인"],
+    "interests": ["자연현상탐구", "데이터분석"],
+    "knowledge": ["자연과학지식", "수학적지식"]
+  },
+  "career_advice": "진로 조언 전체 텍스트",
+  "careers": ["천문학자", "데이터과학자", "연구원"]
+}
+
+중요:
+- 모든 수치는 숫자(정수)로
+- 계열 적성 프로파일은 8개 계열 모두 포함
+- top_departments는 표시된 모든 학과 포함 (보통 5개)
+- major_profile의 각 항목은 이미지에서 읽은 키워드 배열
+- career_advice는 텍스트 전체를 그대로 복사
+- 순수 JSON만 반환 (마크다운 코드블록 없이)`
 
 
 // ==================== API 라우트: 질문 분석 (OpenAI) ====================
@@ -3791,6 +3872,9 @@ app.get('/api/migrate', async (c) => {
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_wordbooks_unique ON relay_wordbooks(class_id, date)`,
       `CREATE TABLE IF NOT EXISTS relay_word_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, wordbook_id INTEGER NOT NULL, student_user_id INTEGER NOT NULL, student_name TEXT NOT NULL DEFAULT '', entries TEXT NOT NULL DEFAULT '[]', is_finished INTEGER NOT NULL DEFAULT 0, finished_at DATETIME DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (wordbook_id) REFERENCES relay_wordbooks(id) ON DELETE CASCADE)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_entries_unique ON relay_word_entries(wordbook_id, student_user_id)`,
+      // ===== 진로 프로파일 (앱티핏 전공적성 검사 결과) =====
+      `CREATE TABLE IF NOT EXISTS career_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, test_provider TEXT DEFAULT 'aptifit', test_date TEXT, raw_data TEXT DEFAULT '{}', top_departments TEXT DEFAULT '[]', dream_department TEXT DEFAULT '{}', field_profile TEXT DEFAULT '{}', major_profile TEXT DEFAULT '{}', career_advice TEXT DEFAULT '', careers TEXT DEFAULT '[]', pdf_r2_key TEXT DEFAULT NULL, parse_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_career_profiles_student ON career_profiles(student_id)`,
     ];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(_) { /* column may already exist */ }
@@ -3829,6 +3913,179 @@ app.get('/api/migrate', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+
+// ==================== 진로 프로파일 API ====================
+
+// GET /api/student/:id/career-profile — 진로 프로파일 조회
+app.get('/api/student/:id/career-profile', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const row: any = await c.env.DB.prepare(
+      'SELECT id, student_id, test_provider, test_date, top_departments, dream_department, field_profile, major_profile, career_advice, careers, pdf_r2_key, parse_status, created_at, updated_at FROM career_profiles WHERE student_id = ?'
+    ).bind(studentId).first()
+    if (!row) return c.json({ success: true, data: null })
+
+    // JSON 문자열 필드 파싱
+    const data = {
+      ...row,
+      top_departments: JSON.parse(row.top_departments || '[]'),
+      dream_department: JSON.parse(row.dream_department || '{}'),
+      field_profile: JSON.parse(row.field_profile || '{}'),
+      major_profile: JSON.parse(row.major_profile || '{}'),
+      careers: JSON.parse(row.careers || '[]'),
+    }
+    return c.json({ success: true, data })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/career-profile/upload — PDF base64 업로드 → R2 저장 → Gemini 파싱 → DB 저장
+app.post('/api/student/:id/career-profile/upload', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const { pdfBase64 } = await c.req.json()
+    if (!pdfBase64) return c.json({ success: false, error: 'PDF 데이터가 필요합니다' }, 400)
+
+    const geminiKey = c.env.GEMINI_API_KEY
+    if (!geminiKey) return c.json({ success: false, error: 'Gemini API 키가 설정되지 않았습니다' }, 500)
+
+    // 1. R2에 PDF 저장
+    let pdfR2Key = ''
+    const rawBase64 = pdfBase64.replace(/^data:application\/pdf;base64,/, '')
+    if (c.env.R2) {
+      try {
+        pdfR2Key = `career_profiles/${studentId}/${Date.now()}.pdf`
+        const binary = Uint8Array.from(atob(rawBase64), ch => ch.charCodeAt(0))
+        await c.env.R2.put(pdfR2Key, binary, { httpMetadata: { contentType: 'application/pdf' } })
+      } catch (e) {
+        console.error('Career PDF R2 upload failed:', e)
+        pdfR2Key = ''
+      }
+    }
+
+    // 2. PDF → Gemini Vision으로 파싱 (base64 inline_data)
+    let parsedData: any = null
+    try {
+      const geminiRes = await fetchWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: CAREER_PDF_PARSE_PROMPT },
+                { inline_data: { mime_type: 'application/pdf', data: rawBase64 } }
+              ]
+            }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+          })
+        },
+        60000
+      )
+
+      if (!geminiRes.ok) {
+        const errText = await geminiRes.text()
+        throw new Error(`Gemini API ${geminiRes.status}: ${errText.substring(0, 200)}`)
+      }
+
+      const geminiData: any = await geminiRes.json()
+      const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || ''
+
+      // JSON 파싱 (코드블록 처리)
+      const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/) || rawText.match(/```\s*([\s\S]*?)```/)
+      const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText.trim()
+      parsedData = JSON.parse(jsonStr)
+    } catch (parseErr: any) {
+      console.error('Career PDF parse error:', parseErr)
+      // 파싱 실패해도 DB에 pending으로 저장
+      await c.env.DB.prepare(
+        `INSERT INTO career_profiles (student_id, pdf_r2_key, parse_status, updated_at) VALUES (?, ?, 'failed', datetime('now','+9 hours'))
+         ON CONFLICT(student_id) DO UPDATE SET pdf_r2_key = excluded.pdf_r2_key, parse_status = 'failed', updated_at = datetime('now','+9 hours')`
+      ).bind(studentId, pdfR2Key || null).run()
+      return c.json({ success: false, error: `PDF 파싱 실패: ${parseErr.message}` }, 500)
+    }
+
+    // 3. DB 저장 (UPSERT)
+    await c.env.DB.prepare(
+      `INSERT INTO career_profiles (student_id, test_provider, test_date, raw_data, top_departments, dream_department, field_profile, major_profile, career_advice, careers, pdf_r2_key, parse_status, updated_at)
+       VALUES (?, 'aptifit', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', datetime('now','+9 hours'))
+       ON CONFLICT(student_id) DO UPDATE SET
+         test_date = excluded.test_date,
+         raw_data = excluded.raw_data,
+         top_departments = excluded.top_departments,
+         dream_department = excluded.dream_department,
+         field_profile = excluded.field_profile,
+         major_profile = excluded.major_profile,
+         career_advice = excluded.career_advice,
+         careers = excluded.careers,
+         pdf_r2_key = excluded.pdf_r2_key,
+         parse_status = 'success',
+         updated_at = datetime('now','+9 hours')`
+    ).bind(
+      studentId,
+      parsedData.test_date || null,
+      JSON.stringify(parsedData),
+      JSON.stringify(parsedData.top_departments || []),
+      JSON.stringify(parsedData.dream_department || {}),
+      JSON.stringify(parsedData.field_profile || {}),
+      JSON.stringify(parsedData.major_profile || {}),
+      parsedData.career_advice || '',
+      JSON.stringify(parsedData.careers || []),
+      pdfR2Key || null
+    ).run()
+
+    return c.json({ success: true, data: parsedData })
+  } catch (e: any) {
+    console.error('Career profile upload error:', e)
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// POST /api/student/:id/career-profile/update — 멘토가 파싱 결과 수동 수정
+app.post('/api/student/:id/career-profile/update', async (c) => {
+  const studentId = Number(c.req.param('id'))
+  try {
+    const body = await c.req.json()
+    const {
+      test_date, top_departments, dream_department,
+      field_profile, major_profile, career_advice, careers
+    } = body
+
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM career_profiles WHERE student_id = ?'
+    ).bind(studentId).first()
+    if (!existing) return c.json({ success: false, error: '진로 프로파일이 없습니다. 먼저 PDF를 업로드하세요.' }, 404)
+
+    await c.env.DB.prepare(
+      `UPDATE career_profiles SET
+        test_date = COALESCE(?, test_date),
+        top_departments = COALESCE(?, top_departments),
+        dream_department = COALESCE(?, dream_department),
+        field_profile = COALESCE(?, field_profile),
+        major_profile = COALESCE(?, major_profile),
+        career_advice = COALESCE(?, career_advice),
+        careers = COALESCE(?, careers),
+        updated_at = datetime('now','+9 hours')
+      WHERE student_id = ?`
+    ).bind(
+      test_date || null,
+      top_departments ? JSON.stringify(top_departments) : null,
+      dream_department ? JSON.stringify(dream_department) : null,
+      field_profile ? JSON.stringify(field_profile) : null,
+      major_profile ? JSON.stringify(major_profile) : null,
+      career_advice || null,
+      careers ? JSON.stringify(careers) : null,
+      studentId
+    ).run()
+
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
 
 
 // ==================== 시간표 사진 → 과목 자동 등록 API ====================
@@ -5789,15 +6046,9 @@ app.get('/', (c) => {
           })
           .catch(err => console.log('SW registration failed:', err));
       });
-      // 컨트롤러 변경 시 자동 새로고침 (새 SW 활성화 완료 = 새 버전 적용)
-      let refreshing = false;
-      const hadController = !!navigator.serviceWorker.controller;
+      // 새 SW 활성화 로깅만 (자동 reload 제거 — skipWaiting+claim으로 즉시 적용됨)
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (refreshing) return;
-        if (!hadController) return; // 첫 설치 시에는 reload 불필요
-        refreshing = true;
-        console.log('[PWA] New version activated, reloading...');
-        window.location.reload();
+        console.log('[PWA] New service worker activated');
       });
     }
   </script>

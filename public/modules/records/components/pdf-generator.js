@@ -9,6 +9,8 @@ export function generateCreditLogPDF(creditLog, subject, date, studentName) {
 
   const questions = creditLog.questions || [];
   const keywords = creditLog.keywords || [];
+  const seteukQs = creditLog.seteuk_questions || [];
+  const quiz = creditLog.quiz || [];
   const examConn = creditLog.exam_connection || [];
   const activeRecall = creditLog.active_recall || [];
   const highlights = creditLog.highlights || '';
@@ -323,17 +325,40 @@ body {
     </div>
   </section>` : ''}
 
-  ${questions.length > 0 ? `
+  ${(seteukQs.length > 0 || questions.length > 0) ? `
   <section class="sec">
     <div class="sec-label">세특 소재 질문</div>
-    ${questions.slice(0, 3).map(q => `
-    <div class="q-block">
-      <div class="q-my">${_esc(q.original || '')}</div>
-      <div class="q-up">
-        <span class="q-up-label">선생님께 이렇게</span>
-        ${_esc(q.improved || '')}
-      </div>
-    </div>`).join('')}
+    ${seteukQs.length > 0
+      ? seteukQs.map((q, i) => `
+      <div class="q-block">
+        <div class="q-my">${_esc(q.q || '')}</div>
+        ${q.reason ? `<div style="font-size:22px;color:var(--mid);margin:8px 0 8px 24px;line-height:1.7"><strong style="color:var(--gold)">왜?</strong> ${_esc(q.reason)}</div>` : ''}
+        ${q.guide ? `<div class="q-up"><span class="q-up-label">탐구 방향</span>${_esc(q.guide)}</div>` : ''}
+      </div>`).join('')
+      : questions.map(q => `
+      <div class="q-block">
+        <div class="q-my">${_esc(q.original || '')}</div>
+        <div class="q-up">
+          <span class="q-up-label">선생님께 이렇게</span>
+          ${_esc(q.improved || '')}
+        </div>
+      </div>`).join('')}
+  </section>` : ''}
+
+  ${quiz.length > 0 ? `
+  <section class="sec">
+    <div class="sec-label">예상 퀴즈</div>
+    <ul class="exam-list">
+      ${quiz.map((q, i) => `
+      <li>
+        <span class="exam-n">${String(i + 1).padStart(2, '0')}</span>
+        <div class="exam-txt">
+          <div style="font-weight:500;color:var(--ink)">${_esc(q.question || '')}</div>
+          ${q.answer ? `<div style="margin-top:10px;font-size:22px"><strong style="color:var(--teal)">정답:</strong> ${_esc(q.answer)}</div>` : ''}
+          ${q.explanation ? `<div style="margin-top:6px;font-size:22px;color:var(--faint)">${_esc(q.explanation)}</div>` : ''}
+        </div>
+      </li>`).join('')}
+    </ul>
   </section>` : ''}
 
   ${activeRecall.length > 0 ? `
