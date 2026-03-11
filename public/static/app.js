@@ -12899,35 +12899,54 @@ function renderCommunityTab() {
 
 let _growthAhaLoading = false;
 async function loadGrowthAhaClasses() {
-  console.log('[GrowthAha] loadGrowthAhaClasses called, loading:', _growthAhaLoading, 'classes:', state._growthAhaClasses);
   if (_growthAhaLoading) return;
   // 이미 로드된 데이터가 있으면 스킵 (null이면 아직 로드 안 됨, []면 로드했지만 데이터 없음)
   if (state._growthAhaClasses !== null && state._growthAhaClasses.length > 0) return;
   _growthAhaLoading = true;
   state._growthAhaClasses = null; // 로딩 상태
-  renderScreen();
+  _updateGrowthAhaReportList();
   try {
     const extId = state._externalUserId || state._authUser?.external_user_id;
-    console.log('[GrowthAha] extId:', extId);
     if (!extId) {
-      console.log('[GrowthAha] No extId, setting empty array');
       state._growthAhaClasses = [];
       _growthAhaLoading = false;
-      renderScreen();
+      _updateGrowthAhaReportList();
       return;
     }
-    console.log('[GrowthAha] Fetching classes...');
     const res = await fetch(`/api/student/classes?user_id=${extId}`);
     const data = await res.json();
-    console.log('[GrowthAha] API response:', data);
     state._growthAhaClasses = data.success ? (data.classes || []) : [];
   } catch (e) {
     console.error('[GrowthAha] Failed to load classes:', e);
     state._growthAhaClasses = [];
   }
   _growthAhaLoading = false;
-  console.log('[GrowthAha] Load complete, classes:', state._growthAhaClasses);
-  renderScreen();
+  _updateGrowthAhaReportList();
+}
+
+// 성장 아하 리포트 리스트 DOM 직접 업데이트
+function _updateGrowthAhaReportList() {
+  const container = document.getElementById('growth-aha-report-list');
+  if (!container) return;
+
+  if (state._growthAhaClasses === null) {
+    container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>';
+  } else if (state._growthAhaClasses.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>';
+  } else {
+    container.innerHTML = state._growthAhaClasses.map(cls => `
+      <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
+        <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
+          <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
+        </div>
+        <div class="my-menu-text">
+          <span class="my-menu-title">${escapeHtml(cls.class_name)}</span>
+          <span class="my-menu-desc">성장 분석 리포트 보기</span>
+        </div>
+        <i class="fas fa-external-link-alt" style="color:var(--text-muted);font-size:12px"></i>
+      </div>
+    `).join('');
+  }
 }
 
 function openGrowthAhaReport(classId, className) {
