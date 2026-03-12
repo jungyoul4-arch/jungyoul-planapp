@@ -2826,6 +2826,75 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   color: var(--primary-light);
 }
 
+/* Community Nickname Setup */
+.community-nickname-card {
+  max-width: 380px;
+  width: 100%;
+  padding: 32px 24px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+}
+.community-nickname-input {
+  width: 100%;
+  padding: 12px 48px 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+.community-nickname-input:focus {
+  border-color: var(--primary);
+}
+.community-nickname-error {
+  color: #ef4444;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+/* Mobile tab badge */
+.mob-tab-badge {
+  position: absolute;
+  top: 2px;
+  right: 50%;
+  transform: translateX(14px);
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+/* Community btn-icon */
+.btn-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.btn-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* ==================== PLANNER 2-COLUMN LAYOUT ==================== */
 .planner-two-col {
   display: grid;

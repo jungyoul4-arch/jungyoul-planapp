@@ -49,6 +49,10 @@
     "section-07-nickname-sharing-api": {
       "status": "complete",
       "commit_hash": "7bdc4bd"
+    },
+    "section-08-moderation-api": {
+      "status": "complete",
+      "commit_hash": "2faa2d3"
     }
   },
   "pre_commit": {
