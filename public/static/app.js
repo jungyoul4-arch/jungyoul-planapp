@@ -110,6 +110,30 @@ const state = {
   inputMode: 'keyword',
   _mentorFeedbacks: [], // 멘토 피드백 목록
   _mentorFeedbackUnread: 0, // 미읽음 피드백 수
+  // Community state
+  _communityBoards: [],
+  _communityPosts: [],
+  _communityCurrentBoard: null,
+  _communityCurrentPost: null,
+  _communityComments: [],
+  _communityFriends: [],
+  _communityShareSettings: null,
+  _communityPage: 1,
+  _communityHasMore: false,
+  _communityUnreadCount: 0,
+  _communityNotifications: [],
+  _communityNicknameInput: '',
+  _communityNicknameError: '',
+  _communityScreen: 'home',
+  _communityMyInviteCode: null,
+  _communityFriendProfile: null,
+  _communityViewingFriendId: null,
+  _communityFriendsTab: 'list',
+  _communityFriendCodeInput: '',
+  _communityEditingPostId: null,
+  _editorPhotos: [],
+  _editorTitle: '',
+  _editorContent: '',
   _classPhotos: [], // 수업 기록 사진 배열
   _recordGalleryFilter: '전체', // 수업 기록 갤러리 과목 필터
   _classAssignmentText: '', // 과제 내용
@@ -442,7 +466,7 @@ function _renderScreenImpl(forced) {
 
   // 같은 화면이면 DOM 전체 교체 스킵 (깜빡임 방지)
   const _m = typeof _mentor !== 'undefined' ? _mentor : {};
-  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}`;
+  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}`;
   const skipFullRender = !forced && (_lastRenderedKey === renderKey) && _lastRenderedKey !== '';
   if (!skipFullRender) {
     _lastRenderedKey = renderKey;
@@ -761,6 +785,7 @@ function renderSidebar() {
             <span class="sidebar-nav-label">${t.label}</span>
             ${t.id === 'archive' && unrecordedCount > 0 ? `<span class="sidebar-badge">${unrecordedCount}</span>` : ''}
             ${t.id === 'myqa' && state.myQaStats?.unanswered > 0 ? `<span class="sidebar-badge" style="background:var(--accent)">${state.myQaStats.unanswered}</span>` : ''}
+            ${t.id === 'community' && state._communityUnreadCount > 0 ? `<span class="sidebar-badge">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
           </button>
         `).join('')}
       </nav>
@@ -794,8 +819,9 @@ function renderMobileBottomTab() {
     { id:'community', icon:'fa-comments', label:'커뮤니티' },
   ];
   return `<div class="mobile-bottom-tab-bar">
-    ${tabs.map(t => `<button class="mob-tab-item ${state.studentTab===t.id?'active':''}" data-tab="${t.id}">
+    ${tabs.map(t => `<button class="mob-tab-item ${state.studentTab===t.id?'active':''}" data-tab="${t.id}" style="position:relative">
       <i class="fas ${t.icon}"></i><span>${t.label}</span>
+      ${t.id === 'community' && state._communityUnreadCount > 0 ? `<span class="mob-tab-badge">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
     </button>`).join('')}
   </div>`;
 }
@@ -1249,6 +1275,7 @@ function initAuthEvents(container) {
 
       // DB에서 데이터 로드 (비동기)
       DB.loadAll().then(() => refreshDataWidgets());
+      startCommunityNotifPoll();
       // 수업 종료 자동 감지 시작
       startClassEndChecker();
       // 멀티디바이스 자동 동기화 시작
@@ -1452,6 +1479,7 @@ function logout() {
   if (!confirm('로그아웃 하시겠습니까?')) return;
   // 타이머 정리
   stopAutoSync();
+  stopCommunityNotifPoll();
   if (_classCheckTimer) { clearInterval(_classCheckTimer); _classCheckTimer = null; }
   state._authUser = null;
   state._authToken = null;
@@ -1567,6 +1595,7 @@ async function externalLogin(userId, deviceMode) {
       localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, group: data.group, externalUserId: data.externalUserId }));
       renderScreen();
       DB.loadAll().then(() => refreshDataWidgets());
+      startCommunityNotifPoll();
       startClassEndChecker();
       startAutoSync();
     } else if (data.role === 'mentor') {
@@ -1652,6 +1681,7 @@ function autoLogin() {
         renderScreen();
         startClassEndChecker();
         startAutoSync();
+        startCommunityNotifPoll();
       }).catch(() => {
         // DB 로드 실패 (profile 404 등) → 로그아웃
         console.log('Auto-login data load failed, logging out');
@@ -2340,6 +2370,366 @@ const DB = {
     try {
       await fetch(`/api/student/feedback/${feedbackId}/read`, { method: 'PUT' });
     } catch (e) { console.error('markFeedbackRead:', e); }
+  },
+
+  // ==================== Community API Methods ====================
+  _communityUserType() {
+    return state.mode === 'mentor' ? 'mentor' : 'student';
+  },
+  _communityUserId() {
+    return state._authUser?.id;
+  },
+
+  async loadCommunityBoards() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/boards?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) { state._communityBoards = data.data?.boards || []; renderScreen(); }
+    } catch (e) { console.error('loadCommunityBoards:', e); }
+  },
+
+  async loadCommunityPosts(boardId, page = 1) {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/boards/${boardId}/posts?page=${page}&limit=20&user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const posts = (data.data?.posts || []).map(p => ({
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+        }));
+        if (page === 1) {
+          state._communityPosts = posts;
+        } else {
+          state._communityPosts = [...state._communityPosts, ...posts];
+        }
+        state._communityPage = page;
+        state._communityHasMore = posts.length >= 20;
+        renderScreen();
+      }
+    } catch (e) { console.error('loadCommunityPosts:', e); }
+  },
+
+  async loadPostDetail(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const p = data.data?.post || data.data;
+        state._communityCurrentPost = {
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+          board_id: p.boardId || p.board_id || 0,
+        };
+        renderScreen();
+      }
+    } catch (e) { console.error('loadPostDetail:', e); }
+  },
+
+  async savePost(boardId, postData) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/boards/${boardId}/posts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...postData, author_type: this._communityUserType(), author_id: uid }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('savePost:', e); return null; }
+  },
+
+  async updatePost(postId, postData) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...postData, user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('updatePost:', e); return false; }
+  },
+
+  async deletePost(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('deletePost:', e); return false; }
+  },
+
+  async loadComments(postId, page = 1) {
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments?page=${page}&limit=20`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityComments = (data.data?.comments || []).map(c => ({
+          ...c,
+          author_type: c.authorType || c.author_type || '',
+          author_id: c.authorId || c.author_id || 0,
+          created_at: c.createdAt || c.created_at || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadComments:', e); }
+  },
+
+  async saveComment(postId, content) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author_type: this._communityUserType(), author_id: uid, content }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('saveComment:', e); return null; }
+  },
+
+  async deleteComment(commentId) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/comments/${commentId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('deleteComment:', e); return false; }
+  },
+
+  async toggleLike(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('toggleLike:', e); return null; }
+  },
+
+  async reportContent(targetType, targetId, reason) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch('/api/community/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reporter_type: this._communityUserType(), reporter_id: uid, target_type: targetType, target_id: targetId, reason }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('reportContent:', e); return false; }
+  },
+
+  async loadFriends() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityFriends = (data.data?.friends || []).map(f => ({
+          ...f,
+          friendId: f.studentId || f.friendId || 0,
+          school: f.schoolName || f.school || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadFriends:', e); }
+  },
+
+  async generateFriendInviteCode() {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/invite-code`, { method: 'POST' });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('generateFriendInviteCode:', e); return null; }
+  },
+
+  async acceptFriendCode(code) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/accept-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      return data;
+    } catch (e) { console.error('acceptFriendCode:', e); return { success: false, error: '네트워크 오류' }; }
+  },
+
+  async removeFriend(friendshipId) {
+    const sid = this.studentId();
+    if (!sid) return false;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/${friendshipId}`, { method: 'DELETE' });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('removeFriend:', e); return false; }
+  },
+
+  async loadShareSettings() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/share-settings`);
+      const data = await res.json();
+      if (data.success) { state._communityShareSettings = data.data; renderScreen(); }
+    } catch (e) { console.error('loadShareSettings:', e); }
+  },
+
+  async updateShareSettings(settings) {
+    const sid = this.studentId();
+    if (!sid) return false;
+    try {
+      const res = await fetch(`/api/student/${sid}/share-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('updateShareSettings:', e); return false; }
+  },
+
+  async loadFriendProfile(studentId) {
+    const myId = this.studentId();
+    if (!myId) return null;
+    try {
+      const res = await fetch(`/api/student/${studentId}/learning-profile?viewer_id=${myId}`);
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('loadFriendProfile:', e); return null; }
+  },
+
+  async setNickname(nickname) {
+    const uid = this._communityUserId();
+    if (!uid) return { success: false, error: '로그인 필요' };
+    try {
+      const endpoint = this._communityUserType() === 'mentor'
+        ? `/api/mentor/${uid}/nickname`
+        : `/api/student/${uid}/nickname`;
+      const res = await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname }),
+      });
+      const data = await res.json();
+      if (data.success && state._authUser) {
+        state._authUser.nickname = nickname;
+      }
+      return data;
+    } catch (e) { console.error('setNickname:', e); return { success: false, error: '네트워크 오류' }; }
+  },
+
+  async loadNotifications() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/notifications?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityNotifications = (data.data?.notifications || []).map(n => ({
+          ...n,
+          post_id: n.postId || n.post_id || 0,
+          post_title: n.postTitle || n.post_title || '',
+          actor_nickname: n.actorNickname || n.actor_nickname || '익명',
+          is_read: n.isRead ?? n.is_read ?? 0,
+          created_at: n.createdAt || n.created_at || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadNotifications:', e); }
+  },
+
+  async getUnreadNotificationCount() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/notifications/unread-count?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const prev = state._communityUnreadCount;
+        state._communityUnreadCount = data.data?.unreadCount || 0;
+        if (prev !== state._communityUnreadCount) {
+          try { initMobileBottomTab(); } catch(_) {}
+        }
+      }
+    } catch (e) { console.error('getUnreadNotificationCount:', e); }
+  },
+
+  async markNotificationsRead() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      await fetch('/api/community/notifications/read-all', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      state._communityUnreadCount = 0;
+    } catch (e) { console.error('markNotificationsRead:', e); }
+  },
+
+  // ==================== Mentor Community API Methods ====================
+  async loadMentorReports() {
+    const mid = state._authUser?.id;
+    if (!mid || state.mode !== 'mentor') return;
+    try {
+      const res = await fetch(`/api/mentor/${mid}/community-reports`);
+      const data = await res.json();
+      return data.success ? data.data?.reports || [] : [];
+    } catch (e) { console.error('loadMentorReports:', e); return []; }
+  },
+
+  async resolveReport(reportId, status, deleteContent = false) {
+    const mid = state._authUser?.id;
+    if (!mid) return false;
+    try {
+      const res = await fetch(`/api/community/reports/${reportId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, resolved_by: mid, delete_content: deleteContent }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('resolveReport:', e); return false; }
   },
 };
 
@@ -12884,40 +13274,824 @@ function openQuestionFromTimetable(subject, period) {
 }
 
 
-// ==================== COMMUNITY TAB (Iframe) ====================
+// ==================== COMMUNITY TAB (In-App) ====================
 
-function getCommunityUrl() {
-  return 'https://jungyoul-academy.pages.dev/community?inapp=true';
+// Community notification polling
+let _communityNotifPollTimer = null;
+function startCommunityNotifPoll() {
+  if (_communityNotifPollTimer) return;
+  DB.getUnreadNotificationCount();
+  _communityNotifPollTimer = setInterval(() => {
+    if (state._authUser) DB.getUnreadNotificationCount();
+  }, 30000);
+}
+function stopCommunityNotifPoll() {
+  if (_communityNotifPollTimer) { clearInterval(_communityNotifPollTimer); _communityNotifPollTimer = null; }
 }
 
-function openCommunityNewTab() {
-  window.open(getCommunityUrl(), '_blank', 'noopener');
+// Community sub-screen navigation helper
+function goCommScreen(screen) {
+  state._communityScreen = screen;
+  state.studentTab = 'community';
+  state.currentScreen = 'main';
+  renderScreen();
 }
 
 function renderCommunityTab() {
-  // 자동으로 새 탭에서 열기 (첫 진입 시)
-  if (!state._communityOpened) {
-    state._communityOpened = true;
-    setTimeout(() => openCommunityNewTab(), 300);
+  // Nickname gate
+  if (state._authUser && !state._authUser.nickname && state._communityScreen !== 'nickname-setup') {
+    state._communityScreen = 'nickname-setup';
+  }
+  switch (state._communityScreen) {
+    case 'nickname-setup': return renderCommunityNicknameSetup();
+    case 'home': return renderCommunityHome();
+    case 'board': return renderCommunityBoard();
+    case 'post-detail': return renderPostDetail();
+    case 'post-editor': return renderPostEditor();
+    case 'friends': return renderFriendsList();
+    case 'friend-profile': return renderFriendProfile();
+    case 'share-settings': return renderShareSettings();
+    case 'reports': return renderReportList();
+    case 'notifications': return renderNotificationList();
+    default: return renderCommunityHome();
+  }
+}
+
+// Nickname setup (fully implemented — gates community access)
+function renderCommunityNicknameSetup() {
+  const nick = state._communityNicknameInput || '';
+  const err = state._communityNicknameError || '';
+  return `<div class="tab-content animate-in" style="display:flex;align-items:center;justify-content:center;min-height:60vh">
+    <div class="community-nickname-card">
+      <div style="font-size:48px;margin-bottom:16px;text-align:center">👤</div>
+      <h2 style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:700;color:var(--text-primary)">닉네임 설정</h2>
+      <p style="text-align:center;color:var(--text-muted);font-size:14px;margin-bottom:24px">커뮤니티에서 사용할 닉네임을 설정해주세요</p>
+      <div style="position:relative;margin-bottom:8px">
+        <input type="text" class="community-nickname-input" maxlength="12" placeholder="닉네임 (2~12자)" value="${escapeHtml(nick)}"
+          oninput="state._communityNicknameInput=this.value;state._communityNicknameError='';document.getElementById('comm-nick-counter').textContent=this.value.length+'/12'">
+        <span id="comm-nick-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${nick.length}/12</span>
+      </div>
+      ${err ? `<div class="community-nickname-error">${escapeHtml(err)}</div>` : ''}
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">한글, 영문, 숫자, 공백 사용 가능</p>
+      <button class="btn-primary" style="width:100%;padding:12px" onclick="submitCommunityNickname()">
+        설정 완료
+      </button>
+    </div>
+  </div>`;
+}
+
+async function submitCommunityNickname() {
+  const nickname = (state._communityNicknameInput || '').trim();
+  if (nickname.length < 2 || nickname.length > 12) {
+    state._communityNicknameError = '닉네임은 2~12자여야 합니다';
+    renderScreen(); return;
+  }
+  if (!/^[가-힣a-zA-Z0-9\s]+$/.test(nickname)) {
+    state._communityNicknameError = '한글, 영문, 숫자, 공백만 사용 가능합니다';
+    renderScreen(); return;
+  }
+  const result = await DB.setNickname(nickname);
+  if (result.success) {
+    state._communityNicknameError = '';
+    state._communityScreen = 'home';
+    DB.loadCommunityBoards();
+    renderScreen();
+    showToast('닉네임이 설정되었습니다');
+  } else {
+    state._communityNicknameError = result.error || '닉네임 설정에 실패했습니다';
+    renderScreen();
+  }
+}
+
+// ==================== COMMUNITY: BOARD & POSTS ====================
+
+// Helpers
+function _relativeTime(dateStr) {
+  if (!dateStr) return '';
+  const now = new Date();
+  const d = new Date(dateStr);
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return '방금 전';
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  if (diff < 172800) return '어제';
+  if (diff < 604800) return `${Math.floor(diff / 86400)}일 전`;
+  return d.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\. /g, '.').replace(/\.$/, '');
+}
+
+function _stripHtmlPreview(html, maxLen = 100) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  const text = (tmp.textContent || '').trim();
+  return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+}
+
+function _safeHtml(html) {
+  return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html || '') : escapeHtml(html || '');
+}
+
+let _communityLoadingMore = false;
+
+function _renderPostCard(p) {
+  const preview = _stripHtmlPreview(p.content);
+  return `<div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="openPostDetail(${p.id})">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:20px">${p.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(p.authorNickname || '익명')}</span>
+      <span style="font-size:12px;color:var(--text-muted);margin-left:auto">${_relativeTime(p.created_at)}</span>
+    </div>
+    ${p.title ? `<div style="font-weight:700;font-size:15px;color:var(--text-primary);margin-bottom:4px">${escapeHtml(p.title)}</div>` : ''}
+    ${preview ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${escapeHtml(preview)}</div>` : ''}
+    ${p.photoCount > 0 ? `<div style="font-size:12px;color:var(--primary);margin-bottom:8px"><i class="fas fa-camera"></i> ${p.photoCount}장</div>` : ''}
+    <div style="display:flex;gap:16px;font-size:13px;color:var(--text-muted)">
+      <span><i class="${p.isLikedByMe ? 'fas' : 'far'} fa-heart" style="${p.isLikedByMe ? 'color:#ef4444' : ''}"></i> ${p.like_count || 0}</span>
+      <span><i class="far fa-comment"></i> ${p.comment_count || 0}</span>
+    </div>
+  </div>`;
+}
+
+// Board home (board list + header)
+function renderCommunityHome() {
+  const boards = state._communityBoards || [];
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <h2 style="font-size:20px;font-weight:700;color:var(--text-primary)">소통</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="goCommScreen('notifications')" style="position:relative">
+          <i class="fas fa-bell"></i>
+          ${state._communityUnreadCount > 0 ? `<span style="position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;font-size:10px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
+        </button>
+        <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-user-group"></i></button>
+        <button class="btn-icon" onclick="goCommScreen('share-settings')"><i class="fas fa-gear"></i></button>
+      </div>
+    </div>
+    ${boards.length > 0 ? boards.map(b => `
+      <div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="selectCommunityBoard(${b.id})">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:40px;height:40px;border-radius:12px;background:${b.board_type==='academy'?'linear-gradient(135deg,#6366f1,#8b5cf6)':'linear-gradient(135deg,#06b6d4,#3b82f6)'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px">
+            ${b.board_type === 'academy' ? '<i class="fas fa-school"></i>' : '<i class="fas fa-users"></i>'}
+          </div>
+          <div style="flex:1">
+            <div style="font-weight:600;color:var(--text-primary)">${escapeHtml(b.name)}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${b.board_type === 'academy' ? '학원 게시판' : '반 게시판'}</div>
+          </div>
+          <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+        </div>
+      </div>
+    `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted)">게시판이 없습니다</div>'}
+  </div>`;
+}
+
+async function selectCommunityBoard(boardId) {
+  state._communityCurrentBoard = boardId;
+  state._communityPage = 1;
+  state._communityPosts = [];
+  state._communityHasMore = false;
+  state._communityScreen = 'board';
+  renderScreen();
+  await DB.loadCommunityPosts(boardId, 1);
+  renderScreen();
+  setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+}
+
+// Board post list
+function renderCommunityBoard() {
+  const posts = state._communityPosts || [];
+  const boardId = state._communityCurrentBoard;
+  const board = (state._communityBoards || []).find(b => b.id === boardId);
+  const boardName = board ? board.name : '게시판';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(boardName)}</h2>
+    </div>
+    <div id="community-post-list">
+      ${posts.length > 0 ? posts.map(p => _renderPostCard(p)).join('') : `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px">📝</div>
+          <p style="font-size:15px;font-weight:600;margin-bottom:4px">아직 게시글이 없어요</p>
+          <p style="font-size:13px">첫 번째 게시글을 작성해보세요!</p>
+        </div>`}
+      <div id="community-scroll-sentinel" style="height:40px;display:flex;align-items:center;justify-content:center">
+        ${state._communityHasMore ? '<div class="spinner" style="width:24px;height:24px"></div>' : (posts.length > 0 ? '<span style="font-size:12px;color:var(--text-muted)">모든 게시글을 불러왔어요</span>' : '')}
+      </div>
+    </div>
+    <button onclick="goCommScreen('post-editor')" style="position:fixed;bottom:80px;right:20px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;font-size:24px;cursor:pointer;box-shadow:0 4px 16px rgba(99,102,241,0.4);z-index:50;display:flex;align-items:center;justify-content:center">
+      <i class="fas fa-plus"></i>
+    </button>
+  </div>`;
+}
+
+function _setupCommunityInfiniteScroll() {
+  const sentinel = document.getElementById('community-scroll-sentinel');
+  if (!sentinel) return;
+  const observer = new IntersectionObserver(async (entries) => {
+    if (entries[0].isIntersecting && state._communityHasMore && !_communityLoadingMore) {
+      _communityLoadingMore = true;
+      await DB.loadCommunityPosts(state._communityCurrentBoard, state._communityPage + 1);
+      _communityLoadingMore = false;
+      renderScreen();
+      setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+    }
+  }, { threshold: 0.1 });
+  observer.observe(sentinel);
+}
+
+// Post detail
+async function openPostDetail(postId) {
+  state._communityCurrentPost = null;
+  state._communityComments = [];
+  state._communityScreen = 'post-detail';
+  renderScreen();
+  await Promise.all([DB.loadPostDetail(postId), DB.loadComments(postId, 1)]);
+  renderScreen();
+}
+
+function renderPostDetail() {
+  const post = state._communityCurrentPost;
+  if (!post) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">게시글</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div><p style="margin-top:12px;color:var(--text-muted)">로딩 중...</p></div>
+    </div>`;
   }
 
-  return `
-    <div class="community-landing animate-in">
-      <div class="community-landing-card">
-        <div class="community-landing-icon">💬</div>
-        <h2 class="community-landing-title">정율 커뮤니티</h2>
-        <p class="community-landing-desc">공지사항, 학습 꿀팁, 질문을 자유롭게 나눠보세요.<br>새 탭에서 커뮤니티가 열렸습니다.</p>
-        <button class="community-open-btn" onclick="openCommunityNewTab()">
-          <i class="fas fa-external-link-alt"></i> 커뮤니티 열기
-        </button>
-        <div class="community-landing-features">
-          <div class="community-feat"><i class="fas fa-bullhorn"></i><span>📌 공지사항</span></div>
-          <div class="community-feat"><i class="fas fa-comments"></i><span>💬 자유게시판</span></div>
-          <div class="community-feat"><i class="fas fa-question-circle"></i><span>❓ 질문게시판</span></div>
+  const isAuthor = (post.author_type === DB._communityUserType() && post.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  const comments = state._communityComments || [];
+  const photos = post.photos || [];
+  const safeContent = _safeHtml(post.content);
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(post.title || '')}</h2>
+      <div style="position:relative">
+        <button class="btn-icon" onclick="document.getElementById('comm-post-menu').style.display=document.getElementById('comm-post-menu').style.display==='block'?'none':'block'"><i class="fas fa-ellipsis-v"></i></button>
+        <div id="comm-post-menu" style="display:none;position:absolute;right:0;top:40px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:140px;z-index:100;overflow:hidden">
+          <button onclick="reportCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit">신고하기</button>
+          ${canDelete ? `<button onclick="deleteCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:#ef4444;cursor:pointer;border-top:1px solid var(--border);font-family:inherit">삭제하기</button>` : ''}
         </div>
       </div>
     </div>
-  `;
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <span style="font-size:24px">${post.authorEmoji || '🐻'}</span>
+      <div>
+        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(post.authorNickname || '익명')}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${_relativeTime(post.created_at)}</div>
+      </div>
+    </div>
+
+    ${photos.length > 0 ? `<div class="community-photo-gallery" style="margin-bottom:16px">
+      ${photos.map((ph, i) => {
+        const src = ph.r2_key ? `/api/community/photo/${ph.r2_key}` : (ph.thumbnail || ph.photo_data || '');
+        return `<img src="${escapeHtml(src)}" alt="사진 ${i+1}" onclick="openCommunityLightbox('${escapeHtml(src)}')" style="cursor:pointer">`;
+      }).join('')}
+    </div>` : ''}
+
+    <div class="community-post-content" style="font-size:15px;line-height:1.7;color:var(--text-primary);margin-bottom:20px">${safeContent}</div>
+
+    <div style="display:flex;align-items:center;gap:16px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:20px">
+      <button id="comm-like-btn" onclick="togglePostLike(${post.id})" style="display:flex;align-items:center;gap:6px;background:none;border:none;font-size:14px;color:${post.isLikedByMe ? '#ef4444' : 'var(--text-muted)'};cursor:pointer;font-family:inherit">
+        <i class="${post.isLikedByMe ? 'fas' : 'far'} fa-heart"></i>
+        <span id="comm-like-count">${post.like_count || 0}</span>
+      </button>
+      <span style="font-size:14px;color:var(--text-muted)"><i class="far fa-comment"></i> <span id="comm-comment-count">${post.comment_count || 0}</span></span>
+    </div>
+
+    <div id="comm-comments-area">
+      <h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>
+      ${comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>'}
+    </div>
+
+    <div class="community-comment-bar">
+      <input id="community-comment-input" type="text" placeholder="댓글을 입력하세요..." maxlength="1000" style="flex:1;padding:10px 16px;border-radius:20px;border:1px solid var(--border);background:var(--bg-primary);font-size:14px;font-family:inherit;color:var(--text-primary);outline:none">
+      <button onclick="submitComment(${post.id})" style="width:40px;height:40px;border-radius:50%;background:var(--primary);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-paper-plane" style="font-size:14px"></i></button>
+    </div>
+  </div>`;
+}
+
+function _renderCommentCard(c) {
+  const isAuthor = (c.author_type === DB._communityUserType() && c.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  return `<div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04)">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="font-size:16px">${c.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:13px;color:var(--text-primary)">${escapeHtml(c.authorNickname || '익명')}</span>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${_relativeTime(c.created_at)}</span>
+      ${canDelete ? `<button onclick="deleteCommunityComment(${c.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px"><i class="fas fa-trash-alt"></i></button>` : ''}
+    </div>
+    <div style="font-size:14px;color:var(--text-secondary);line-height:1.5;padding-left:22px">${escapeHtml(c.content)}</div>
+  </div>`;
+}
+
+async function togglePostLike(postId) {
+  const result = await DB.toggleLike(postId);
+  if (result) {
+    if (state._communityCurrentPost) {
+      state._communityCurrentPost.isLikedByMe = result.liked;
+      state._communityCurrentPost.like_count = result.likeCount;
+    }
+    const btn = document.getElementById('comm-like-btn');
+    const cnt = document.getElementById('comm-like-count');
+    if (btn) {
+      btn.style.color = result.liked ? '#ef4444' : 'var(--text-muted)';
+      btn.querySelector('i').className = result.liked ? 'fas fa-heart' : 'far fa-heart';
+    }
+    if (cnt) cnt.textContent = result.likeCount;
+    const listPost = (state._communityPosts || []).find(p => p.id === postId);
+    if (listPost) listPost.like_count = result.likeCount;
+  }
+}
+
+async function submitComment(postId) {
+  const input = document.getElementById('community-comment-input');
+  const content = (input?.value || '').trim();
+  if (!content) return;
+  if (content.length > 1000) { showToast('댓글은 1,000자까지 입력할 수 있어요'); return; }
+  input.value = '';
+  const result = await DB.saveComment(postId, content);
+  if (result) {
+    await DB.loadComments(postId, 1);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = (state._communityCurrentPost.comment_count || 0) + 1;
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function deleteCommunityComment(commentId) {
+  if (!confirm('댓글을 삭제하시겠어요?')) return;
+  const result = await DB.deleteComment(commentId);
+  if (result) {
+    state._communityComments = (state._communityComments || []).filter(c => c.id !== commentId);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = Math.max(0, (state._communityCurrentPost.comment_count || 0) - 1);
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function reportCommunityPost(postId) {
+  const reason = prompt('신고 사유를 입력해주세요:');
+  if (!reason) return;
+  const ok = await DB.reportContent('post', postId, reason);
+  if (ok) showToast('신고가 접수되었습니다');
+  else showToast('이미 신고한 콘텐츠입니다');
+}
+
+async function deleteCommunityPost(postId) {
+  if (!confirm('게시글을 삭제하시겠어요?')) return;
+  const result = await DB.deletePost(postId);
+  if (result) {
+    state._communityPosts = (state._communityPosts || []).filter(p => p.id !== postId);
+    goCommScreen('board');
+    showToast('게시글이 삭제되었습니다');
+  }
+}
+
+function openCommunityLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'community-lightbox';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `<img src="${src}">`;
+  document.body.appendChild(overlay);
+}
+
+// ==================== COMMUNITY: POST EDITOR & PHOTOS ====================
+
+// Photo compression
+function compressCommunityPhoto(file, maxWidth = 1200, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) { resolve(e.target.result); return; }
+        const ratio = maxWidth / img.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = Math.round(img.height * ratio);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPostEditor() {
+  const editingPostId = state._communityEditingPostId || null;
+  const isEdit = !!editingPostId;
+  const photos = state._editorPhotos || [];
+  const existingTitle = state._editorTitle || '';
+  const existingContent = state._editorContent || '';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="cancelPostEditor()"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${isEdit ? '글 수정' : '글쓰기'}</h2>
+      <button onclick="submitCommunityPost()" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
+        ${isEdit ? '수정' : '게시'}
+      </button>
+    </div>
+
+    <div style="margin-bottom:12px;position:relative">
+      <input id="comm-editor-title" type="text" maxlength="100" placeholder="제목" value="${escapeHtml(existingTitle)}"
+        oninput="state._editorTitle=this.value;document.getElementById('comm-title-counter').textContent=this.value.length+'/100'"
+        style="width:100%;padding:12px 60px 12px 16px;border:1px solid var(--border);border-radius:12px;font-size:16px;font-weight:600;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <span id="comm-title-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${existingTitle.length}/100</span>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:12px;background:var(--bg-primary)">
+      <div class="community-editor-toolbar">
+        <button onclick="document.execCommand('bold')" title="굵게"><i class="fas fa-bold"></i></button>
+        <button onclick="document.execCommand('italic')" title="기울임"><i class="fas fa-italic"></i></button>
+        <button onclick="var u=prompt('링크 URL:');if(u)document.execCommand('createLink',false,u)" title="링크"><i class="fas fa-link"></i></button>
+        <button onclick="document.execCommand('insertUnorderedList')" title="목록"><i class="fas fa-list-ul"></i></button>
+      </div>
+      <div id="comm-editor-content" class="community-editor-content" contenteditable="true" data-placeholder="내용을 입력하세요..."
+        oninput="state._editorContent=this.innerHTML;document.getElementById('comm-content-counter').textContent=this.innerText.length+'/10000'">
+        ${existingContent ? _safeHtml(existingContent) : ''}
+      </div>
+      <div style="padding:4px 16px 8px;text-align:right">
+        <span id="comm-content-counter" style="font-size:12px;color:var(--text-muted)">0/10000</span>
+      </div>
+    </div>
+
+    <div class="community-photo-strip">
+      ${photos.map((p, i) => `
+        <div class="community-photo-thumb">
+          <img src="${p.data}">
+          <button class="remove-btn" onclick="removeEditorPhoto(${i})"><i class="fas fa-times" style="font-size:10px"></i></button>
+        </div>
+      `).join('')}
+      ${photos.length < 5 ? `
+        <label class="community-photo-add">
+          <i class="fas fa-camera"></i>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="handleEditorPhotos(this.files)">
+        </label>
+      ` : ''}
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">사진 ${photos.length}/5</div>
+  </div>`;
+}
+
+function cancelPostEditor() {
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  state._communityEditingPostId = null;
+  goCommScreen('board');
+}
+
+async function handleEditorPhotos(files) {
+  const photos = state._editorPhotos || [];
+  const remaining = 5 - photos.length;
+  if (remaining <= 0) { showToast('사진은 최대 5장까지 첨부할 수 있어요'); return; }
+  const toProcess = Array.from(files).slice(0, remaining);
+  for (const file of toProcess) {
+    try {
+      const data = await compressCommunityPhoto(file);
+      photos.push({ data, mimeType: file.type || 'image/jpeg' });
+    } catch (e) { console.error('Photo compress error:', e); }
+  }
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+function removeEditorPhoto(idx) {
+  const photos = state._editorPhotos || [];
+  photos.splice(idx, 1);
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+async function submitCommunityPost() {
+  const titleEl = document.getElementById('comm-editor-title');
+  const contentEl = document.getElementById('comm-editor-content');
+  const title = (titleEl?.value || '').trim();
+  const rawHtml = contentEl?.innerHTML || '';
+  const textLen = (contentEl?.innerText || '').trim().length;
+  const photos = state._editorPhotos || [];
+
+  if (!title && textLen === 0 && photos.length === 0) {
+    showToast('제목, 내용, 또는 사진 중 하나는 입력해주세요');
+    return;
+  }
+  if (title.length > 100) { showToast('제목은 100자까지 입력할 수 있어요'); return; }
+  if (textLen > 10000) { showToast('내용은 10,000자까지 입력할 수 있어요'); return; }
+
+  const cleanHtml = typeof DOMPurify !== 'undefined'
+    ? DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['b', 'i', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'br', 'p', 'div'], ALLOWED_ATTR: ['href', 'target'] })
+    : rawHtml;
+
+  const editingPostId = state._communityEditingPostId;
+  const boardId = state._communityCurrentBoard;
+
+  if (editingPostId) {
+    const ok = await DB.updatePost(editingPostId, { title, content: cleanHtml });
+    if (ok) {
+      cancelPostEditor();
+      showToast('게시글이 수정되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('수정에 실패했습니다');
+    }
+  } else {
+    const payload = {
+      title,
+      content: cleanHtml,
+      photos: photos.map(p => ({ data: p.data, mime_type: p.mimeType })),
+    };
+    const result = await DB.savePost(boardId, payload);
+    if (result) {
+      cancelPostEditor();
+      showToast('게시글이 작성되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('작성에 실패했습니다');
+    }
+  }
+}
+
+async function openPostEditorForEdit(postId) {
+  state._communityEditingPostId = postId;
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  await DB.loadPostDetail(postId);
+  const post = state._communityCurrentPost;
+  if (post) {
+    state._editorTitle = post.title || '';
+    state._editorContent = post.content || '';
+    if (post.photos) {
+      state._editorPhotos = post.photos.map(p => ({
+        data: p.r2_key ? `/api/community/photo/${p.r2_key}` : (p.thumbnail || p.photo_data || ''),
+        mimeType: p.mime_type || 'image/jpeg',
+      }));
+    }
+  }
+  goCommScreen('post-editor');
+}
+
+// ==================== COMMUNITY: FRIENDS & SETTINGS ====================
+
+function renderFriendsList() {
+  const tab = state._communityFriendsTab || 'list';
+  const friends = state._communityFriends || [];
+  const code = state._communityMyInviteCode;
+
+  if (!friends.length && tab === 'list') { DB.loadFriends(); }
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구</h2>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:20px">
+      <button onclick="state._communityFriendsTab='list';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='list'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">내 친구</button>
+      <button onclick="state._communityFriendsTab='invite';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='invite'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">초대하기</button>
+    </div>
+
+    ${tab === 'list' ? `
+      ${friends.length > 0 ? friends.map(f => `
+        <div class="glass-card" style="padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="communityViewFriend(${f.friendId})">
+          <span style="font-size:28px">${f.emoji || '🐻'}</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(f.nickname || f.name || '학생')}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(f.school || '')}</div>
+          </div>
+          <button onclick="event.stopPropagation();communityUnfriend(${f.friendshipId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:8px"><i class="fas fa-user-minus"></i></button>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:14px">아직 친구가 없습니다.<br>초대 코드를 공유해보세요!</div>'}
+    ` : `
+      <div class="glass-card" style="padding:24px;text-align:center;margin-bottom:20px">
+        ${code ? `
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">내 초대 코드</div>
+          <div style="font-size:24px;font-weight:700;font-family:monospace;color:var(--text-primary);letter-spacing:2px;margin-bottom:16px">${escapeHtml(code)}</div>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button onclick="copyInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-copy" style="margin-right:4px"></i>복사</button>
+            <button onclick="shareInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:rgba(0,0,0,0.06);color:var(--text-primary);border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-share" style="margin-right:4px"></i>공유</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:12px">7일 후 만료 · 최대 5회 사용</div>
+        ` : `
+          <button onclick="communityGenerateInviteCode()" style="padding:12px 32px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-ticket" style="margin-right:8px"></i>초대 코드 생성</button>
+        `}
+      </div>
+
+      <div class="glass-card" style="padding:20px">
+        <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:12px">친구 코드 입력</div>
+        <div style="display:flex;gap:8px">
+          <input id="comm-friend-code" type="text" placeholder="JYCC-XXXX-XXXX" value="${escapeHtml(state._communityFriendCodeInput || '')}"
+            oninput="state._communityFriendCodeInput=this.value"
+            style="flex:1;padding:10px 16px;border-radius:12px;border:1px solid var(--border);font-size:14px;font-family:monospace;background:var(--bg-primary);color:var(--text-primary);outline:none">
+          <button onclick="communityAcceptFriendCode()" style="padding:10px 20px;border-radius:12px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">추가</button>
+        </div>
+      </div>
+    `}
+  </div>`;
+}
+
+async function communityGenerateInviteCode() {
+  const result = await DB.generateFriendInviteCode();
+  if (result) {
+    state._communityMyInviteCode = result.code;
+    renderScreen();
+  } else {
+    showToast('초대 코드 생성에 실패했습니다');
+  }
+}
+
+async function communityAcceptFriendCode() {
+  const code = (state._communityFriendCodeInput || '').trim();
+  if (!code) return;
+  const res = await DB.acceptFriendCode(code);
+  if (res.success) {
+    showToast('친구가 추가되었습니다!');
+    state._communityFriendCodeInput = '';
+    await DB.loadFriends();
+    state._communityFriendsTab = 'list';
+    renderScreen();
+  } else {
+    showToast(res.error || '친구 추가에 실패했습니다');
+  }
+}
+
+async function communityUnfriend(friendshipId) {
+  if (!confirm('친구를 삭제하시겠어요?')) return;
+  const ok = await DB.removeFriend(friendshipId);
+  if (ok) {
+    await DB.loadFriends();
+    renderScreen();
+    showToast('친구가 삭제되었습니다');
+  }
+}
+
+async function communityViewFriend(friendStudentId) {
+  state._communityViewingFriendId = friendStudentId;
+  state._communityFriendProfile = null;
+  goCommScreen('friend-profile');
+  state._communityFriendProfile = await DB.loadFriendProfile(friendStudentId);
+  renderScreen();
+}
+
+async function copyInviteCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('초대 코드가 복사되었습니다');
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = code;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('초대 코드가 복사되었습니다');
+  }
+}
+
+async function shareInviteCode(code) {
+  if (navigator.share) {
+    try { await navigator.share({ title: '정율 플래너 친구 초대', text: `정율 플래너에서 친구가 되어요! 초대 코드: ${code}` }); } catch(_) {}
+  } else {
+    copyInviteCode(code);
+  }
+}
+
+function renderFriendProfile() {
+  const profile = state._communityFriendProfile;
+  if (!profile) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div></div>
+    </div>`;
+  }
+
+  const sections = [];
+  if (profile.classRecordCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">수업 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.classRecordCount}개</div></div>`);
+  if (profile.questionCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">질문 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.questionCount}개</div></div>`);
+  if (profile.teachCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">가르침 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.teachCount}개</div></div>`);
+  if (profile.completedAssignmentCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">완료한 미션</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.completedAssignmentCount}개</div></div>`);
+  if (profile.xp !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">레벨 / 경험치</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">Lv.${profile.level || 1} · ${profile.xp || 0} XP</div></div>`);
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
+    </div>
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="font-size:56px;margin-bottom:8px">${profile.emoji || '🐻'}</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${escapeHtml(profile.nickname || profile.name || '학생')}</div>
+      <div style="font-size:13px;color:var(--text-muted)">${escapeHtml(profile.school || '')}</div>
+    </div>
+    ${sections.length > 0 ? sections.join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:14px">이 친구는 학습 정보를 공유하지 않고 있습니다</div>'}
+  </div>`;
+}
+
+function renderShareSettings() {
+  const s = state._communityShareSettings || {};
+  if (!state._communityShareSettings) { DB.loadShareSettings(); }
+  const fields = [
+    { key: 'share_class_records', label: '수업 기록 공유' },
+    { key: 'share_question_count', label: '질문 기록 수 공유' },
+    { key: 'share_teach_count', label: '가르침 기록 수 공유' },
+    { key: 'share_mission_status', label: '미션 현황 공유' },
+    { key: 'share_xp_level', label: '레벨/경험치 공유' },
+  ];
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">학습 공유 설정</h2>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px">친구에게 공개할 학습 정보를 선택하세요</p>
+
+    ${fields.map(f => `
+      <div class="glass-card" style="padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:14px;font-weight:500;color:var(--text-primary)">${f.label}</span>
+        <label style="position:relative;width:44px;height:24px;cursor:pointer">
+          <input type="checkbox" ${s[f.key] ? 'checked' : ''} onchange="toggleShareSetting('${f.key}',this.checked)"
+            style="opacity:0;width:0;height:0;position:absolute">
+          <span style="position:absolute;inset:0;border-radius:12px;background:${s[f.key] ? '#6366f1' : 'rgba(0,0,0,0.15)'};transition:all 0.3s"></span>
+          <span style="position:absolute;top:2px;left:${s[f.key] ? '22px' : '2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></span>
+        </label>
+      </div>
+    `).join('')}
+
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+      <button onclick="state._communityNicknameInput=state._authUser?.nickname||'';goCommScreen('nickname-setup')" style="display:block;width:100%;text-align:left;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit;margin-bottom:8px">
+        <i class="fas fa-user-edit" style="margin-right:8px;color:var(--text-muted)"></i>닉네임 변경
+      </button>
+    </div>
+  </div>`;
+}
+
+async function toggleShareSetting(field, value) {
+  const s = state._communityShareSettings || {};
+  s[field] = value ? 1 : 0;
+  state._communityShareSettings = s;
+  await DB.updateShareSettings(s);
+}
+
+// Report list (mentors)
+function renderReportList() {
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">신고 관리</h2>
+    </div>
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">신고 관리 (멘토 전용)</div>
+  </div>`;
+}
+
+// Notifications
+function renderNotificationList() {
+  const notifications = state._communityNotifications || [];
+  DB.loadNotifications();
+  DB.markNotificationsRead();
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">알림</h2>
+    </div>
+    <div id="comm-notifications-list">
+      ${notifications.length > 0 ? notifications.map(n => `
+        <div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04);cursor:pointer${!n.is_read ? ';background:rgba(99,102,241,0.04);border-radius:8px;padding:12px' : ''}" onclick="if(${n.post_id}){openPostDetail(${n.post_id})}">
+          <div style="font-size:14px;color:var(--text-primary)">
+            ${n.type === 'comment' ? '<i class="fas fa-comment" style="color:#6366f1;margin-right:6px"></i>' : '<i class="fas fa-heart" style="color:#ef4444;margin-right:6px"></i>'}
+            ${escapeHtml(n.actorNickname || '알 수 없음')}님이 ${n.type === 'comment' ? '댓글을 남겼습니다' : '좋아요를 눌렀습니다'}
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${_relativeTime(n.created_at)}</div>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:13px">알림이 없습니다</div>'}
+    </div>
+  </div>`;
 }
 
 // ==================== 성장 아하 리포트 ====================
@@ -15283,8 +16457,19 @@ function _initDelegatedEvents() {
   // --- 사이드바 + 모바일 하단 탭 공통 핸들러 ---
   function _handleNavTabClick(tab) {
     if (tab === 'myqa') { openMyQaIframe(); return; }
-    if (tab === 'community') { openCommunityNewTab(); return; }
-    state._communityOpened = false;
+    if (tab === 'community') {
+      state.studentTab = 'community';
+      state.currentScreen = 'main';
+      if (state._authUser && !state._authUser.nickname) {
+        state._communityScreen = 'nickname-setup';
+      } else if (state._communityScreen === 'nickname-setup') {
+        state._communityScreen = 'home';
+      }
+      renderScreen();
+      DB.loadCommunityBoards();
+      DB.getUnreadNotificationCount();
+      return;
+    }
     if (tab === 'archive' && state.studentTab === 'archive' && typeof _archiveModuleActive !== 'undefined' && _archiveModuleActive && window.ArchiveModule) {
       window.ArchiveModule.navigate('dashboard');
       return;
