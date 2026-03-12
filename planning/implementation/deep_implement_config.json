@@ -33,6 +33,10 @@
     "section-03-post-api": {
       "status": "complete",
       "commit_hash": "ab09f29"
+    },
+    "section-04-comment-like-api": {
+      "status": "complete",
+      "commit_hash": "eaa23fe"
     }
   },
   "pre_commit": {

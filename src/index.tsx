@@ -4578,6 +4578,73 @@ app.post('/api/community/posts/:postId/like', async (c) => {
   }
 });
 
+// ==================== 커뮤니티: 알림 ====================
+
+// GET /api/community/notifications/unread-count — 읽지 않은 알림 수 (탭 뱃지용)
+app.get('/api/community/notifications/unread-count', async (c) => {
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+  try {
+    const result: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_notifications WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(userType, userId).first();
+    return c.json({ success: true, data: { unreadCount: result?.cnt || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/community/notifications/read-all — 모든 알림 읽음 처리
+app.put('/api/community/notifications/read-all', async (c) => {
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+    const result = await c.env.DB.prepare(
+      'UPDATE community_notifications SET is_read = 1 WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(user_type, user_id).run();
+    return c.json({ success: true, data: { markedCount: result.meta.changes || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/community/notifications — 알림 목록
+app.get('/api/community/notifications', async (c) => {
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+  const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 20));
+  try {
+    const notifs: any = await c.env.DB.prepare(
+      `SELECT n.id, n.type, n.post_id, n.actor_type, n.actor_id, n.is_read, n.created_at,
+              p.title as post_title,
+              CASE WHEN n.actor_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as actor_nickname
+       FROM community_notifications n
+       LEFT JOIN community_posts p ON n.post_id = p.id
+       LEFT JOIN students s ON n.actor_type = 'student' AND n.actor_id = s.id
+       LEFT JOIN mentors m ON n.actor_type = 'mentor' AND n.actor_id = m.id
+       WHERE n.recipient_type = ? AND n.recipient_id = ?
+       ORDER BY n.created_at DESC
+       LIMIT ?`
+    ).bind(userType, userId, limit).all();
+
+    const unreadResult: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_notifications WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(userType, userId).first();
+
+    const notifications = (notifs.results || []).map((n: any) => ({
+      id: n.id, type: n.type, postId: n.post_id,
+      postTitle: n.post_title || '', actorNickname: n.actor_nickname || '익명',
+      isRead: n.is_read === 1, createdAt: n.created_at
+    }));
+
+    return c.json({ success: true, data: { notifications, unreadCount: unreadResult?.cnt || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
 // ==================== 진로 프로파일 API ====================
 
 // GET /api/student/:id/career-profile — 진로 프로파일 조회
