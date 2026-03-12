@@ -3837,7 +3837,168 @@ app.get('/api/seed-test-data', async (c) => {
       return c.json({ success: true, step: 4, message: 'All seed data complete!', counts });
     }
 
-    return c.json({ error: 'Invalid step. Use step=0,1,2,3,4', usage: 'Call /api/seed-test-data?step=0 then step=1,2,3,4 in order' }, 400);
+    // ==================== Step 5: Community Seed Data ====================
+    if (step === 5) {
+      const kstTs = (offsetDays: number = 0) => {
+        const d = new Date(Date.now() + offsetDays * 86400000 + 9 * 3600000);
+        return d.toISOString().replace('T', ' ').substring(0, 19);
+      };
+
+      // 5a. Clean existing community data
+      const ph = studentIds.map(() => '?').join(',');
+      await DB.prepare(`DELETE FROM community_notifications WHERE recipient_id IN (${ph}) AND recipient_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM community_comments WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM community_likes WHERE user_id IN (${ph}) AND user_type='student'`).bind(...studentIds).run();
+      // Delete photos for posts by these students
+      const existingPosts: any = await DB.prepare(`SELECT id FROM community_posts WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).all();
+      for (const ep of (existingPosts.results || [])) {
+        await DB.prepare('DELETE FROM community_post_photos WHERE post_id = ?').bind(ep.id).run();
+      }
+      await DB.prepare(`DELETE FROM community_posts WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM friendships WHERE student_id_1 IN (${ph}) OR student_id_2 IN (${ph})`).bind(...studentIds, ...studentIds).run();
+      await DB.prepare(`DELETE FROM friend_invite_codes WHERE student_id IN (${ph})`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM learning_share_settings WHERE student_id IN (${ph})`).bind(...studentIds).run();
+
+      // 5b. Set nicknames
+      const nicknames = ['길동이냥', '서연이여우', '준호사자', '하은토끼', '민재곰돌', '예린유니콘'];
+      for (let i = 0; i < Math.min(studentIds.length, nicknames.length); i++) {
+        await DB.prepare('UPDATE students SET nickname = ? WHERE id = ?').bind(nicknames[i], studentIds[i]).run();
+      }
+      await DB.prepare('UPDATE mentors SET nickname = ? WHERE id = ?').bind('멘토선생님', mentorId).run();
+
+      // 5c. Get boards
+      const boards: any = await DB.prepare('SELECT id, board_type FROM community_boards WHERE is_active = 1 LIMIT 5').all();
+      const boardIds = (boards.results || []).map((b: any) => b.id);
+      if (boardIds.length === 0) {
+        return c.json({ success: true, step: 5, message: 'No boards found. Run migration first.', counts: {} });
+      }
+
+      // 5d. Create posts
+      const postContents = [
+        { title: '물리 2단원 이해가 안 돼요...', content: '뉴턴 운동 법칙 중에서 <b>제2법칙</b> F=ma 부분이 잘 이해가 안 가요.<br>특히 마찰력 있는 경우에 자유물체도 그리기가 어렵네요. 도움 부탁드려요!' },
+        { title: '영어 단어 외우는 꿀팁 공유합니다!', content: '제가 효과 본 방법인데요,<br>1. 접두사/접미사로 묶어서 외우기<br>2. 문장 속에서 뜻 유추하기<br>3. <b>하루 30개씩 3일 반복</b>이 제일 효과 좋았어요!' },
+        { title: '다음 주 체육대회 준비 어떻게 하고 계세요?', content: '우리 반은 릴레이랑 줄넘기 나가는데 연습할 시간이 부족해요 ㅠㅠ<br>다른 분들은 어떤 종목 준비하시나요?' },
+        { title: '중간고사 시간표 정리해봤어요', content: '<b>1일차</b>: 국어, 수학<br><b>2일차</b>: 영어, 과학<br><b>3일차</b>: 한국사, 선택과목<br>시간표 참고하세요~' },
+        { title: '수학 치환적분 제가 이해한 방식으로 설명해볼게요', content: 'u = g(x)로 치환하면 du = g\'(x)dx 니까<br>원래 적분식에서 x를 u로 바꾸고, dx도 du/g\'(x)로 바꾸면 돼요.<br><b>핵심은 치환할 부분을 잘 고르는 것!</b>' },
+        { title: '오늘 국어 시간에 배운 현대시 정리', content: '윤동주의 <b>"서시"</b> 분석했어요.<br>"죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를" 이 부분이 주제의식을 가장 잘 드러낸대요.' },
+        { title: '과학실험 보고서 쓰는 법 공유', content: '1. 목적 → 2. 준비물 → 3. 실험과정 → 4. 결과 → 5. 고찰<br>특히 <b>고찰</b> 부분에서 오차 원인 분석을 꼭 넣어야 한대요.' },
+        { title: '한국사 연표 정리 같이 해요', content: '삼국시대부터 조선까지 주요 사건 연표를 정리하고 있는데, 같이 하실 분?<br>공유 문서 만들면 좋을 것 같아요!' },
+        { title: '시험 기간 집중력 높이는 방법', content: '<b>뽀모도로 테크닉</b> 추천합니다!<br>25분 집중 → 5분 휴식 반복하면 효율이 확 올라요.<br>타이머 앱 추천: Forest, Tide' },
+        { title: '영어 문법 정리 - 관계대명사', content: 'who/which/that 구분법:<br>- <b>who</b>: 사람 (주격/목적격)<br>- <b>which</b>: 사물/동물<br>- <b>that</b>: 사람+사물 모두 가능<br>that은 계속적 용법에서는 사용 불가!' },
+      ];
+
+      const postIds: number[] = [];
+      for (let i = 0; i < postContents.length; i++) {
+        const p = postContents[i];
+        const authorIdx = i % studentIds.length;
+        const boardIdx = i % boardIds.length;
+        const result: any = await DB.prepare(
+          "INSERT INTO community_posts (board_id, author_type, author_id, title, content, like_count, comment_count, is_deleted, created_at, updated_at) VALUES (?, 'student', ?, ?, ?, 0, 0, 0, ?, ?)"
+        ).bind(boardIds[boardIdx], studentIds[authorIdx], p.title, p.content, kstTs(-13 + i), kstTs(-13 + i)).run();
+        if (result.meta.last_row_id) postIds.push(result.meta.last_row_id);
+      }
+
+      // 5e. Create comments
+      const commentTexts = [
+        '저도 그거 헷갈렸는데, 교과서 p.45 보면 이해돼요!',
+        '좋은 정보 감사합니다!',
+        '맞아요, 저도 같은 생각이에요',
+        '그러면 이 부분은 어떻게 되는 건가요?',
+        '화이팅! 같이 공부해요',
+        '와 정리 진짜 잘하셨네요 👍',
+        '저도 해볼게요!',
+        '공감합니다 ㅠㅠ',
+        '오 이거 진짜 도움 됐어요',
+        '선생님한테 물어보니까 이렇게 설명해주셨어요',
+      ];
+      for (let pi = 0; pi < postIds.length; pi++) {
+        const numComments = 1 + (pi % 4); // 1~4 comments per post
+        for (let ci = 0; ci < numComments; ci++) {
+          const authorIdx = (pi + ci + 1) % studentIds.length;
+          const textIdx = (pi * 3 + ci) % commentTexts.length;
+          await DB.prepare(
+            "INSERT INTO community_comments (post_id, author_type, author_id, content, is_deleted, created_at) VALUES (?, 'student', ?, ?, 0, ?)"
+          ).bind(postIds[pi], studentIds[authorIdx], commentTexts[textIdx], kstTs(-12 + pi)).run();
+        }
+      }
+
+      // Update comment counts
+      for (const pid of postIds) {
+        await DB.prepare('UPDATE community_posts SET comment_count = (SELECT COUNT(*) FROM community_comments WHERE post_id = ? AND is_deleted = 0) WHERE id = ?').bind(pid, pid).run();
+      }
+
+      // 5f. Create likes
+      for (let si = 0; si < studentIds.length; si++) {
+        const numLikes = 3 + (si % 3);
+        for (let li = 0; li < numLikes && li < postIds.length; li++) {
+          const pidx = (si + li * 2) % postIds.length;
+          try {
+            await DB.prepare(
+              "INSERT INTO community_likes (post_id, user_type, user_id, created_at) VALUES (?, 'student', ?, ?)"
+            ).bind(postIds[pidx], studentIds[si], kstTs(-10 + si)).run();
+          } catch (_) { /* duplicate */ }
+        }
+      }
+      for (const pid of postIds) {
+        await DB.prepare('UPDATE community_posts SET like_count = (SELECT COUNT(*) FROM community_likes WHERE post_id = ?) WHERE id = ?').bind(pid, pid).run();
+      }
+
+      // 5g. Create friendships
+      const friendPairs = [[0, 1], [0, 2], [1, 3], [2, 4]];
+      for (const [a, b] of friendPairs) {
+        if (a < studentIds.length && b < studentIds.length) {
+          const id1 = Math.min(studentIds[a], studentIds[b]);
+          const id2 = Math.max(studentIds[a], studentIds[b]);
+          try {
+            await DB.prepare(
+              "INSERT INTO friendships (student_id_1, student_id_2, status, invited_by, accepted_at, created_at) VALUES (?, ?, 'accepted', ?, ?, ?)"
+            ).bind(id1, id2, studentIds[a], kstTs(-5), kstTs(-5)).run();
+          } catch (_) { /* duplicate */ }
+        }
+      }
+
+      // 5h. Create invite codes
+      const code1 = 'JYCC-' + Math.random().toString(36).substring(2, 6).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+      await DB.prepare(
+        "INSERT INTO friend_invite_codes (student_id, code, max_uses, use_count, expires_at, is_active, created_at) VALUES (?, ?, 5, 0, ?, 1, ?)"
+      ).bind(studentIds[0], code1, kstTs(7), kstTs(0)).run();
+
+      // 5i. Create share settings
+      const shareConfigs = [
+        [1,1,1,1,1], [1,1,0,0,0], [0,0,1,1,0], [0,0,0,0,0], [1,0,1,0,1], [1,1,1,1,1]
+      ];
+      for (let i = 0; i < Math.min(studentIds.length, shareConfigs.length); i++) {
+        const sc = shareConfigs[i];
+        await DB.prepare(
+          "INSERT INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).bind(studentIds[i], sc[0], sc[1], sc[2], sc[3], sc[4], kstTs(0)).run();
+      }
+
+      // 5j. Create notifications
+      for (let pi = 0; pi < Math.min(5, postIds.length); pi++) {
+        const postAuthorIdx = pi % studentIds.length;
+        const actorIdx = (pi + 1) % studentIds.length;
+        await DB.prepare(
+          "INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES ('student', ?, 'comment', ?, 'student', ?, ?, ?)"
+        ).bind(studentIds[postAuthorIdx], postIds[pi], studentIds[actorIdx], pi < 2 ? 0 : 1, kstTs(-3 + pi)).run();
+        if (pi < 3) {
+          await DB.prepare(
+            "INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES ('student', ?, 'like', ?, 'student', ?, 0, ?)"
+          ).bind(studentIds[postAuthorIdx], postIds[pi], studentIds[(actorIdx + 1) % studentIds.length], kstTs(-2 + pi)).run();
+        }
+      }
+
+      // 5k. Return counts
+      const communityTables = ['community_boards', 'community_posts', 'community_comments', 'community_likes', 'community_notifications', 'community_reports', 'friendships', 'friend_invite_codes', 'learning_share_settings'];
+      const counts: Record<string, number> = {};
+      for (const t of communityTables) {
+        const r: any = await DB.prepare(`SELECT COUNT(*) as cnt FROM ${t}`).first();
+        counts[t] = r?.cnt || 0;
+      }
+      return c.json({ success: true, step: 5, message: 'Community seed data complete!', counts });
+    }
+
+    return c.json({ error: 'Invalid step. Use step=0,1,2,3,4,5', usage: 'Call /api/seed-test-data?step=0 then step=1,2,3,4,5 in order' }, 400);
   } catch (e: any) {
     console.error('Seed error:', e);
     return c.json({ error: e.message, stack: e.stack }, 500);

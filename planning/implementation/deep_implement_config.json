@@ -65,6 +65,10 @@
     "section-11-frontend-editor-photos": {
       "status": "complete",
       "commit_hash": "7eea1e0"
+    },
+    "section-12-frontend-friends-settings": {
+      "status": "complete",
+      "commit_hash": "a6a0ce5"
     }
   },
   "pre_commit": {
