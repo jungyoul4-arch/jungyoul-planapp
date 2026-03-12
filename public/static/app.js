@@ -125,6 +125,15 @@ const state = {
   _communityNicknameInput: '',
   _communityNicknameError: '',
   _communityScreen: 'home',
+  _communityMyInviteCode: null,
+  _communityFriendProfile: null,
+  _communityViewingFriendId: null,
+  _communityFriendsTab: 'list',
+  _communityFriendCodeInput: '',
+  _communityEditingPostId: null,
+  _editorPhotos: [],
+  _editorTitle: '',
+  _editorContent: '',
   _classPhotos: [], // 수업 기록 사진 배열
   _recordGalleryFilter: '전체', // 수업 기록 갤러리 과목 필터
   _classAssignmentText: '', // 과제 내용
@@ -13802,35 +13811,207 @@ async function openPostEditorForEdit(postId) {
   goCommScreen('post-editor');
 }
 
-// Friends stubs (Section 12)
+// ==================== COMMUNITY: FRIENDS & SETTINGS ====================
+
 function renderFriendsList() {
+  const tab = state._communityFriendsTab || 'list';
+  const friends = state._communityFriends || [];
+  const code = state._communityMyInviteCode;
+
+  if (!friends.length && tab === 'list') { DB.loadFriends(); }
+
   return `<div class="tab-content animate-in" style="padding:20px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
       <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">친구 목록 (Section 12에서 구현)</div>
+
+    <div style="display:flex;gap:8px;margin-bottom:20px">
+      <button onclick="state._communityFriendsTab='list';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='list'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">내 친구</button>
+      <button onclick="state._communityFriendsTab='invite';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='invite'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">초대하기</button>
+    </div>
+
+    ${tab === 'list' ? `
+      ${friends.length > 0 ? friends.map(f => `
+        <div class="glass-card" style="padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="communityViewFriend(${f.friendId})">
+          <span style="font-size:28px">${f.emoji || '🐻'}</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(f.nickname || f.name || '학생')}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${esc(f.school || '')}</div>
+          </div>
+          <button onclick="event.stopPropagation();communityUnfriend(${f.friendshipId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:8px"><i class="fas fa-user-minus"></i></button>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:14px">아직 친구가 없습니다.<br>초대 코드를 공유해보세요!</div>'}
+    ` : `
+      <div class="glass-card" style="padding:24px;text-align:center;margin-bottom:20px">
+        ${code ? `
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">내 초대 코드</div>
+          <div style="font-size:24px;font-weight:700;font-family:monospace;color:var(--text-primary);letter-spacing:2px;margin-bottom:16px">${esc(code)}</div>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button onclick="copyInviteCode('${esc(code)}')" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-copy" style="margin-right:4px"></i>복사</button>
+            <button onclick="shareInviteCode('${esc(code)}')" style="padding:8px 20px;border-radius:20px;background:rgba(0,0,0,0.06);color:var(--text-primary);border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-share" style="margin-right:4px"></i>공유</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:12px">7일 후 만료 · 최대 5회 사용</div>
+        ` : `
+          <button onclick="communityGenerateInviteCode()" style="padding:12px 32px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-ticket" style="margin-right:8px"></i>초대 코드 생성</button>
+        `}
+      </div>
+
+      <div class="glass-card" style="padding:20px">
+        <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:12px">친구 코드 입력</div>
+        <div style="display:flex;gap:8px">
+          <input id="comm-friend-code" type="text" placeholder="JYCC-XXXX-XXXX" value="${esc(state._communityFriendCodeInput || '')}"
+            oninput="state._communityFriendCodeInput=this.value"
+            style="flex:1;padding:10px 16px;border-radius:12px;border:1px solid var(--border);font-size:14px;font-family:monospace;background:var(--bg-primary);color:var(--text-primary);outline:none">
+          <button onclick="communityAcceptFriendCode()" style="padding:10px 20px;border-radius:12px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">추가</button>
+        </div>
+      </div>
+    `}
   </div>`;
 }
 
+async function communityGenerateInviteCode() {
+  const result = await DB.generateFriendInviteCode();
+  if (result) {
+    state._communityMyInviteCode = result.code;
+    renderScreen();
+  } else {
+    showToast('초대 코드 생성에 실패했습니다');
+  }
+}
+
+async function communityAcceptFriendCode() {
+  const code = (state._communityFriendCodeInput || '').trim();
+  if (!code) return;
+  const res = await DB.acceptFriendCode(code);
+  if (res.success) {
+    showToast('친구가 추가되었습니다!');
+    state._communityFriendCodeInput = '';
+    await DB.loadFriends();
+    state._communityFriendsTab = 'list';
+    renderScreen();
+  } else {
+    showToast(res.error || '친구 추가에 실패했습니다');
+  }
+}
+
+async function communityUnfriend(friendshipId) {
+  if (!confirm('친구를 삭제하시겠어요?')) return;
+  const ok = await DB.removeFriend(friendshipId);
+  if (ok) {
+    await DB.loadFriends();
+    renderScreen();
+    showToast('친구가 삭제되었습니다');
+  }
+}
+
+async function communityViewFriend(friendStudentId) {
+  state._communityViewingFriendId = friendStudentId;
+  state._communityFriendProfile = null;
+  goCommScreen('friend-profile');
+  state._communityFriendProfile = await DB.loadFriendProfile(friendStudentId);
+  renderScreen();
+}
+
+async function copyInviteCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('초대 코드가 복사되었습니다');
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = code;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('초대 코드가 복사되었습니다');
+  }
+}
+
+async function shareInviteCode(code) {
+  if (navigator.share) {
+    try { await navigator.share({ title: '정율 플래너 친구 초대', text: `정율 플래너에서 친구가 되어요! 초대 코드: ${code}` }); } catch(_) {}
+  } else {
+    copyInviteCode(code);
+  }
+}
+
 function renderFriendProfile() {
+  const profile = state._communityFriendProfile;
+  if (!profile) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div></div>
+    </div>`;
+  }
+
+  const sections = [];
+  if (profile.classRecordCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">수업 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.classRecordCount}개</div></div>`);
+  if (profile.questionCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">질문 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.questionCount}개</div></div>`);
+  if (profile.teachCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">가르침 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.teachCount}개</div></div>`);
+  if (profile.completedAssignmentCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">완료한 미션</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.completedAssignmentCount}개</div></div>`);
+  if (profile.xp !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">레벨 / 경험치</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">Lv.${profile.level || 1} · ${profile.xp || 0} XP</div></div>`);
+
   return `<div class="tab-content animate-in" style="padding:20px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
       <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">친구 프로필 (Section 12에서 구현)</div>
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="font-size:56px;margin-bottom:8px">${profile.emoji || '🐻'}</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${esc(profile.nickname || profile.name || '학생')}</div>
+      <div style="font-size:13px;color:var(--text-muted)">${esc(profile.school || '')}</div>
+    </div>
+    ${sections.length > 0 ? sections.join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:14px">이 친구는 학습 정보를 공유하지 않고 있습니다</div>'}
   </div>`;
 }
 
 function renderShareSettings() {
+  const s = state._communityShareSettings || {};
+  if (!state._communityShareSettings) { DB.loadShareSettings(); }
+  const fields = [
+    { key: 'share_class_records', label: '수업 기록 공유' },
+    { key: 'share_question_count', label: '질문 기록 수 공유' },
+    { key: 'share_teach_count', label: '가르침 기록 수 공유' },
+    { key: 'share_mission_status', label: '미션 현황 공유' },
+    { key: 'share_xp_level', label: '레벨/경험치 공유' },
+  ];
+
   return `<div class="tab-content animate-in" style="padding:20px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">공유 설정</h2>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">학습 공유 설정</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">공유 설정 (Section 12에서 구현)</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px">친구에게 공개할 학습 정보를 선택하세요</p>
+
+    ${fields.map(f => `
+      <div class="glass-card" style="padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:14px;font-weight:500;color:var(--text-primary)">${f.label}</span>
+        <label style="position:relative;width:44px;height:24px;cursor:pointer">
+          <input type="checkbox" ${s[f.key] ? 'checked' : ''} onchange="toggleShareSetting('${f.key}',this.checked)"
+            style="opacity:0;width:0;height:0;position:absolute">
+          <span style="position:absolute;inset:0;border-radius:12px;background:${s[f.key] ? '#6366f1' : 'rgba(0,0,0,0.15)'};transition:all 0.3s"></span>
+          <span style="position:absolute;top:2px;left:${s[f.key] ? '22px' : '2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></span>
+        </label>
+      </div>
+    `).join('')}
+
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+      <button onclick="state._communityNicknameInput=state._authUser?.nickname||'';goCommScreen('nickname-setup')" style="display:block;width:100%;text-align:left;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit;margin-bottom:8px">
+        <i class="fas fa-user-edit" style="margin-right:8px;color:var(--text-muted)"></i>닉네임 변경
+      </button>
+    </div>
   </div>`;
+}
+
+async function toggleShareSetting(field, value) {
+  const s = state._communityShareSettings || {};
+  s[field] = value ? 1 : 0;
+  state._communityShareSettings = s;
+  await DB.updateShareSettings(s);
 }
 
 // Report list (mentors)

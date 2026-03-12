@@ -61,6 +61,10 @@
     "section-10-frontend-board-posts": {
       "status": "complete",
       "commit_hash": "086f0f0"
+    },
+    "section-11-frontend-editor-photos": {
+      "status": "complete",
+      "commit_hash": "7eea1e0"
     }
   },
   "pre_commit": {
