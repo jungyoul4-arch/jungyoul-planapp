@@ -4417,6 +4417,167 @@ app.delete('/api/community/posts/:postId', async (c) => {
   }
 });
 
+// ==================== 커뮤니티: 댓글 + 좋아요 ====================
+
+// GET /api/community/posts/:postId/comments — 댓글 목록
+app.get('/api/community/posts/:postId/comments', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  const page = Math.max(1, Number(c.req.query('page')) || 1);
+  const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 20));
+  const offset = (page - 1) * limit;
+
+  try {
+    const countResult: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_comments WHERE post_id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    const totalCount = countResult?.cnt || 0;
+
+    const result: any = await c.env.DB.prepare(
+      `SELECT cc.id, cc.content, cc.author_type, cc.author_id, cc.created_at,
+              CASE WHEN cc.author_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as authorNickname,
+              CASE WHEN cc.author_type = 'student' THEN s.profile_emoji ELSE '🎓' END as authorEmoji
+       FROM community_comments cc
+       LEFT JOIN students s ON cc.author_type = 'student' AND cc.author_id = s.id
+       LEFT JOIN mentors m ON cc.author_type = 'mentor' AND cc.author_id = m.id
+       WHERE cc.post_id = ? AND cc.is_deleted = 0
+       ORDER BY cc.created_at ASC
+       LIMIT ? OFFSET ?`
+    ).bind(postId, limit, offset).all();
+
+    const comments = (result.results || []).map((c: any) => ({
+      id: c.id, content: c.content, authorNickname: c.authorNickname || '익명',
+      authorEmoji: c.authorEmoji || '😊', authorType: c.author_type,
+      authorId: c.author_id, createdAt: c.created_at
+    }));
+
+    return c.json({ success: true, data: { comments, hasMore: totalCount > page * limit, totalCount } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/community/posts/:postId/comments — 댓글 작성
+app.post('/api/community/posts/:postId/comments', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { author_type, author_id, content } = await c.req.json();
+    if (!author_type || !author_id || !content) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+    if (content.length > 1000) return c.json({ success: false, error: '댓글은 1,000자 이내로 작성해주세요' }, 400);
+
+    const post: any = await c.env.DB.prepare(
+      'SELECT id, author_type, author_id FROM community_posts WHERE id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const now = getKSTString();
+    const stmts: any[] = [
+      c.env.DB.prepare('INSERT INTO community_comments (post_id, author_type, author_id, content, is_deleted, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(postId, author_type, author_id, content, now),
+      c.env.DB.prepare('UPDATE community_posts SET comment_count = comment_count + 1 WHERE id = ?').bind(postId)
+    ];
+    // 본인 게시글이 아닌 경우에만 알림 생성
+    if (post.author_type !== author_type || post.author_id !== author_id) {
+      stmts.push(c.env.DB.prepare(
+        'INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+      ).bind(post.author_type, post.author_id, 'comment', postId, author_type, author_id, now));
+    }
+
+    const batchResult = await c.env.DB.batch(stmts);
+    const commentId = batchResult[0]?.meta?.last_row_id;
+    return c.json({ success: true, data: { commentId } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// DELETE /api/community/comments/:commentId — 댓글 삭제 (소프트 삭제)
+app.delete('/api/community/comments/:commentId', async (c) => {
+  const commentId = Number(c.req.param('commentId'));
+  if (!commentId || isNaN(commentId)) return c.json({ success: false, error: '유효하지 않은 댓글 ID입니다' }, 400);
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+
+    const comment: any = await c.env.DB.prepare(
+      'SELECT id, post_id, author_type, author_id FROM community_comments WHERE id = ? AND is_deleted = 0'
+    ).bind(commentId).first();
+    if (!comment) return c.json({ success: false, error: '댓글을 찾을 수 없습니다' }, 404);
+
+    const isAuthor = comment.author_type === user_type && comment.author_id === user_id;
+    let isMentor = false;
+    if (!isAuthor && user_type === 'mentor') {
+      const post: any = await c.env.DB.prepare('SELECT board_id FROM community_posts WHERE id = ?').bind(comment.post_id).first();
+      if (post) {
+        const board: any = await c.env.DB.prepare('SELECT * FROM community_boards WHERE id = ?').bind(post.board_id).first();
+        if (board && board.board_type === 'group') {
+          const g: any = await c.env.DB.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+          isMentor = g && g.mentor_id === user_id;
+        } else if (board && board.board_type === 'academy') {
+          const m: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(user_id).first();
+          isMentor = m && m.academy_name === board.academy_name;
+        }
+      }
+    }
+    if (!isAuthor && !isMentor) return c.json({ success: false, error: '삭제 권한이 없습니다' }, 403);
+
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE community_comments SET is_deleted = 1, deleted_by = ? WHERE id = ?').bind(`${user_type}:${user_id}`, commentId),
+      c.env.DB.prepare('UPDATE community_posts SET comment_count = MAX(comment_count - 1, 0) WHERE id = ?').bind(comment.post_id)
+    ]);
+
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/community/posts/:postId/like — 좋아요 토글
+app.post('/api/community/posts/:postId/like', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+
+    const post: any = await c.env.DB.prepare(
+      'SELECT id, author_type, author_id FROM community_posts WHERE id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const existingLike: any = await c.env.DB.prepare(
+      'SELECT id FROM community_likes WHERE post_id = ? AND user_type = ? AND user_id = ?'
+    ).bind(postId, user_type, user_id).first();
+
+    if (existingLike) {
+      // Unlike
+      await c.env.DB.batch([
+        c.env.DB.prepare('DELETE FROM community_likes WHERE id = ?').bind(existingLike.id),
+        c.env.DB.prepare('UPDATE community_posts SET like_count = MAX(like_count - 1, 0) WHERE id = ?').bind(postId)
+      ]);
+      const updated: any = await c.env.DB.prepare('SELECT like_count FROM community_posts WHERE id = ?').bind(postId).first();
+      return c.json({ success: true, data: { liked: false, likeCount: updated?.like_count || 0 } });
+    } else {
+      // Like
+      const now = getKSTString();
+      const stmts: any[] = [
+        c.env.DB.prepare('INSERT INTO community_likes (post_id, user_type, user_id, created_at) VALUES (?, ?, ?, ?)').bind(postId, user_type, user_id, now),
+        c.env.DB.prepare('UPDATE community_posts SET like_count = like_count + 1 WHERE id = ?').bind(postId)
+      ];
+      if (post.author_type !== user_type || post.author_id !== user_id) {
+        stmts.push(c.env.DB.prepare(
+          'INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+        ).bind(post.author_type, post.author_id, 'like', postId, user_type, user_id, now));
+      }
+      await c.env.DB.batch(stmts);
+      const updated: any = await c.env.DB.prepare('SELECT like_count FROM community_posts WHERE id = ?').bind(postId).first();
+      return c.json({ success: true, data: { liked: true, likeCount: updated?.like_count || 0 } });
+    }
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
 // ==================== 진로 프로파일 API ====================
 
 // GET /api/student/:id/career-profile — 진로 프로파일 조회

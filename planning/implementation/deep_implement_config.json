@@ -29,6 +29,10 @@
     "section-02-board-api": {
       "status": "complete",
       "commit_hash": "47f27d6"
+    },
+    "section-03-post-api": {
+      "status": "complete",
+      "commit_hash": "ab09f29"
     }
   },
   "pre_commit": {
