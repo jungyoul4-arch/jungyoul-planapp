@@ -25,6 +25,10 @@
     "section-01-db-migration": {
       "status": "complete",
       "commit_hash": "8097a09145c58d0501c401d2430e212c73e714d7"
+    },
+    "section-02-board-api": {
+      "status": "complete",
+      "commit_hash": "47f27d6"
     }
   },
   "pre_commit": {
