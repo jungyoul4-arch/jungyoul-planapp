@@ -21,7 +21,12 @@
     "section-12-frontend-friends-settings",
     "section-13-seed-data-testing"
   ],
-  "sections_state": {},
+  "sections_state": {
+    "section-01-db-migration": {
+      "status": "complete",
+      "commit_hash": "8097a09145c58d0501c401d2430e212c73e714d7"
+    }
+  },
   "pre_commit": {
     "present": false,
     "type": "none",
