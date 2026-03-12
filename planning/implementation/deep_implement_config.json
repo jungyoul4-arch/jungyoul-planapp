@@ -37,6 +37,10 @@
     "section-04-comment-like-api": {
       "status": "complete",
       "commit_hash": "eaa23fe"
+    },
+    "section-05-notification-api": {
+      "status": "complete",
+      "commit_hash": "762b8e4"
     }
   },
   "pre_commit": {

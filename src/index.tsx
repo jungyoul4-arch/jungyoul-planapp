@@ -1099,6 +1099,14 @@ function sanitizeHTML(html: string): string {
 }
 
 /** 사용자가 게시판에 접근 가능한지 확인 */
+/** 학생의 학원명 조회 (join chain) */
+async function getStudentAcademy(db: any, studentId: number): Promise<string | null> {
+  const row: any = await db.prepare(
+    'SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
+  ).bind(studentId).first();
+  return row?.academy_name || null;
+}
+
 async function canAccessBoard(db: any, boardId: number, userType: string, userId: number): Promise<boolean> {
   const board: any = await db.prepare('SELECT * FROM community_boards WHERE id = ? AND is_active = 1').bind(boardId).first();
   if (!board) return false;
@@ -4640,6 +4648,133 @@ app.get('/api/community/notifications', async (c) => {
     }));
 
     return c.json({ success: true, data: { notifications, unreadCount: unreadResult?.cnt || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 친구 ====================
+
+// POST /api/student/:studentId/friends/invite-code — 친구 초대 코드 생성
+app.post('/api/student/:studentId/friends/invite-code', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    // 기존 활성 코드가 있으면 반환
+    const existing: any = await c.env.DB.prepare(
+      "SELECT code, expires_at FROM friend_invite_codes WHERE student_id = ? AND is_active = 1 AND expires_at > datetime('now','+9 hours') AND use_count < max_uses ORDER BY created_at DESC LIMIT 1"
+    ).bind(studentId).first();
+    if (existing) return c.json({ success: true, data: { code: existing.code, expiresAt: existing.expires_at } });
+
+    // 새 코드 생성 (충돌 시 3회 재시도)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const code = generateInviteCode();
+      try {
+        const now = getKSTString();
+        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+        await c.env.DB.prepare(
+          'INSERT INTO friend_invite_codes (student_id, code, max_uses, use_count, expires_at, is_active, created_at) VALUES (?, ?, 5, 0, ?, 1, ?)'
+        ).bind(studentId, code, expires, now).run();
+        return c.json({ success: true, data: { code, expiresAt: expires } });
+      } catch (e: any) {
+        if (attempt === 2) throw e;
+      }
+    }
+    return c.json({ success: false, error: '코드 생성에 실패했습니다' }, 500);
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/student/:studentId/friends/accept-code — 친구 초대 코드 수락
+app.post('/api/student/:studentId/friends/accept-code', async (c) => {
+  const accepterId = Number(c.req.param('studentId'));
+  if (!accepterId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const { code } = await c.req.json();
+    if (!code) return c.json({ success: false, error: '초대 코드를 입력해주세요' }, 400);
+
+    const invite: any = await c.env.DB.prepare(
+      'SELECT * FROM friend_invite_codes WHERE code = ? AND is_active = 1'
+    ).bind(code.toUpperCase()).first();
+    if (!invite) return c.json({ success: false, error: '유효하지 않은 초대 코드입니다' }, 400);
+
+    const now = getKSTString();
+    if (invite.expires_at && invite.expires_at < now) return c.json({ success: false, error: '초대 코드가 만료되었습니다' }, 400);
+    if (invite.use_count >= invite.max_uses) return c.json({ success: false, error: '초대 코드 사용 횟수가 초과되었습니다' }, 400);
+
+    const inviterId = invite.student_id;
+    if (inviterId === accepterId) return c.json({ success: false, error: '자신의 초대 코드는 사용할 수 없습니다' }, 400);
+
+    // 같은 학원 검증
+    const inviterAcademy = await getStudentAcademy(c.env.DB, inviterId);
+    const accepterAcademy = await getStudentAcademy(c.env.DB, accepterId);
+    if (!inviterAcademy || !accepterAcademy || inviterAcademy !== accepterAcademy) {
+      return c.json({ success: false, error: '같은 학원 학생만 친구 추가가 가능합니다' }, 403);
+    }
+
+    // ID 정규화
+    const id1 = Math.min(inviterId, accepterId);
+    const id2 = Math.max(inviterId, accepterId);
+
+    const existingFriend: any = await c.env.DB.prepare(
+      'SELECT id FROM friendships WHERE student_id_1 = ? AND student_id_2 = ?'
+    ).bind(id1, id2).first();
+    if (existingFriend) return c.json({ success: false, error: '이미 친구입니다' }, 409);
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO friendships (student_id_1, student_id_2, status, invited_by, invite_code, accepted_at, created_at) VALUES (?, ?, 'accepted', ?, ?, ?, ?)"
+      ).bind(id1, id2, inviterId, code, now, now),
+      c.env.DB.prepare('UPDATE friend_invite_codes SET use_count = use_count + 1 WHERE id = ?').bind(invite.id)
+    ]);
+
+    const friend: any = await c.env.DB.prepare('SELECT nickname, profile_emoji, school_name FROM students WHERE id = ?').bind(inviterId).first();
+    return c.json({ success: true, data: { friendNickname: friend?.nickname || '익명', friendEmoji: friend?.profile_emoji || '😊' } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/friends — 친구 목록
+app.get('/api/student/:studentId/friends', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const result: any = await c.env.DB.prepare(
+      `SELECT f.id as friendshipId,
+              CASE WHEN f.student_id_1 = ? THEN f.student_id_2 ELSE f.student_id_1 END as friendStudentId,
+              CASE WHEN f.student_id_1 = ? THEN s2.nickname ELSE s1.nickname END as nickname,
+              CASE WHEN f.student_id_1 = ? THEN s2.profile_emoji ELSE s1.profile_emoji END as emoji,
+              CASE WHEN f.student_id_1 = ? THEN s2.school_name ELSE s1.school_name END as schoolName
+       FROM friendships f
+       LEFT JOIN students s1 ON f.student_id_1 = s1.id
+       LEFT JOIN students s2 ON f.student_id_2 = s2.id
+       WHERE (f.student_id_1 = ? OR f.student_id_2 = ?) AND f.status = 'accepted'`
+    ).bind(studentId, studentId, studentId, studentId, studentId, studentId).all();
+
+    const friends = (result.results || []).map((f: any) => ({
+      friendshipId: f.friendshipId, studentId: f.friendStudentId,
+      nickname: f.nickname || '익명', emoji: f.emoji || '😊', schoolName: f.schoolName || ''
+    }));
+    return c.json({ success: true, data: { friends } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// DELETE /api/student/:studentId/friends/:friendshipId — 친구 삭제
+app.delete('/api/student/:studentId/friends/:friendshipId', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  const friendshipId = Number(c.req.param('friendshipId'));
+  if (!studentId || !friendshipId) return c.json({ success: false, error: '유효하지 않은 ID입니다' }, 400);
+  try {
+    const friendship: any = await c.env.DB.prepare(
+      'SELECT id FROM friendships WHERE id = ? AND (student_id_1 = ? OR student_id_2 = ?)'
+    ).bind(friendshipId, studentId, studentId).first();
+    if (!friendship) return c.json({ success: false, error: '친구 관계를 찾을 수 없습니다' }, 404);
+    await c.env.DB.prepare('DELETE FROM friendships WHERE id = ?').bind(friendshipId).run();
+    return c.json({ success: true, data: { message: '친구가 삭제되었습니다' } });
   } catch (e: any) {
     return c.json({ success: false, error: e.message }, 500);
   }
