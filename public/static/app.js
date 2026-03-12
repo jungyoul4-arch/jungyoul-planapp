@@ -13621,15 +13621,185 @@ function openCommunityLightbox(src) {
   document.body.appendChild(overlay);
 }
 
-// Post editor stub (Section 11)
+// ==================== COMMUNITY: POST EDITOR & PHOTOS ====================
+
+// Photo compression
+function compressCommunityPhoto(file, maxWidth = 1200, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) { resolve(e.target.result); return; }
+        const ratio = maxWidth / img.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = Math.round(img.height * ratio);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function renderPostEditor() {
-  return `<div class="tab-content animate-in" style="padding:20px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
-      <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">글쓰기</h2>
+  const editingPostId = state._communityEditingPostId || null;
+  const isEdit = !!editingPostId;
+  const photos = state._editorPhotos || [];
+  const existingTitle = state._editorTitle || '';
+  const existingContent = state._editorContent || '';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="cancelPostEditor()"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${isEdit ? '글 수정' : '글쓰기'}</h2>
+      <button onclick="submitCommunityPost()" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
+        ${isEdit ? '수정' : '게시'}
+      </button>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">글쓰기 에디터 (Section 11에서 구현)</div>
+
+    <div style="margin-bottom:12px;position:relative">
+      <input id="comm-editor-title" type="text" maxlength="100" placeholder="제목" value="${esc(existingTitle)}"
+        oninput="state._editorTitle=this.value;document.getElementById('comm-title-counter').textContent=this.value.length+'/100'"
+        style="width:100%;padding:12px 60px 12px 16px;border:1px solid var(--border);border-radius:12px;font-size:16px;font-weight:600;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <span id="comm-title-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${existingTitle.length}/100</span>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:12px;background:var(--bg-primary)">
+      <div class="community-editor-toolbar">
+        <button onclick="document.execCommand('bold')" title="굵게"><i class="fas fa-bold"></i></button>
+        <button onclick="document.execCommand('italic')" title="기울임"><i class="fas fa-italic"></i></button>
+        <button onclick="var u=prompt('링크 URL:');if(u)document.execCommand('createLink',false,u)" title="링크"><i class="fas fa-link"></i></button>
+        <button onclick="document.execCommand('insertUnorderedList')" title="목록"><i class="fas fa-list-ul"></i></button>
+      </div>
+      <div id="comm-editor-content" class="community-editor-content" contenteditable="true" data-placeholder="내용을 입력하세요..."
+        oninput="state._editorContent=this.innerHTML;document.getElementById('comm-content-counter').textContent=this.innerText.length+'/10000'">
+        ${existingContent ? _safeHtml(existingContent) : ''}
+      </div>
+      <div style="padding:4px 16px 8px;text-align:right">
+        <span id="comm-content-counter" style="font-size:12px;color:var(--text-muted)">0/10000</span>
+      </div>
+    </div>
+
+    <div class="community-photo-strip">
+      ${photos.map((p, i) => `
+        <div class="community-photo-thumb">
+          <img src="${p.data}">
+          <button class="remove-btn" onclick="removeEditorPhoto(${i})"><i class="fas fa-times" style="font-size:10px"></i></button>
+        </div>
+      `).join('')}
+      ${photos.length < 5 ? `
+        <label class="community-photo-add">
+          <i class="fas fa-camera"></i>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="handleEditorPhotos(this.files)">
+        </label>
+      ` : ''}
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">사진 ${photos.length}/5</div>
   </div>`;
+}
+
+function cancelPostEditor() {
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  state._communityEditingPostId = null;
+  goCommScreen('board');
+}
+
+async function handleEditorPhotos(files) {
+  const photos = state._editorPhotos || [];
+  const remaining = 5 - photos.length;
+  if (remaining <= 0) { showToast('사진은 최대 5장까지 첨부할 수 있어요'); return; }
+  const toProcess = Array.from(files).slice(0, remaining);
+  for (const file of toProcess) {
+    try {
+      const data = await compressCommunityPhoto(file);
+      photos.push({ data, mimeType: file.type || 'image/jpeg' });
+    } catch (e) { console.error('Photo compress error:', e); }
+  }
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+function removeEditorPhoto(idx) {
+  const photos = state._editorPhotos || [];
+  photos.splice(idx, 1);
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+async function submitCommunityPost() {
+  const titleEl = document.getElementById('comm-editor-title');
+  const contentEl = document.getElementById('comm-editor-content');
+  const title = (titleEl?.value || '').trim();
+  const rawHtml = contentEl?.innerHTML || '';
+  const textLen = (contentEl?.innerText || '').trim().length;
+  const photos = state._editorPhotos || [];
+
+  if (!title && textLen === 0 && photos.length === 0) {
+    showToast('제목, 내용, 또는 사진 중 하나는 입력해주세요');
+    return;
+  }
+  if (title.length > 100) { showToast('제목은 100자까지 입력할 수 있어요'); return; }
+  if (textLen > 10000) { showToast('내용은 10,000자까지 입력할 수 있어요'); return; }
+
+  const cleanHtml = typeof DOMPurify !== 'undefined'
+    ? DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['b', 'i', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'br', 'p', 'div'], ALLOWED_ATTR: ['href', 'target'] })
+    : rawHtml;
+
+  const editingPostId = state._communityEditingPostId;
+  const boardId = state._communityCurrentBoard;
+
+  if (editingPostId) {
+    const ok = await DB.updatePost(editingPostId, { title, content: cleanHtml });
+    if (ok) {
+      cancelPostEditor();
+      showToast('게시글이 수정되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('수정에 실패했습니다');
+    }
+  } else {
+    const payload = {
+      title,
+      content: cleanHtml,
+      photos: photos.map(p => ({ data: p.data, mime_type: p.mimeType })),
+    };
+    const result = await DB.savePost(boardId, payload);
+    if (result) {
+      cancelPostEditor();
+      showToast('게시글이 작성되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('작성에 실패했습니다');
+    }
+  }
+}
+
+async function openPostEditorForEdit(postId) {
+  state._communityEditingPostId = postId;
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  await DB.loadPostDetail(postId);
+  const post = state._communityCurrentPost;
+  if (post) {
+    state._editorTitle = post.title || '';
+    state._editorContent = post.content || '';
+    if (post.photos) {
+      state._editorPhotos = post.photos.map(p => ({
+        data: p.r2_key ? `/api/community/photo/${p.r2_key}` : (p.thumbnail || p.photo_data || ''),
+        mimeType: p.mime_type || 'image/jpeg',
+      }));
+    }
+  }
+  goCommScreen('post-editor');
 }
 
 // Friends stubs (Section 12)

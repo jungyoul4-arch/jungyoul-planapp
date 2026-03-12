@@ -57,6 +57,10 @@
     "section-09-frontend-navigation": {
       "status": "complete",
       "commit_hash": "365fe0b"
+    },
+    "section-10-frontend-board-posts": {
+      "status": "complete",
+      "commit_hash": "086f0f0"
     }
   },
   "pre_commit": {
