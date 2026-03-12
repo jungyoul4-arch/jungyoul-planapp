@@ -1,0 +1,34 @@
+{
+  "plugin_root": "/Users/jungyoulkwak/.claude/plugins/deep-implement",
+  "sections_dir": "/Users/jungyoulkwak/jungyoul-planapp/planning/sections",
+  "target_dir": "/Users/jungyoulkwak/jungyoul-planapp",
+  "state_dir": "/Users/jungyoulkwak/jungyoul-planapp/planning/implementation",
+  "git_root": "/Users/jungyoulkwak/jungyoul-planapp",
+  "commit_style": "conventional",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-db-migration",
+    "section-02-board-api",
+    "section-03-post-api",
+    "section-04-comment-like-api",
+    "section-05-notification-api",
+    "section-06-friend-api",
+    "section-07-nickname-sharing-api",
+    "section-08-moderation-api",
+    "section-09-frontend-navigation",
+    "section-10-frontend-board-posts",
+    "section-11-frontend-editor-photos",
+    "section-12-frontend-friends-settings",
+    "section-13-seed-data-testing"
+  ],
+  "sections_state": {},
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-03-12T08:07:11.505707+00:00"
+}
