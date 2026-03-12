@@ -1652,6 +1652,7 @@ app.post('/api/auth/student/login', async (c) => {
         xp: student.xp,
         level: student.level,
         groupId: student.group_id,
+        nickname: student.nickname || null,
       },
       group: group ? {
         id: group.id,

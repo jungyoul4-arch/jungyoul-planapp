@@ -466,7 +466,7 @@ function _renderScreenImpl(forced) {
 
   // 같은 화면이면 DOM 전체 교체 스킵 (깜빡임 방지)
   const _m = typeof _mentor !== 'undefined' ? _mentor : {};
-  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}`;
+  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}`;
   const skipFullRender = !forced && (_lastRenderedKey === renderKey) && _lastRenderedKey !== '';
   if (!skipFullRender) {
     _lastRenderedKey = renderKey;
@@ -2386,7 +2386,7 @@ const DB = {
     try {
       const res = await fetch(`/api/community/boards?user_type=${this._communityUserType()}&user_id=${uid}`);
       const data = await res.json();
-      if (data.success) state._communityBoards = data.data?.boards || [];
+      if (data.success) { state._communityBoards = data.data?.boards || []; renderScreen(); }
     } catch (e) { console.error('loadCommunityBoards:', e); }
   },
 
@@ -2397,7 +2397,14 @@ const DB = {
       const res = await fetch(`/api/community/boards/${boardId}/posts?page=${page}&limit=20&user_type=${this._communityUserType()}&user_id=${uid}`);
       const data = await res.json();
       if (data.success) {
-        const posts = data.data?.posts || [];
+        const posts = (data.data?.posts || []).map(p => ({
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+        }));
         if (page === 1) {
           state._communityPosts = posts;
         } else {
@@ -2405,6 +2412,7 @@ const DB = {
         }
         state._communityPage = page;
         state._communityHasMore = posts.length >= 20;
+        renderScreen();
       }
     } catch (e) { console.error('loadCommunityPosts:', e); }
   },
@@ -2415,7 +2423,19 @@ const DB = {
     try {
       const res = await fetch(`/api/community/posts/${postId}?user_type=${this._communityUserType()}&user_id=${uid}`);
       const data = await res.json();
-      if (data.success) state._communityCurrentPost = data.data;
+      if (data.success) {
+        const p = data.data?.post || data.data;
+        state._communityCurrentPost = {
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+          board_id: p.boardId || p.board_id || 0,
+        };
+        renderScreen();
+      }
     } catch (e) { console.error('loadPostDetail:', e); }
   },
 
@@ -2465,7 +2485,15 @@ const DB = {
     try {
       const res = await fetch(`/api/community/posts/${postId}/comments?page=${page}&limit=20`);
       const data = await res.json();
-      if (data.success) state._communityComments = data.data?.comments || [];
+      if (data.success) {
+        state._communityComments = (data.data?.comments || []).map(c => ({
+          ...c,
+          author_type: c.authorType || c.author_type || '',
+          author_id: c.authorId || c.author_id || 0,
+          created_at: c.createdAt || c.created_at || '',
+        }));
+        renderScreen();
+      }
     } catch (e) { console.error('loadComments:', e); }
   },
 
@@ -2531,7 +2559,14 @@ const DB = {
     try {
       const res = await fetch(`/api/student/${sid}/friends`);
       const data = await res.json();
-      if (data.success) state._communityFriends = data.data?.friends || [];
+      if (data.success) {
+        state._communityFriends = (data.data?.friends || []).map(f => ({
+          ...f,
+          friendId: f.studentId || f.friendId || 0,
+          school: f.schoolName || f.school || '',
+        }));
+        renderScreen();
+      }
     } catch (e) { console.error('loadFriends:', e); }
   },
 
@@ -2575,7 +2610,7 @@ const DB = {
     try {
       const res = await fetch(`/api/student/${sid}/share-settings`);
       const data = await res.json();
-      if (data.success) state._communityShareSettings = data.data;
+      if (data.success) { state._communityShareSettings = data.data; renderScreen(); }
     } catch (e) { console.error('loadShareSettings:', e); }
   },
 
@@ -2629,7 +2664,17 @@ const DB = {
     try {
       const res = await fetch(`/api/community/notifications?user_type=${this._communityUserType()}&user_id=${uid}`);
       const data = await res.json();
-      if (data.success) state._communityNotifications = data.data?.notifications || [];
+      if (data.success) {
+        state._communityNotifications = (data.data?.notifications || []).map(n => ({
+          ...n,
+          post_id: n.postId || n.post_id || 0,
+          post_title: n.postTitle || n.post_title || '',
+          actor_nickname: n.actorNickname || n.actor_nickname || '익명',
+          is_read: n.isRead ?? n.is_read ?? 0,
+          created_at: n.createdAt || n.created_at || '',
+        }));
+        renderScreen();
+      }
     } catch (e) { console.error('loadNotifications:', e); }
   },
 
@@ -13282,11 +13327,11 @@ function renderCommunityNicknameSetup() {
       <h2 style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:700;color:var(--text-primary)">닉네임 설정</h2>
       <p style="text-align:center;color:var(--text-muted);font-size:14px;margin-bottom:24px">커뮤니티에서 사용할 닉네임을 설정해주세요</p>
       <div style="position:relative;margin-bottom:8px">
-        <input type="text" class="community-nickname-input" maxlength="12" placeholder="닉네임 (2~12자)" value="${esc(nick)}"
+        <input type="text" class="community-nickname-input" maxlength="12" placeholder="닉네임 (2~12자)" value="${escapeHtml(nick)}"
           oninput="state._communityNicknameInput=this.value;state._communityNicknameError='';document.getElementById('comm-nick-counter').textContent=this.value.length+'/12'">
         <span id="comm-nick-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${nick.length}/12</span>
       </div>
-      ${err ? `<div class="community-nickname-error">${esc(err)}</div>` : ''}
+      ${err ? `<div class="community-nickname-error">${escapeHtml(err)}</div>` : ''}
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">한글, 영문, 숫자, 공백 사용 가능</p>
       <button class="btn-primary" style="width:100%;padding:12px" onclick="submitCommunityNickname()">
         설정 완료
@@ -13342,7 +13387,7 @@ function _stripHtmlPreview(html, maxLen = 100) {
 }
 
 function _safeHtml(html) {
-  return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html || '') : esc(html || '');
+  return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html || '') : escapeHtml(html || '');
 }
 
 let _communityLoadingMore = false;
@@ -13352,11 +13397,11 @@ function _renderPostCard(p) {
   return `<div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="openPostDetail(${p.id})">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <span style="font-size:20px">${p.authorEmoji || '🐻'}</span>
-      <span style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(p.authorNickname || '익명')}</span>
+      <span style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(p.authorNickname || '익명')}</span>
       <span style="font-size:12px;color:var(--text-muted);margin-left:auto">${_relativeTime(p.created_at)}</span>
     </div>
-    ${p.title ? `<div style="font-weight:700;font-size:15px;color:var(--text-primary);margin-bottom:4px">${esc(p.title)}</div>` : ''}
-    ${preview ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${esc(preview)}</div>` : ''}
+    ${p.title ? `<div style="font-weight:700;font-size:15px;color:var(--text-primary);margin-bottom:4px">${escapeHtml(p.title)}</div>` : ''}
+    ${preview ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${escapeHtml(preview)}</div>` : ''}
     ${p.photoCount > 0 ? `<div style="font-size:12px;color:var(--primary);margin-bottom:8px"><i class="fas fa-camera"></i> ${p.photoCount}장</div>` : ''}
     <div style="display:flex;gap:16px;font-size:13px;color:var(--text-muted)">
       <span><i class="${p.isLikedByMe ? 'fas' : 'far'} fa-heart" style="${p.isLikedByMe ? 'color:#ef4444' : ''}"></i> ${p.like_count || 0}</span>
@@ -13387,7 +13432,7 @@ function renderCommunityHome() {
             ${b.board_type === 'academy' ? '<i class="fas fa-school"></i>' : '<i class="fas fa-users"></i>'}
           </div>
           <div style="flex:1">
-            <div style="font-weight:600;color:var(--text-primary)">${esc(b.name)}</div>
+            <div style="font-weight:600;color:var(--text-primary)">${escapeHtml(b.name)}</div>
             <div style="font-size:12px;color:var(--text-muted)">${b.board_type === 'academy' ? '학원 게시판' : '반 게시판'}</div>
           </div>
           <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
@@ -13419,7 +13464,7 @@ function renderCommunityBoard() {
   return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${esc(boardName)}</h2>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(boardName)}</h2>
     </div>
     <div id="community-post-list">
       ${posts.length > 0 ? posts.map(p => _renderPostCard(p)).join('') : `
@@ -13485,7 +13530,7 @@ function renderPostDetail() {
   return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${esc(post.title || '')}</h2>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(post.title || '')}</h2>
       <div style="position:relative">
         <button class="btn-icon" onclick="document.getElementById('comm-post-menu').style.display=document.getElementById('comm-post-menu').style.display==='block'?'none':'block'"><i class="fas fa-ellipsis-v"></i></button>
         <div id="comm-post-menu" style="display:none;position:absolute;right:0;top:40px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:140px;z-index:100;overflow:hidden">
@@ -13498,7 +13543,7 @@ function renderPostDetail() {
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
       <span style="font-size:24px">${post.authorEmoji || '🐻'}</span>
       <div>
-        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(post.authorNickname || '익명')}</div>
+        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(post.authorNickname || '익명')}</div>
         <div style="font-size:12px;color:var(--text-muted)">${_relativeTime(post.created_at)}</div>
       </div>
     </div>
@@ -13506,7 +13551,7 @@ function renderPostDetail() {
     ${photos.length > 0 ? `<div class="community-photo-gallery" style="margin-bottom:16px">
       ${photos.map((ph, i) => {
         const src = ph.r2_key ? `/api/community/photo/${ph.r2_key}` : (ph.thumbnail || ph.photo_data || '');
-        return `<img src="${esc(src)}" alt="사진 ${i+1}" onclick="openCommunityLightbox('${esc(src)}')" style="cursor:pointer">`;
+        return `<img src="${escapeHtml(src)}" alt="사진 ${i+1}" onclick="openCommunityLightbox('${escapeHtml(src)}')" style="cursor:pointer">`;
       }).join('')}
     </div>` : ''}
 
@@ -13539,11 +13584,11 @@ function _renderCommentCard(c) {
   return `<div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04)">
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
       <span style="font-size:16px">${c.authorEmoji || '🐻'}</span>
-      <span style="font-weight:600;font-size:13px;color:var(--text-primary)">${esc(c.authorNickname || '익명')}</span>
+      <span style="font-weight:600;font-size:13px;color:var(--text-primary)">${escapeHtml(c.authorNickname || '익명')}</span>
       <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${_relativeTime(c.created_at)}</span>
       ${canDelete ? `<button onclick="deleteCommunityComment(${c.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px"><i class="fas fa-trash-alt"></i></button>` : ''}
     </div>
-    <div style="font-size:14px;color:var(--text-secondary);line-height:1.5;padding-left:22px">${esc(c.content)}</div>
+    <div style="font-size:14px;color:var(--text-secondary);line-height:1.5;padding-left:22px">${escapeHtml(c.content)}</div>
   </div>`;
 }
 
@@ -13673,7 +13718,7 @@ function renderPostEditor() {
     </div>
 
     <div style="margin-bottom:12px;position:relative">
-      <input id="comm-editor-title" type="text" maxlength="100" placeholder="제목" value="${esc(existingTitle)}"
+      <input id="comm-editor-title" type="text" maxlength="100" placeholder="제목" value="${escapeHtml(existingTitle)}"
         oninput="state._editorTitle=this.value;document.getElementById('comm-title-counter').textContent=this.value.length+'/100'"
         style="width:100%;padding:12px 60px 12px 16px;border:1px solid var(--border);border-radius:12px;font-size:16px;font-weight:600;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);outline:none;box-sizing:border-box">
       <span id="comm-title-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${existingTitle.length}/100</span>
@@ -13836,8 +13881,8 @@ function renderFriendsList() {
         <div class="glass-card" style="padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="communityViewFriend(${f.friendId})">
           <span style="font-size:28px">${f.emoji || '🐻'}</span>
           <div style="flex:1">
-            <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(f.nickname || f.name || '학생')}</div>
-            <div style="font-size:12px;color:var(--text-muted)">${esc(f.school || '')}</div>
+            <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(f.nickname || f.name || '학생')}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(f.school || '')}</div>
           </div>
           <button onclick="event.stopPropagation();communityUnfriend(${f.friendshipId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:8px"><i class="fas fa-user-minus"></i></button>
         </div>
@@ -13846,10 +13891,10 @@ function renderFriendsList() {
       <div class="glass-card" style="padding:24px;text-align:center;margin-bottom:20px">
         ${code ? `
           <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">내 초대 코드</div>
-          <div style="font-size:24px;font-weight:700;font-family:monospace;color:var(--text-primary);letter-spacing:2px;margin-bottom:16px">${esc(code)}</div>
+          <div style="font-size:24px;font-weight:700;font-family:monospace;color:var(--text-primary);letter-spacing:2px;margin-bottom:16px">${escapeHtml(code)}</div>
           <div style="display:flex;gap:8px;justify-content:center">
-            <button onclick="copyInviteCode('${esc(code)}')" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-copy" style="margin-right:4px"></i>복사</button>
-            <button onclick="shareInviteCode('${esc(code)}')" style="padding:8px 20px;border-radius:20px;background:rgba(0,0,0,0.06);color:var(--text-primary);border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-share" style="margin-right:4px"></i>공유</button>
+            <button onclick="copyInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-copy" style="margin-right:4px"></i>복사</button>
+            <button onclick="shareInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:rgba(0,0,0,0.06);color:var(--text-primary);border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-share" style="margin-right:4px"></i>공유</button>
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:12px">7일 후 만료 · 최대 5회 사용</div>
         ` : `
@@ -13860,7 +13905,7 @@ function renderFriendsList() {
       <div class="glass-card" style="padding:20px">
         <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:12px">친구 코드 입력</div>
         <div style="display:flex;gap:8px">
-          <input id="comm-friend-code" type="text" placeholder="JYCC-XXXX-XXXX" value="${esc(state._communityFriendCodeInput || '')}"
+          <input id="comm-friend-code" type="text" placeholder="JYCC-XXXX-XXXX" value="${escapeHtml(state._communityFriendCodeInput || '')}"
             oninput="state._communityFriendCodeInput=this.value"
             style="flex:1;padding:10px 16px;border-radius:12px;border:1px solid var(--border);font-size:14px;font-family:monospace;background:var(--bg-primary);color:var(--text-primary);outline:none">
           <button onclick="communityAcceptFriendCode()" style="padding:10px 20px;border-radius:12px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">추가</button>
@@ -13962,8 +14007,8 @@ function renderFriendProfile() {
     </div>
     <div style="text-align:center;margin-bottom:24px">
       <div style="font-size:56px;margin-bottom:8px">${profile.emoji || '🐻'}</div>
-      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${esc(profile.nickname || profile.name || '학생')}</div>
-      <div style="font-size:13px;color:var(--text-muted)">${esc(profile.school || '')}</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${escapeHtml(profile.nickname || profile.name || '학생')}</div>
+      <div style="font-size:13px;color:var(--text-muted)">${escapeHtml(profile.school || '')}</div>
     </div>
     ${sections.length > 0 ? sections.join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:14px">이 친구는 학습 정보를 공유하지 않고 있습니다</div>'}
   </div>`;
@@ -14040,7 +14085,7 @@ function renderNotificationList() {
         <div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04);cursor:pointer${!n.is_read ? ';background:rgba(99,102,241,0.04);border-radius:8px;padding:12px' : ''}" onclick="if(${n.post_id}){openPostDetail(${n.post_id})}">
           <div style="font-size:14px;color:var(--text-primary)">
             ${n.type === 'comment' ? '<i class="fas fa-comment" style="color:#6366f1;margin-right:6px"></i>' : '<i class="fas fa-heart" style="color:#ef4444;margin-right:6px"></i>'}
-            ${esc(n.actorNickname || '알 수 없음')}님이 ${n.type === 'comment' ? '댓글을 남겼습니다' : '좋아요를 눌렀습니다'}
+            ${escapeHtml(n.actorNickname || '알 수 없음')}님이 ${n.type === 'comment' ? '댓글을 남겼습니다' : '좋아요를 눌렀습니다'}
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${_relativeTime(n.created_at)}</div>
         </div>
