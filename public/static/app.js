@@ -13309,7 +13309,54 @@ async function submitCommunityNickname() {
   }
 }
 
-// Stub renderers (implemented in sections 10-12)
+// ==================== COMMUNITY: BOARD & POSTS ====================
+
+// Helpers
+function _relativeTime(dateStr) {
+  if (!dateStr) return '';
+  const now = new Date();
+  const d = new Date(dateStr);
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return '방금 전';
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  if (diff < 172800) return '어제';
+  if (diff < 604800) return `${Math.floor(diff / 86400)}일 전`;
+  return d.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\. /g, '.').replace(/\.$/, '');
+}
+
+function _stripHtmlPreview(html, maxLen = 100) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  const text = (tmp.textContent || '').trim();
+  return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+}
+
+function _safeHtml(html) {
+  return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html || '') : esc(html || '');
+}
+
+let _communityLoadingMore = false;
+
+function _renderPostCard(p) {
+  const preview = _stripHtmlPreview(p.content);
+  return `<div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="openPostDetail(${p.id})">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:20px">${p.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(p.authorNickname || '익명')}</span>
+      <span style="font-size:12px;color:var(--text-muted);margin-left:auto">${_relativeTime(p.created_at)}</span>
+    </div>
+    ${p.title ? `<div style="font-weight:700;font-size:15px;color:var(--text-primary);margin-bottom:4px">${esc(p.title)}</div>` : ''}
+    ${preview ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${esc(preview)}</div>` : ''}
+    ${p.photoCount > 0 ? `<div style="font-size:12px;color:var(--primary);margin-bottom:8px"><i class="fas fa-camera"></i> ${p.photoCount}장</div>` : ''}
+    <div style="display:flex;gap:16px;font-size:13px;color:var(--text-muted)">
+      <span><i class="${p.isLikedByMe ? 'fas' : 'far'} fa-heart" style="${p.isLikedByMe ? 'color:#ef4444' : ''}"></i> ${p.like_count || 0}</span>
+      <span><i class="far fa-comment"></i> ${p.comment_count || 0}</span>
+    </div>
+  </div>`;
+}
+
+// Board home (board list + header)
 function renderCommunityHome() {
   const boards = state._communityBoards || [];
   return `<div class="tab-content animate-in" style="padding:20px">
@@ -13325,7 +13372,7 @@ function renderCommunityHome() {
       </div>
     </div>
     ${boards.length > 0 ? boards.map(b => `
-      <div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="state._communityCurrentBoard=${b.id};goCommScreen('board');DB.loadCommunityPosts(${b.id})">
+      <div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="selectCommunityBoard(${b.id})">
         <div style="display:flex;align-items:center;gap:12px">
           <div style="width:40px;height:40px;border-radius:12px;background:${b.board_type==='academy'?'linear-gradient(135deg,#6366f1,#8b5cf6)':'linear-gradient(135deg,#06b6d4,#3b82f6)'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px">
             ${b.board_type === 'academy' ? '<i class="fas fa-school"></i>' : '<i class="fas fa-users"></i>'}
@@ -13341,26 +13388,240 @@ function renderCommunityHome() {
   </div>`;
 }
 
+async function selectCommunityBoard(boardId) {
+  state._communityCurrentBoard = boardId;
+  state._communityPage = 1;
+  state._communityPosts = [];
+  state._communityHasMore = false;
+  state._communityScreen = 'board';
+  renderScreen();
+  await DB.loadCommunityPosts(boardId, 1);
+  renderScreen();
+  setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+}
+
+// Board post list
 function renderCommunityBoard() {
-  return `<div class="tab-content animate-in" style="padding:20px">
+  const posts = state._communityPosts || [];
+  const boardId = state._communityCurrentBoard;
+  const board = (state._communityBoards || []).find(b => b.id === boardId);
+  const boardName = board ? board.name : '게시판';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">게시판</h2>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${esc(boardName)}</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">게시판 목록 (Section 10에서 구현)</div>
+    <div id="community-post-list">
+      ${posts.length > 0 ? posts.map(p => _renderPostCard(p)).join('') : `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px">📝</div>
+          <p style="font-size:15px;font-weight:600;margin-bottom:4px">아직 게시글이 없어요</p>
+          <p style="font-size:13px">첫 번째 게시글을 작성해보세요!</p>
+        </div>`}
+      <div id="community-scroll-sentinel" style="height:40px;display:flex;align-items:center;justify-content:center">
+        ${state._communityHasMore ? '<div class="spinner" style="width:24px;height:24px"></div>' : (posts.length > 0 ? '<span style="font-size:12px;color:var(--text-muted)">모든 게시글을 불러왔어요</span>' : '')}
+      </div>
+    </div>
+    <button onclick="goCommScreen('post-editor')" style="position:fixed;bottom:80px;right:20px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;font-size:24px;cursor:pointer;box-shadow:0 4px 16px rgba(99,102,241,0.4);z-index:50;display:flex;align-items:center;justify-content:center">
+      <i class="fas fa-plus"></i>
+    </button>
   </div>`;
+}
+
+function _setupCommunityInfiniteScroll() {
+  const sentinel = document.getElementById('community-scroll-sentinel');
+  if (!sentinel) return;
+  const observer = new IntersectionObserver(async (entries) => {
+    if (entries[0].isIntersecting && state._communityHasMore && !_communityLoadingMore) {
+      _communityLoadingMore = true;
+      await DB.loadCommunityPosts(state._communityCurrentBoard, state._communityPage + 1);
+      _communityLoadingMore = false;
+      renderScreen();
+      setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+    }
+  }, { threshold: 0.1 });
+  observer.observe(sentinel);
+}
+
+// Post detail
+async function openPostDetail(postId) {
+  state._communityCurrentPost = null;
+  state._communityComments = [];
+  state._communityScreen = 'post-detail';
+  renderScreen();
+  await Promise.all([DB.loadPostDetail(postId), DB.loadComments(postId, 1)]);
+  renderScreen();
 }
 
 function renderPostDetail() {
-  return `<div class="tab-content animate-in" style="padding:20px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+  const post = state._communityCurrentPost;
+  if (!post) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">게시글</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div><p style="margin-top:12px;color:var(--text-muted)">로딩 중...</p></div>
+    </div>`;
+  }
+
+  const isAuthor = (post.author_type === DB._communityUserType() && post.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  const comments = state._communityComments || [];
+  const photos = post.photos || [];
+  const safeContent = _safeHtml(post.content);
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">게시글</h2>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${esc(post.title || '')}</h2>
+      <div style="position:relative">
+        <button class="btn-icon" onclick="document.getElementById('comm-post-menu').style.display=document.getElementById('comm-post-menu').style.display==='block'?'none':'block'"><i class="fas fa-ellipsis-v"></i></button>
+        <div id="comm-post-menu" style="display:none;position:absolute;right:0;top:40px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:140px;z-index:100;overflow:hidden">
+          <button onclick="reportCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit">신고하기</button>
+          ${canDelete ? `<button onclick="deleteCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:#ef4444;cursor:pointer;border-top:1px solid var(--border);font-family:inherit">삭제하기</button>` : ''}
+        </div>
+      </div>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">게시글 상세 (Section 10에서 구현)</div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <span style="font-size:24px">${post.authorEmoji || '🐻'}</span>
+      <div>
+        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(post.authorNickname || '익명')}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${_relativeTime(post.created_at)}</div>
+      </div>
+    </div>
+
+    ${photos.length > 0 ? `<div class="community-photo-gallery" style="margin-bottom:16px">
+      ${photos.map((ph, i) => {
+        const src = ph.r2_key ? `/api/community/photo/${ph.r2_key}` : (ph.thumbnail || ph.photo_data || '');
+        return `<img src="${esc(src)}" alt="사진 ${i+1}" onclick="openCommunityLightbox('${esc(src)}')" style="cursor:pointer">`;
+      }).join('')}
+    </div>` : ''}
+
+    <div class="community-post-content" style="font-size:15px;line-height:1.7;color:var(--text-primary);margin-bottom:20px">${safeContent}</div>
+
+    <div style="display:flex;align-items:center;gap:16px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:20px">
+      <button id="comm-like-btn" onclick="togglePostLike(${post.id})" style="display:flex;align-items:center;gap:6px;background:none;border:none;font-size:14px;color:${post.isLikedByMe ? '#ef4444' : 'var(--text-muted)'};cursor:pointer;font-family:inherit">
+        <i class="${post.isLikedByMe ? 'fas' : 'far'} fa-heart"></i>
+        <span id="comm-like-count">${post.like_count || 0}</span>
+      </button>
+      <span style="font-size:14px;color:var(--text-muted)"><i class="far fa-comment"></i> <span id="comm-comment-count">${post.comment_count || 0}</span></span>
+    </div>
+
+    <div id="comm-comments-area">
+      <h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>
+      ${comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>'}
+    </div>
+
+    <div class="community-comment-bar">
+      <input id="community-comment-input" type="text" placeholder="댓글을 입력하세요..." maxlength="1000" style="flex:1;padding:10px 16px;border-radius:20px;border:1px solid var(--border);background:var(--bg-primary);font-size:14px;font-family:inherit;color:var(--text-primary);outline:none">
+      <button onclick="submitComment(${post.id})" style="width:40px;height:40px;border-radius:50%;background:var(--primary);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-paper-plane" style="font-size:14px"></i></button>
+    </div>
   </div>`;
 }
 
+function _renderCommentCard(c) {
+  const isAuthor = (c.author_type === DB._communityUserType() && c.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  return `<div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04)">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="font-size:16px">${c.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:13px;color:var(--text-primary)">${esc(c.authorNickname || '익명')}</span>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${_relativeTime(c.created_at)}</span>
+      ${canDelete ? `<button onclick="deleteCommunityComment(${c.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px"><i class="fas fa-trash-alt"></i></button>` : ''}
+    </div>
+    <div style="font-size:14px;color:var(--text-secondary);line-height:1.5;padding-left:22px">${esc(c.content)}</div>
+  </div>`;
+}
+
+async function togglePostLike(postId) {
+  const result = await DB.toggleLike(postId);
+  if (result) {
+    if (state._communityCurrentPost) {
+      state._communityCurrentPost.isLikedByMe = result.liked;
+      state._communityCurrentPost.like_count = result.likeCount;
+    }
+    const btn = document.getElementById('comm-like-btn');
+    const cnt = document.getElementById('comm-like-count');
+    if (btn) {
+      btn.style.color = result.liked ? '#ef4444' : 'var(--text-muted)';
+      btn.querySelector('i').className = result.liked ? 'fas fa-heart' : 'far fa-heart';
+    }
+    if (cnt) cnt.textContent = result.likeCount;
+    const listPost = (state._communityPosts || []).find(p => p.id === postId);
+    if (listPost) listPost.like_count = result.likeCount;
+  }
+}
+
+async function submitComment(postId) {
+  const input = document.getElementById('community-comment-input');
+  const content = (input?.value || '').trim();
+  if (!content) return;
+  if (content.length > 1000) { showToast('댓글은 1,000자까지 입력할 수 있어요'); return; }
+  input.value = '';
+  const result = await DB.saveComment(postId, content);
+  if (result) {
+    await DB.loadComments(postId, 1);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = (state._communityCurrentPost.comment_count || 0) + 1;
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function deleteCommunityComment(commentId) {
+  if (!confirm('댓글을 삭제하시겠어요?')) return;
+  const result = await DB.deleteComment(commentId);
+  if (result) {
+    state._communityComments = (state._communityComments || []).filter(c => c.id !== commentId);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = Math.max(0, (state._communityCurrentPost.comment_count || 0) - 1);
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function reportCommunityPost(postId) {
+  const reason = prompt('신고 사유를 입력해주세요:');
+  if (!reason) return;
+  const ok = await DB.reportContent('post', postId, reason);
+  if (ok) showToast('신고가 접수되었습니다');
+  else showToast('이미 신고한 콘텐츠입니다');
+}
+
+async function deleteCommunityPost(postId) {
+  if (!confirm('게시글을 삭제하시겠어요?')) return;
+  const result = await DB.deletePost(postId);
+  if (result) {
+    state._communityPosts = (state._communityPosts || []).filter(p => p.id !== postId);
+    goCommScreen('board');
+    showToast('게시글이 삭제되었습니다');
+  }
+}
+
+function openCommunityLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'community-lightbox';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `<img src="${src}">`;
+  document.body.appendChild(overlay);
+}
+
+// Post editor stub (Section 11)
 function renderPostEditor() {
   return `<div class="tab-content animate-in" style="padding:20px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
@@ -13371,6 +13632,7 @@ function renderPostEditor() {
   </div>`;
 }
 
+// Friends stubs (Section 12)
 function renderFriendsList() {
   return `<div class="tab-content animate-in" style="padding:20px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
@@ -13401,23 +13663,38 @@ function renderShareSettings() {
   </div>`;
 }
 
+// Report list (mentors)
 function renderReportList() {
   return `<div class="tab-content animate-in" style="padding:20px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
       <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">신고 관리</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">신고 관리 (Section 10에서 구현)</div>
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">신고 관리 (멘토 전용)</div>
   </div>`;
 }
 
+// Notifications
 function renderNotificationList() {
+  const notifications = state._communityNotifications || [];
+  DB.loadNotifications();
+  DB.markNotificationsRead();
   return `<div class="tab-content animate-in" style="padding:20px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
       <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">알림</h2>
     </div>
-    <div style="text-align:center;padding:40px;color:var(--text-muted)">알림 목록 (Section 10에서 구현)</div>
+    <div id="comm-notifications-list">
+      ${notifications.length > 0 ? notifications.map(n => `
+        <div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04);cursor:pointer${!n.is_read ? ';background:rgba(99,102,241,0.04);border-radius:8px;padding:12px' : ''}" onclick="if(${n.post_id}){openPostDetail(${n.post_id})}">
+          <div style="font-size:14px;color:var(--text-primary)">
+            ${n.type === 'comment' ? '<i class="fas fa-comment" style="color:#6366f1;margin-right:6px"></i>' : '<i class="fas fa-heart" style="color:#ef4444;margin-right:6px"></i>'}
+            ${esc(n.actorNickname || '알 수 없음')}님이 ${n.type === 'comment' ? '댓글을 남겼습니다' : '좋아요를 눌렀습니다'}
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${_relativeTime(n.created_at)}</div>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:13px">알림이 없습니다</div>'}
+    </div>
   </div>`;
 }
 

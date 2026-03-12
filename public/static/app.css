@@ -2895,6 +2895,58 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   color: var(--text-primary);
 }
 
+/* Community post content */
+.community-post-content img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.community-post-content a {
+  color: #6366f1;
+  text-decoration: underline;
+}
+.community-comment-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(10px);
+  padding: 8px 16px;
+  border-top: 1px solid rgba(0,0,0,0.06);
+  display: flex;
+  gap: 8px;
+  z-index: 100;
+}
+.community-photo-gallery {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 0;
+}
+.community-photo-gallery img {
+  height: 200px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.community-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+}
+.community-lightbox img {
+  max-width: 95vw;
+  max-height: 90vh;
+  object-fit: contain;
+}
+
 /* ==================== PLANNER 2-COLUMN LAYOUT ==================== */
 .planner-two-col {
   display: grid;

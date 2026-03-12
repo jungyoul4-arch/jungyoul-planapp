@@ -53,6 +53,10 @@
     "section-08-moderation-api": {
       "status": "complete",
       "commit_hash": "2faa2d3"
+    },
+    "section-09-frontend-navigation": {
+      "status": "complete",
+      "commit_hash": "365fe0b"
     }
   },
   "pre_commit": {

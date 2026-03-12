@@ -7272,6 +7272,7 @@ app.get('/', (c) => {
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
   <script src="/static/app.js"></script>
   <script type="module">
     import ArchiveModule from '/modules/records/records.js';
