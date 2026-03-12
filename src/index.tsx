@@ -1099,6 +1099,18 @@ function sanitizeHTML(html: string): string {
 }
 
 /** 사용자가 게시판에 접근 가능한지 확인 */
+/** 닉네임 금지어 목록 */
+const NICKNAME_BLOCKLIST = ['바보', '멍청', '시발', '씨발', '병신', '개새', '죽어', '지랄', '닥쳐', 'fuck', 'shit', 'damn'];
+
+/** 닉네임 유효성 검사 */
+function validateNickname(nickname: string): { valid: boolean; error?: string } {
+  const trimmed = nickname.trim();
+  if (trimmed.length < 2 || trimmed.length > 12) return { valid: false, error: '닉네임은 2~12자여야 합니다' };
+  if (!/^[가-힣a-zA-Z0-9\s]+$/.test(trimmed)) return { valid: false, error: '닉네임에 한글, 영문, 숫자, 공백만 사용 가능합니다' };
+  if (NICKNAME_BLOCKLIST.some(w => trimmed.toLowerCase().includes(w))) return { valid: false, error: '사용할 수 없는 닉네임입니다' };
+  return { valid: true };
+}
+
 /** 학생의 학원명 조회 (join chain) */
 async function getStudentAcademy(db: any, studentId: number): Promise<string | null> {
   const row: any = await db.prepare(
@@ -4775,6 +4787,160 @@ app.delete('/api/student/:studentId/friends/:friendshipId', async (c) => {
     if (!friendship) return c.json({ success: false, error: '친구 관계를 찾을 수 없습니다' }, 404);
     await c.env.DB.prepare('DELETE FROM friendships WHERE id = ?').bind(friendshipId).run();
     return c.json({ success: true, data: { message: '친구가 삭제되었습니다' } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 닉네임 + 공유설정 ====================
+
+// PUT /api/student/:studentId/nickname — 학생 닉네임 설정/변경
+app.put('/api/student/:studentId/nickname', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const { nickname } = await c.req.json();
+    if (!nickname) return c.json({ success: false, error: '닉네임을 입력해주세요' }, 400);
+    const validation = validateNickname(nickname);
+    if (!validation.valid) return c.json({ success: false, error: validation.error }, 400);
+
+    const academy = await getStudentAcademy(c.env.DB, studentId);
+    if (!academy) return c.json({ success: false, error: '학생 정보를 찾을 수 없습니다' }, 404);
+
+    const trimmed = nickname.trim();
+    const dup: any = await c.env.DB.prepare(
+      `SELECT id FROM students WHERE nickname = ? AND id != ? AND group_id IN (SELECT g.id FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE m.academy_name = ?)
+       UNION SELECT id FROM mentors WHERE nickname = ? AND academy_name = ?`
+    ).bind(trimmed, studentId, academy, trimmed, academy).first();
+    if (dup) return c.json({ success: false, error: '이미 사용 중인 닉네임입니다' }, 409);
+
+    await c.env.DB.prepare('UPDATE students SET nickname = ? WHERE id = ?').bind(trimmed, studentId).run();
+    return c.json({ success: true, data: { nickname: trimmed } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/mentor/:mentorId/nickname — 멘토 닉네임 설정/변경
+app.put('/api/mentor/:mentorId/nickname', async (c) => {
+  const mentorId = Number(c.req.param('mentorId'));
+  if (!mentorId) return c.json({ success: false, error: '유효하지 않은 멘토 ID입니다' }, 400);
+  try {
+    const { nickname } = await c.req.json();
+    if (!nickname) return c.json({ success: false, error: '닉네임을 입력해주세요' }, 400);
+    const validation = validateNickname(nickname);
+    if (!validation.valid) return c.json({ success: false, error: validation.error }, 400);
+
+    const mentor: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(mentorId).first();
+    if (!mentor) return c.json({ success: false, error: '멘토 정보를 찾을 수 없습니다' }, 404);
+
+    const trimmed = nickname.trim();
+    const dup: any = await c.env.DB.prepare(
+      `SELECT id FROM mentors WHERE nickname = ? AND id != ? AND academy_name = ?
+       UNION SELECT id FROM students WHERE nickname = ? AND group_id IN (SELECT g.id FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE m.academy_name = ?)`
+    ).bind(trimmed, mentorId, mentor.academy_name, trimmed, mentor.academy_name).first();
+    if (dup) return c.json({ success: false, error: '이미 사용 중인 닉네임입니다' }, 409);
+
+    await c.env.DB.prepare('UPDATE mentors SET nickname = ? WHERE id = ?').bind(trimmed, mentorId).run();
+    return c.json({ success: true, data: { nickname: trimmed } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/share-settings — 공유 설정 조회
+app.get('/api/student/:studentId/share-settings', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    let row: any = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(studentId).first();
+    if (!row) {
+      const now = getKSTString();
+      await c.env.DB.prepare(
+        'INSERT INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, 0, 0, 0, 0, 0, ?)'
+      ).bind(studentId, now).run();
+      row = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(studentId).first();
+    }
+    return c.json({ success: true, data: {
+      share_class_records: row.share_class_records, share_question_count: row.share_question_count,
+      share_teach_count: row.share_teach_count, share_mission_status: row.share_mission_status,
+      share_xp_level: row.share_xp_level
+    }});
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/student/:studentId/share-settings — 공유 설정 변경
+app.put('/api/student/:studentId/share-settings', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const body = await c.req.json();
+    const fields = ['share_class_records', 'share_question_count', 'share_teach_count', 'share_mission_status', 'share_xp_level'];
+    for (const f of fields) {
+      if (body[f] !== undefined && body[f] !== 0 && body[f] !== 1) return c.json({ success: false, error: '설정 값은 0 또는 1이어야 합니다' }, 400);
+    }
+    const now = getKSTString();
+    await c.env.DB.prepare(
+      'INSERT OR REPLACE INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(studentId, body.share_class_records || 0, body.share_question_count || 0, body.share_teach_count || 0, body.share_mission_status || 0, body.share_xp_level || 0, now).run();
+    return c.json({ success: true, data: {
+      share_class_records: body.share_class_records || 0, share_question_count: body.share_question_count || 0,
+      share_teach_count: body.share_teach_count || 0, share_mission_status: body.share_mission_status || 0,
+      share_xp_level: body.share_xp_level || 0
+    }});
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/learning-profile — 친구의 학습 프로필 조회
+app.get('/api/student/:studentId/learning-profile', async (c) => {
+  const targetId = Number(c.req.param('studentId'));
+  const viewerId = Number(c.req.query('viewer_id'));
+  if (!targetId || !viewerId) return c.json({ success: false, error: 'viewer_id가 필요합니다' }, 400);
+  try {
+    // 친구 관계 확인
+    const id1 = Math.min(targetId, viewerId);
+    const id2 = Math.max(targetId, viewerId);
+    const friendship: any = await c.env.DB.prepare(
+      "SELECT id FROM friendships WHERE student_id_1 = ? AND student_id_2 = ? AND status = 'accepted'"
+    ).bind(id1, id2).first();
+    if (!friendship) return c.json({ success: false, error: '친구만 프로필을 볼 수 있습니다' }, 403);
+
+    const student: any = await c.env.DB.prepare('SELECT nickname, profile_emoji, school_name, grade, xp, level FROM students WHERE id = ?').bind(targetId).first();
+    if (!student) return c.json({ success: false, error: '학생 정보를 찾을 수 없습니다' }, 404);
+
+    const settings: any = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(targetId).first();
+
+    const profile: any = {
+      nickname: student.nickname || '익명', profileEmoji: student.profile_emoji || '😊',
+      schoolName: student.school_name || '', grade: student.grade || 1
+    };
+
+    if (settings?.share_class_records) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ?').bind(targetId).first();
+      profile.classRecordCount = r?.cnt || 0;
+    }
+    if (settings?.share_question_count) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM question_records WHERE student_id = ?').bind(targetId).first();
+      profile.questionCount = r?.cnt || 0;
+    }
+    if (settings?.share_teach_count) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM teach_records WHERE student_id = ?').bind(targetId).first();
+      profile.teachCount = r?.cnt || 0;
+    }
+    if (settings?.share_mission_status) {
+      const r: any = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM assignments WHERE student_id = ? AND status = 'completed'").bind(targetId).first();
+      profile.completedAssignmentCount = r?.cnt || 0;
+    }
+    if (settings?.share_xp_level) {
+      profile.xp = student.xp || 0;
+      profile.level = student.level || 1;
+    }
+
+    return c.json({ success: true, data: profile });
   } catch (e: any) {
     return c.json({ success: false, error: e.message }, 500);
   }

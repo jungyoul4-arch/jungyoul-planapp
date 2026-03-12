@@ -41,6 +41,10 @@
     "section-05-notification-api": {
       "status": "complete",
       "commit_hash": "762b8e4"
+    },
+    "section-06-friend-api": {
+      "status": "complete",
+      "commit_hash": "8114a9b"
     }
   },
   "pre_commit": {
