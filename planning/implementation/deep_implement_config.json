@@ -45,6 +45,10 @@
     "section-06-friend-api": {
       "status": "complete",
       "commit_hash": "8114a9b"
+    },
+    "section-07-nickname-sharing-api": {
+      "status": "complete",
+      "commit_hash": "7bdc4bd"
     }
   },
   "pre_commit": {
