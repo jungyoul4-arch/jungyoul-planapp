@@ -3042,6 +3042,27 @@ app.get('/api/mentor/groups/:groupId/summary', async (c) => {
   }
 });
 
+// 질문방 통계 프록시 API (CORS 우회)
+app.post('/api/mentor/qa-stats', async (c) => {
+  try {
+    const body = await c.req.json();
+    const userIds = body.user_ids || [];
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return c.json({ success: true, count: 0, users: [] });
+    }
+    const res = await fetch('https://qa-tutoring.jung-youl.com/api/user/subject-stats-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ids: userIds })
+    });
+    const data = await res.json();
+    return c.json(data);
+  } catch (e: any) {
+    console.error('qa-stats proxy error:', e);
+    return c.json({ success: false, error: e.message, users: [] });
+  }
+});
+
 // 전체 DB 내보내기 (관리자용) - 파라미터 바인딩으로 SQL 인젝션 방지
 app.get('/api/admin/export/:table', async (c) => {
   try {

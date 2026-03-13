@@ -547,7 +547,7 @@ async function __mentorLoadQuestionStats(userIds) {
     return;
   }
   try {
-    const res = await fetch('https://qa-tutoring.jung-youl.com/api/user/subject-stats-batch', {
+    const res = await fetch('/api/mentor/qa-stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_ids: userIds })
