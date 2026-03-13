@@ -558,7 +558,7 @@ async function __mentorLoadQuestionStats(userIds) {
       const statsMap = {};
       const subjectOrder = ['국어', '수학', '영어', '과학', '기타'];
       data.users.forEach(u => {
-        // 과목별 통계를 정렬하여 저장 (국,영,수,과,기 순서)
+        // 과목별 통계를 정렬하여 저장 (국어,수학,영어,과학,기타 순서)
         const subjectMap = {};
         (u.subjects || []).forEach(s => {
           subjectMap[s.subject] = { q: s.question_count || 0, a: s.answer_count || 0 };
@@ -570,7 +570,7 @@ async function __mentorLoadQuestionStats(userIds) {
         });
         statsMap[u.user_id] = {
           total: { q: u.total_question_count || 0, a: u.total_answer_count || 0 },
-          subjects: ordered // [국어, 영어, 수학, 과학, 기타] 순서
+          subjects: ordered // [국어, 수학, 영어, 과학, 기타] 순서
         };
       });
       _mentor.qaStats = statsMap;
