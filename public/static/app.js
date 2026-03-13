@@ -543,6 +543,7 @@ function _renderScreenImpl(forced) {
         setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
+        if (state.currentScreen === 'timetable-manage') setTimeout(initAcademyDragDrop, 50);
         // Home tab GSAP stagger animation
         setTimeout(() => {
           if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
@@ -573,6 +574,7 @@ function _renderScreenImpl(forced) {
         setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
         setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
         setTimeout(() => smartScrollTimetable(), 80);
+        if (state.currentScreen === 'timetable-manage') setTimeout(initAcademyDragDrop, 50);
         // Home tab GSAP stagger animation (phone)
         setTimeout(() => {
           if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
@@ -1271,10 +1273,9 @@ function initAuthEvents(container) {
 
       state.currentScreen = 'main';
       state.studentTab = 'home';
-      renderScreen();
 
-      // DB에서 데이터 로드 (비동기)
-      DB.loadAll().then(() => refreshDataWidgets());
+      // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
+      DB.loadAll().then(() => { state._loginLoading = false; refreshDataWidgets(); renderScreen(); });
       startCommunityNotifPoll();
       // 수업 종료 자동 감지 시작
       startClassEndChecker();
@@ -1593,8 +1594,9 @@ async function externalLogin(userId, deviceMode) {
       state.mode = 'student';
       // localStorage에 저장 (재방문 시 자동 로그인)
       localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, group: data.group, externalUserId: data.externalUserId }));
-      renderScreen();
-      DB.loadAll().then(() => refreshDataWidgets());
+      // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
+      _autoLoginDataLoading = true;
+      DB.loadAll().then(() => { _autoLoginDataLoading = false; refreshDataWidgets(); renderScreen(); });
       startCommunityNotifPoll();
       startClassEndChecker();
       startAutoSync();
@@ -4832,8 +4834,8 @@ function renderHomeTab() {
           <div class="upcoming-assignments">
             ${state.assignments.filter(a => a.status !== 'completed').sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate)).map(a => {
               const dDay = getDday(a.dueDate);
-              const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
-              const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+              const dDayText = dDay == null ? '미정' : dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+              const urgency = dDay == null ? 'normal' : dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
               return `
               <div class="upcoming-assignment-card ${urgency}" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
                 <div class="ua-left">
@@ -11329,9 +11331,11 @@ function renderAssignmentList() {
 // ==================== ASSIGNMENT UTILITIES ====================
 
 function getDday(dateStr) {
+  if (!dateStr) return null;
   const today = kstNow();
   today.setHours(0,0,0,0);
   const due = new Date(dateStr);
+  if (isNaN(due.getTime())) return null;
   due.setHours(0,0,0,0);
   return Math.ceil((due - today) / (1000 * 60 * 60 * 24));
 }
@@ -14805,7 +14809,14 @@ function renderTimetableManage() {
   const days = ['월','화','수','목','금'];
   const acDays = ['월','화','수','목','금','토','일'];
   const tt = state.timetable;
-  const subjectList = ['국어','수학','영어','과학','한국사','체육','미술','동아리','창체',''];
+  const baseSubjects = ['국어','수학','영어','과학','한국사','체육','미술','동아리','창체'];
+  if (tt.school) {
+    tt.school.forEach(row => {
+      if (Array.isArray(row)) row.forEach(s => { if (s && !baseSubjects.includes(s)) baseSubjects.push(s); });
+    });
+  }
+  baseSubjects.push('');
+  const subjectList = baseSubjects;
   const maxSlots = 4;
 
   return `
@@ -14893,10 +14904,11 @@ function renderTimetableManage() {
                 const isSelected = state.selectedAcSlot && state.selectedAcSlot.day === day && state.selectedAcSlot.slot === slotIdx + 1;
                 if (ac) {
                   return `
-                  <div class="ac-grid-cell filled ${isSelected?'selected':''}" 
+                  <div class="ac-grid-cell filled ${isSelected?'selected':''}"
+                    data-day="${day}" data-slot="${slotIdx+1}" data-ac-id="${ac.id}"
                     style="background:${ac.color}18;border-color:${ac.color}44"
-                    onclick="${state.editingTimetable 
-                      ? `state.editingAcademy='${ac.id}';goScreen('academy-add')` 
+                    onclick="${state.editingTimetable
+                      ? `state.editingAcademy='${ac.id}';goScreen('academy-add')`
                       : `showAcademyDetail('${ac.id}')`}">
                     <div class="ac-cell-name" style="color:${ac.color}">${ac.name}</div>
                     <div class="ac-cell-time-ribbon" style="background:${ac.color}">${ac.startTime}~${ac.endTime}</div>
@@ -14904,6 +14916,7 @@ function renderTimetableManage() {
                 } else {
                   return `
                   <div class="ac-grid-cell empty ${isSelected?'selected':''} editable"
+                    data-day="${day}" data-slot="${slotIdx+1}"
                     onclick="if(!state.editingTimetable){state.editingTimetable=true;}addAcademyAtSlot('${day}',${slotIdx+1})">
                     <i class="fas fa-plus" style="font-size:9px;opacity:0.3"></i>
                   </div>`;
@@ -14993,6 +15006,7 @@ function addAcademyAtSlot(day, slot) {
   state.editingAcademy = null;
   state._prefillDay = day;
   state._prefillSlot = slot;
+  state._acSelectedDays = [day];
   goScreen('academy-add');
 }
 
@@ -15033,18 +15047,30 @@ function renderAcademyAdd() {
         <div class="field-group">
           <label class="field-label">📚 관련 과목</label>
           <div class="chip-row" id="ac-subject-chips">
-            ${['수학','영어','국어','과학','사회','기타'].map(s => 
+            ${(() => {
+              const base = ['수학','영어','국어','과학','사회'];
+              const fromTT = new Set();
+              if (state.timetable.school) {
+                state.timetable.school.forEach(row => {
+                  if (Array.isArray(row)) row.forEach(s => { if (s) fromTT.add(s); });
+                });
+              }
+              fromTT.forEach(s => { if (!base.includes(s)) base.push(s); });
+              base.push('기타');
+              return base;
+            })().map(s =>
               `<button class="chip ${(isEdit && ac.subject===s) || (!isEdit && s==='수학') ? 'active' : ''}" data-subject="${s}">${s}</button>`
             ).join('')}
           </div>
         </div>
 
         <div class="field-group">
-          <label class="field-label">📅 요일</label>
+          <label class="field-label">📅 요일 ${isEdit ? '' : '<span class="field-hint">(여러 요일 선택 가능)</span>'}</label>
           <div class="chip-row" id="ac-day-chips">
-            ${['월','화','수','목','금','토','일'].map(d => 
-              `<button class="chip ${(isEdit && ac.day===d) || (!isEdit && d===prefillDay) ? 'active' : ''}" data-day="${d}">${d}</button>`
-            ).join('')}
+            ${['월','화','수','목','금','토','일'].map(d => {
+              const isActive = isEdit ? ac.day===d : (state._acSelectedDays || []).includes(d) || (!state._acSelectedDays && d===prefillDay);
+              return `<button class="chip ${isActive ? 'active' : ''}" data-day="${d}">${d}</button>`;
+            }).join('')}
           </div>
         </div>
 
@@ -15195,18 +15221,21 @@ function saveAcademy() {
   const name = document.getElementById('ac-name')?.value || '';
   const academy = document.getElementById('ac-academy')?.value || '';
   const subjectChip = document.querySelector('#ac-subject-chips .chip.active');
-  const dayChip = document.querySelector('#ac-day-chips .chip.active');
   const slotChip = document.querySelector('#ac-slot-chips .chip.active');
   const startTime = document.getElementById('ac-start')?.value || '18:00';
   const endTime = document.getElementById('ac-end')?.value || '20:00';
   const colorBtn = document.querySelector('#ac-color-picker .color-pick-btn.active');
   const memo = document.getElementById('ac-memo')?.value || '';
   const subject = subjectChip ? subjectChip.dataset.subject : '수학';
-  const day = dayChip ? dayChip.dataset.day : '월';
   const slot = slotChip ? parseInt(slotChip.dataset.slot) : 1;
   const color = colorBtn ? colorBtn.dataset.color : '#E056A0';
 
+  const wasEdit = !!state.editingAcademy;
+
   if (state.editingAcademy) {
+    // 수정 모드: 단일 요일
+    const dayChip = document.querySelector('#ac-day-chips .chip.active');
+    const day = dayChip ? dayChip.dataset.day : '월';
     const ac = state.timetable.academy.find(a => a.id === state.editingAcademy);
     if (ac) {
       ac.name = name || ac.name;
@@ -15221,21 +15250,186 @@ function saveAcademy() {
     }
     state.editingAcademy = null;
   } else {
-    const newId = 'ac' + (Date.now() % 100000);
-    state.timetable.academy.push({
-      id: newId, name: name || '학원 수업', academy: academy || '',
-      day, slot, startTime, endTime, color, subject, memo
+    // 추가 모드: 다중 요일 지원 (state에서 읽음)
+    const days = (state._acSelectedDays && state._acSelectedDays.length > 0) ? [...state._acSelectedDays] : ['월'];
+    days.forEach(day => {
+      const newId = 'ac' + (Date.now() % 100000) + '_' + day;
+      state.timetable.academy.push({
+        id: newId, name: name || '학원 수업', academy: academy || '',
+        day, slot, startTime, endTime, color, subject, memo
+      });
     });
+    state._addedDayCount = days.length;
   }
-
   state._prefillDay = null;
   state._prefillSlot = null;
 
   // 플래너에 학원 일정 자동 추가
   syncAcademyToPlanner();
   DB.saveTimetable();
-  showXpPopup(5, '학원 일정이 저장되었어요!');
-  goScreen('timetable-manage');
+  if (wasEdit) {
+    showXpPopup(5, '학원 일정이 저장되었어요!');
+    goScreen('timetable-manage');
+  } else {
+    const count = state._addedDayCount || 1;
+    state._acSelectedDays = null;
+    state._addedDayCount = null;
+    showXpPopup(5 * count, `${count}개 학원 일정이 저장되었어요!`, { stayOnScreen: true });
+    state.editingAcademy = null;
+    goScreen('academy-add');
+  }
+}
+
+// ===== 학원 시간표 드래그 앤 드롭 =====
+let _acDrag = null; // { acId, ghost, originDay, originSlot }
+
+function initAcademyDragDrop() {
+  const grid = document.querySelector('.ac-grid');
+  if (!grid) return;
+  // 이미 바인딩 방지
+  if (grid._dragBound) return;
+  grid._dragBound = true;
+
+  let longPressTimer = null;
+  let startX = 0, startY = 0;
+
+  grid.addEventListener('pointerdown', (e) => {
+    const cell = e.target.closest('.ac-grid-cell.filled');
+    if (!cell) return;
+    startX = e.clientX; startY = e.clientY;
+    longPressTimer = setTimeout(() => {
+      e.preventDefault();
+      _startAcDrag(cell, e.clientX, e.clientY);
+    }, 400);
+  });
+
+  grid.addEventListener('pointermove', (e) => {
+    // 롱프레스 대기 중 이동하면 취소
+    if (longPressTimer && (Math.abs(e.clientX - startX) > 8 || Math.abs(e.clientY - startY) > 8)) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    if (!_acDrag) return;
+    e.preventDefault();
+    _moveAcDrag(e.clientX, e.clientY);
+  });
+
+  grid.addEventListener('pointerup', (e) => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (!_acDrag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _endAcDrag(e.clientX, e.clientY);
+  });
+
+  grid.addEventListener('pointercancel', () => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (_acDrag) _cancelAcDrag();
+  });
+
+  // 터치 스크롤 방지 (드래그 중)
+  grid.addEventListener('touchmove', (e) => {
+    if (_acDrag) e.preventDefault();
+  }, { passive: false });
+}
+
+function _startAcDrag(cell, x, y) {
+  const acId = cell.dataset.acId;
+  const ac = state.timetable.academy.find(a => a.id === acId);
+  if (!ac) return;
+
+  // 햅틱 피드백 (지원 기기)
+  if (navigator.vibrate) navigator.vibrate(30);
+
+  // 고스트 생성
+  const ghost = document.createElement('div');
+  ghost.className = 'ac-drag-ghost';
+  ghost.textContent = ac.name;
+  ghost.style.background = ac.color;
+  ghost.style.left = x + 'px';
+  ghost.style.top = y + 'px';
+  document.body.appendChild(ghost);
+
+  cell.classList.add('dragging');
+
+  _acDrag = {
+    acId, ghost,
+    originDay: ac.day,
+    originSlot: ac.slot,
+    sourceCell: cell
+  };
+
+  // 셀 클릭 이벤트 방지
+  cell.style.pointerEvents = 'none';
+}
+
+function _moveAcDrag(x, y) {
+  if (!_acDrag) return;
+  _acDrag.ghost.style.left = x + 'px';
+  _acDrag.ghost.style.top = y + 'px';
+
+  // 드롭 타겟 하이라이트
+  document.querySelectorAll('.ac-grid-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
+  const target = _getCellUnder(x, y);
+  if (target && target !== _acDrag.sourceCell) {
+    target.classList.add('drag-over');
+  }
+}
+
+function _endAcDrag(x, y) {
+  if (!_acDrag) return;
+  const target = _getCellUnder(x, y);
+
+  if (target && target !== _acDrag.sourceCell) {
+    const newDay = target.dataset.day;
+    const newSlot = parseInt(target.dataset.slot);
+    const targetAcId = target.dataset.acId;
+
+    const ac = state.timetable.academy.find(a => a.id === _acDrag.acId);
+    if (ac) {
+      if (targetAcId) {
+        // 채워진 셀이면 swap
+        const targetAc = state.timetable.academy.find(a => a.id === targetAcId);
+        if (targetAc) {
+          targetAc.day = _acDrag.originDay;
+          targetAc.slot = _acDrag.originSlot;
+        }
+      }
+      ac.day = newDay;
+      ac.slot = newSlot;
+      syncAcademyToPlanner();
+      DB.saveTimetable();
+      _cleanupAcDrag();
+      renderScreen(true);
+      return;
+    }
+  }
+
+  _cleanupAcDrag();
+}
+
+function _cancelAcDrag() {
+  _cleanupAcDrag();
+}
+
+function _cleanupAcDrag() {
+  if (!_acDrag) return;
+  _acDrag.ghost.remove();
+  _acDrag.sourceCell.classList.remove('dragging');
+  _acDrag.sourceCell.style.pointerEvents = '';
+  document.querySelectorAll('.ac-grid-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
+  _acDrag = null;
+}
+
+function _getCellUnder(x, y) {
+  // 고스트 숨기고 아래 요소 찾기
+  if (_acDrag) _acDrag.ghost.style.display = 'none';
+  const el = document.elementFromPoint(x, y);
+  if (_acDrag) _acDrag.ghost.style.display = '';
+  if (!el) return null;
+  return el.closest('.ac-grid-cell');
 }
 
 function deleteAcademy(id) {
@@ -16542,6 +16736,19 @@ function _initDelegatedEvents() {
       e.stopPropagation();
       document.querySelectorAll('#assignment-subject-chips .chip').forEach(c => c.classList.remove('active'));
       chip.classList.add('active');
+      return;
+    }
+    // 학원 추가 요일 칩은 다중선택 (토글) — state에 저장하여 re-render 시 유지
+    if (chip.closest('#ac-day-chips') && !state.editingAcademy) {
+      const day = chip.dataset.day;
+      let days = state._acSelectedDays ? [...state._acSelectedDays] : [];
+      if (days.includes(day)) {
+        days = days.filter(d => d !== day);
+      } else {
+        days.push(day);
+      }
+      state._acSelectedDays = days;
+      chip.classList.toggle('active');
       return;
     }
     const siblings = chip.parentElement.querySelectorAll('.chip');

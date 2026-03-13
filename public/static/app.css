@@ -3700,6 +3700,36 @@ textarea.input-field { resize:none; min-height:60px; line-height:1.6; }
   text-shadow:0 1px 2px rgba(0,0,0,0.3);
 }
 
+/* Academy drag-and-drop */
+.ac-grid-cell.dragging {
+  opacity:0.4; transform:scale(0.95);
+}
+.ac-grid-cell.drag-over {
+  background:rgba(224,86,160,0.15) !important;
+  border:2px dashed #E056A0 !important;
+  transform:scale(1.05);
+}
+.ac-drag-ghost {
+  position:fixed; z-index:9999; pointer-events:none;
+  border-radius:8px; padding:6px 10px;
+  font-size:11px; font-weight:700; text-align:center;
+  color:#fff; box-shadow:0 8px 24px rgba(0,0,0,0.4);
+  transform:translate(-50%,-50%); white-space:nowrap;
+  animation:ac-ghost-in 0.15s ease-out;
+}
+@keyframes ac-ghost-in {
+  from { transform:translate(-50%,-50%) scale(0.6); opacity:0; }
+  to { transform:translate(-50%,-50%) scale(1); opacity:1; }
+}
+.ac-grid-cell.long-press {
+  animation:ac-wiggle 0.3s ease;
+}
+@keyframes ac-wiggle {
+  0%,100% { transform:rotate(0); }
+  25% { transform:rotate(-2deg); }
+  75% { transform:rotate(2deg); }
+}
+
 /* ==================== ACADEMY DETAIL PANEL ==================== */
 
 .ac-detail-panel {
