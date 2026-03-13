@@ -556,7 +556,7 @@ async function __mentorLoadQuestionStats(userIds) {
     if (data.success && data.users) {
       // user_id를 키로 하는 맵으로 변환
       const statsMap = {};
-      const subjectOrder = ['국어', '영어', '수학', '과학', '기타'];
+      const subjectOrder = ['국어', '수학', '영어', '과학', '기타'];
       data.users.forEach(u => {
         // 과목별 통계를 정렬하여 저장 (국,영,수,과,기 순서)
         const subjectMap = {};
@@ -874,7 +874,7 @@ function __renderMentorStudents() {
             // 질문방 통계
             const qa = _mentor.qaStats[s.id];
             const qaSection = qa ? `<div style="margin-top:10px;padding:8px 10px;background:rgba(147,112,219,0.08);border-radius:8px">
-              <div style="font-size:11px;color:#9370DB;font-weight:600;margin-bottom:6px">질문방 기록 <span style="font-weight:400;color:var(--text-muted)">(국,영,수,과,기)</span></div>
+              <div style="font-size:11px;color:#9370DB;font-weight:600;margin-bottom:6px">질문방 기록 <span style="font-weight:400;color:var(--text-muted)">(국어,수학,영어,과학,기타)</span></div>
               <div style="display:flex;justify-content:space-between;font-size:11px">
                 <span style="color:var(--text-muted)">질문수</span>
                 <span style="font-weight:700;color:#9370DB">${qa.subjects.map(x => x.q).join(', ')}</span>
