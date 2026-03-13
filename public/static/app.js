@@ -15347,6 +15347,7 @@ const _mentor = {
   viewerStudentId: null, viewerStudentName: '', viewerStudentEmoji: '',
   viewerLoading: false, viewerTab: 'home', viewerScreen: 'main',
   _savedAuthUser: null, _savedAuthRole: null, _savedState: null,
+  qaStats: {}, // 질문방 통계 (user_id => { total: {q, a}, subjects: [{q, a}...] })
 };
 
 // 멘토 코드 지연 로딩

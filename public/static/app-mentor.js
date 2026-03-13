@@ -531,10 +531,56 @@ async function __mentorLoadGroupSummary() {
     const res2 = await fetch(`/api/mentor/groups/${_mentor.selectedGroupId}/students`);
     const data2 = await res2.json();
     _mentor.studentList = data2.students || [];
+    // 질문방 통계도 로드
+    const userIds = _mentor.groupSummary.map(s => s.id);
+    await _mentorLoadQuestionStats(userIds);
   } catch (e) { console.error('mentorLoadGroupSummary:', e); }
   _mentor.loading = false;
   _mentor.initialLoading = false;
   renderScreen();
+}
+
+// 질문방 통계 로드 (외부 API)
+async function __mentorLoadQuestionStats(userIds) {
+  if (!userIds || userIds.length === 0) {
+    _mentor.qaStats = {};
+    return;
+  }
+  try {
+    const res = await fetch('https://qa-tutoring.jung-youl.com/api/user/subject-stats-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ids: userIds })
+    });
+    const data = await res.json();
+    if (data.success && data.users) {
+      // user_id를 키로 하는 맵으로 변환
+      const statsMap = {};
+      const subjectOrder = ['국어', '영어', '수학', '과학', '기타'];
+      data.users.forEach(u => {
+        // 과목별 통계를 정렬하여 저장 (국,영,수,과,기 순서)
+        const subjectMap = {};
+        (u.subjects || []).forEach(s => {
+          subjectMap[s.subject] = { q: s.question_count || 0, a: s.answer_count || 0 };
+        });
+        // 순서대로 정리
+        const ordered = subjectOrder.map(subj => {
+          const found = subjectMap[subj] || { q: 0, a: 0 };
+          return found;
+        });
+        statsMap[u.user_id] = {
+          total: { q: u.total_question_count || 0, a: u.total_answer_count || 0 },
+          subjects: ordered // [국어, 영어, 수학, 과학, 기타] 순서
+        };
+      });
+      _mentor.qaStats = statsMap;
+    } else {
+      _mentor.qaStats = {};
+    }
+  } catch (e) {
+    console.error('mentorLoadQuestionStats:', e);
+    _mentor.qaStats = {};
+  }
 }
 
 // 학생 상세 데이터 로드 (all-records)
@@ -825,6 +871,19 @@ function __renderMentorStudents() {
               { label: '과제 실행률', value: rs.plannerRate ?? -1, detail: rs.plannerRate >= 0 ? `${rs.completedAssignments ?? 0}/${rs.totalAssignments ?? 0}` : '과제 없음' },
               { label: '학원 당일완료', value: rs.academyTodayRate ?? -1, detail: rs.academyTodayRate >= 0 ? `${rs.todayAcademyCount ?? 0}건 완료` : '오늘 학원 없음' },
             ];
+            // 질문방 통계
+            const qa = _mentor.qaStats[s.id];
+            const qaSection = qa ? `<div style="margin-top:10px;padding:8px 10px;background:rgba(147,112,219,0.08);border-radius:8px">
+              <div style="font-size:11px;color:#9370DB;font-weight:600;margin-bottom:6px">질문방 기록 <span style="font-weight:400;color:var(--text-muted)">(국,영,수,과,기)</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:11px">
+                <span style="color:var(--text-muted)">질문수</span>
+                <span style="font-weight:700;color:#9370DB">${qa.subjects.map(x => x.q).join(', ')}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-top:2px">
+                <span style="color:var(--text-muted)">답변수</span>
+                <span style="font-weight:700;color:#22C55E">${qa.subjects.map(x => x.a).join(', ')}</span>
+              </div>
+            </div>` : '';
             return `<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
               ${bars.map(b => {
                 const isNA = b.value < 0;
@@ -838,7 +897,7 @@ function __renderMentorStudents() {
                   <span style="font-size:11px;font-weight:700;color:${color};min-width:42px;text-align:right">${isNA ? '-' : pct + '%'}</span>
                 </div>`;
               }).join('')}
-            </div>`;
+            </div>${qaSection}`;
           })()}
           ${total > 0 ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(99,179,237,0.08);border-radius:8px;font-size:12px;color:var(--primary-light)">📊 이번 주 총 ${total}건 활동 — 탭하여 상세 보기</div>` : `<div style="margin-top:10px;padding:8px 12px;background:rgba(214,48,49,0.08);border-radius:8px;font-size:12px;color:var(--danger)">⚠️ 이번 주 활동 기록 없음 — 탭하여 확인</div>`}
           <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
@@ -1844,6 +1903,7 @@ var _mentorLoadGroups = __mentorLoadGroups;
 var _mentorLoadGroupSummary = __mentorLoadGroupSummary;
 var _mentorLoadStudentDetail = __mentorLoadStudentDetail;
 var _mentorLoadPhoto = __mentorLoadPhoto;
+var _mentorLoadQuestionStats = __mentorLoadQuestionStats;
 var _mentorSaveFeedback = __mentorSaveFeedback;
 var _mentorDeleteFeedback = __mentorDeleteFeedback;
 var _renderMentorDashboard = __renderMentorDashboard;
