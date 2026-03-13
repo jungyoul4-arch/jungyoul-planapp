@@ -18,7 +18,14 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-app.use('/api/*', cors())
+app.use('/api/*', cors({
+  origin: '*',                    // 모든 도메인 허용 (필요시 특정 도메인으로 제한)
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  exposeHeaders: ['Content-Length'],
+  credentials: true,
+  maxAge: 86400,                  // preflight 캐시 24시간
+}))
 
 // sw.js, app.js, app.css → 캐시 방지 헤더 (항상 최신 버전 로드)
 app.use('/static/sw.js', async (c, next) => {
