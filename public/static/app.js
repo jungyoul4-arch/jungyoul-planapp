@@ -1795,6 +1795,47 @@ function refreshDataWidgets() {
       // miniStats[1] = questions (myQaStats로 별도 갱신)
       miniStats[2].textContent = weekTeach.length;
     }
+
+    // 최근 아카이브 섹션 갱신 (태블릿 + 폰 모드)
+    const recentRecords = (state._dbClassRecords || []).slice(0, 4);
+    const archiveEl = document.getElementById('home-recent-archive');
+    if (archiveEl) {
+      if (recentRecords.length === 0) {
+        archiveEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+      } else {
+        archiveEl.innerHTML = '<div class="home-timeline">' + recentRecords.map(r =>
+          '<div class="home-timeline-item">' +
+            '<div class="home-timeline-dot" style="background:var(--primary)"></div>' +
+            '<div class="home-timeline-content">' +
+              '<div class="home-timeline-header">' +
+                '<span class="home-timeline-time">' + (r.date || '') + '</span>' +
+                '<span class="home-timeline-subject">' + (r.subject || '') + '</span>' +
+              '</div>' +
+              '<p class="home-timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+            '</div>' +
+          '</div>'
+        ).join('') + '</div>';
+      }
+    }
+    const archivePhoneEl = document.getElementById('home-recent-archive-phone');
+    if (archivePhoneEl) {
+      if (recentRecords.length === 0) {
+        archivePhoneEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+      } else {
+        archivePhoneEl.innerHTML = recentRecords.map(r =>
+          '<div class="timeline-item">' +
+            '<div class="timeline-dot" style="background:var(--primary)"></div>' +
+            '<div class="timeline-content">' +
+              '<div class="timeline-header">' +
+                '<span class="timeline-time">' + (r.date || '') + '</span>' +
+                '<span class="timeline-subject">' + (r.subject || '') + '</span>' +
+              '</div>' +
+              '<p class="timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+            '</div>' +
+          '</div>'
+        ).join('');
+      }
+    }
   } catch (_) {}
 }
 
@@ -4756,6 +4797,7 @@ function renderHomeTab() {
               <span class="card-title">📜 최근 아카이브</span>
               <button class="card-link" onclick="state.studentTab='archive';state.currentScreen='main';renderScreen()">전체보기 →</button>
             </div>
+            <div id="home-recent-archive">
             ${(() => {
               const records = (state._dbClassRecords || []).slice(0, 4);
               if (records.length === 0) {
@@ -4774,6 +4816,7 @@ function renderHomeTab() {
                 '</div>'
               ).join('') + '</div>';
             })()}
+            </div>
           </div>
         </div>
 
@@ -6163,8 +6206,8 @@ function renderRecordTab() {
           <span class="card-title">📜 최근 아카이브</span>
           <button class="card-link" onclick="goScreen('record-history')">전체보기 →</button>
         </div>
-        
-        <div class="timeline">
+
+        <div id="home-recent-archive-phone" class="timeline">
           ${(state._dbClassRecords || []).slice(0, 4).map(r => `
           <div class="timeline-item">
             <div class="timeline-dot" style="background:var(--primary)"></div>

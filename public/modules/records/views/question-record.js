@@ -150,22 +150,40 @@ export function registerHandlers(RM) {
     state._qbInputSubject = null;
     state._qbInputSources = [];
     state._qbInputPhoto = null;
+    state._qbInputText = '';
     RM.render();
   };
   RM.closeQuestionInput = () => {
     state._qbInputMode = false;
+    state._qbInputText = '';
     RM.render();
   };
   RM.toggleQbInputSubject = (v) => {
+    // textarea 값 보존
+    const ta = document.getElementById('qb-input-textarea');
+    if (ta) state._qbInputText = ta.value;
     state._qbInputSubject = state._qbInputSubject === v ? null : v;
     RM.render();
+    // 복원
+    setTimeout(() => {
+      const el = document.getElementById('qb-input-textarea');
+      if (el && state._qbInputText) el.value = state._qbInputText;
+    }, 0);
   };
   RM.toggleQbInputSource = (v) => {
+    // textarea 값 보존
+    const ta = document.getElementById('qb-input-textarea');
+    if (ta) state._qbInputText = ta.value;
     const arr = state._qbInputSources || [];
     const idx = arr.indexOf(v);
     if (idx >= 0) arr.splice(idx, 1); else arr.push(v);
     state._qbInputSources = [...arr];
     RM.render();
+    // 복원
+    setTimeout(() => {
+      const el = document.getElementById('qb-input-textarea');
+      if (el && state._qbInputText) el.value = state._qbInputText;
+    }, 0);
   };
   RM.removeQbInputPhoto = () => {
     state._qbInputPhoto = null;
