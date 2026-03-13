@@ -1086,6 +1086,71 @@ function generateInviteCode(): string {
   return `JYCC-${part1}-${part2}`;
 }
 
+/** HTML 태그 제거 후 plain text 미리보기 생성 */
+function stripHtmlForPreview(html: string, maxLen: number = 100): string {
+  const text = html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+  return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+}
+
+/** 서버사이드 HTML 새니타이징 (defense-in-depth) */
+function sanitizeHTML(html: string): string {
+  let clean = html;
+  clean = clean.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  clean = clean.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  clean = clean.replace(/\bon\w+\s*=\s*(['"]?)[\s\S]*?\1/gi, '');
+  clean = clean.replace(/javascript\s*:/gi, '');
+  clean = clean.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+  clean = clean.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
+  clean = clean.replace(/<embed\b[^>]*>/gi, '');
+  return clean;
+}
+
+/** 사용자가 게시판에 접근 가능한지 확인 */
+/** 닉네임 금지어 목록 */
+const NICKNAME_BLOCKLIST = ['바보', '멍청', '시발', '씨발', '병신', '개새', '죽어', '지랄', '닥쳐', 'fuck', 'shit', 'damn'];
+
+/** 닉네임 유효성 검사 */
+function validateNickname(nickname: string): { valid: boolean; error?: string } {
+  const trimmed = nickname.trim();
+  if (trimmed.length < 2 || trimmed.length > 12) return { valid: false, error: '닉네임은 2~12자여야 합니다' };
+  if (!/^[가-힣a-zA-Z0-9\s]+$/.test(trimmed)) return { valid: false, error: '닉네임에 한글, 영문, 숫자, 공백만 사용 가능합니다' };
+  if (NICKNAME_BLOCKLIST.some(w => trimmed.toLowerCase().includes(w))) return { valid: false, error: '사용할 수 없는 닉네임입니다' };
+  return { valid: true };
+}
+
+/** 학생의 학원명 조회 (join chain) */
+async function getStudentAcademy(db: any, studentId: number): Promise<string | null> {
+  const row: any = await db.prepare(
+    'SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
+  ).bind(studentId).first();
+  return row?.academy_name || null;
+}
+
+async function canAccessBoard(db: any, boardId: number, userType: string, userId: number): Promise<boolean> {
+  const board: any = await db.prepare('SELECT * FROM community_boards WHERE id = ? AND is_active = 1').bind(boardId).first();
+  if (!board) return false;
+  if (board.board_type === 'group') {
+    if (userType === 'student') {
+      const s: any = await db.prepare('SELECT group_id FROM students WHERE id = ? AND is_active = 1').bind(userId).first();
+      return s && s.group_id === board.group_id;
+    } else {
+      const g: any = await db.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+      return g && g.mentor_id === userId;
+    }
+  } else if (board.board_type === 'academy') {
+    let academy = '';
+    if (userType === 'student') {
+      const row: any = await db.prepare('SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1').bind(userId).first();
+      academy = row?.academy_name || '';
+    } else {
+      const row: any = await db.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(userId).first();
+      academy = row?.academy_name || '';
+    }
+    return academy === board.academy_name;
+  }
+  return false;
+}
+
 
 // ==================== AUTH API: 멘토 회원가입 ====================
 
@@ -1107,12 +1172,21 @@ app.post('/api/auth/mentor/register', async (c) => {
 
     // 기본 반 1개 자동 생성
     const inviteCode = generateInviteCode();
-    await c.env.DB.prepare(
+    const groupResult = await c.env.DB.prepare(
       'INSERT INTO groups (mentor_id, name, invite_code, description) VALUES (?, ?, ?, ?)'
     ).bind(mentorId, `${name} 선생님 반`, inviteCode, '').run();
+    // 커뮤니티 보드 자동 생성
+    try {
+      const newGroupId = groupResult.meta.last_row_id;
+      if (newGroupId) {
+        await c.env.DB.prepare(
+          "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+        ).bind(newGroupId, `${name} 선생님 반 게시판`).run();
+      }
+    } catch (e) { console.error('Board creation hook error:', e); }
 
-    return c.json({ 
-      success: true, 
+    return c.json({
+      success: true,
       mentorId,
       message: '멘토 등록이 완료되었습니다',
       defaultGroupInviteCode: inviteCode
@@ -1282,13 +1356,37 @@ app.get('/api/auth/external-login', async (c) => {
           }
           if (groupStmts.length > 0) {
             await c.env.DB.batch(groupStmts);
+            // 배치 생성된 그룹들에 대해 커뮤니티 보드 생성
+            try {
+              const newGroups: any = await c.env.DB.prepare(
+                'SELECT id, name FROM groups WHERE mentor_id = ? AND is_active = 1'
+              ).bind(mentorId).all();
+              for (const g of (newGroups.results || [])) {
+                const boardExists: any = await c.env.DB.prepare(
+                  "SELECT id FROM community_boards WHERE board_type = 'group' AND group_id = ?"
+                ).bind(g.id).first();
+                if (!boardExists) {
+                  await c.env.DB.prepare(
+                    "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+                  ).bind(g.id, `${g.name} 게시판`).run();
+                }
+              }
+            } catch (e) { console.error('Board creation hook error:', e); }
           }
         } else {
           // 반/학생 정보 없으면 기본 반 생성
           const inviteCode = generateInviteCode();
-          await c.env.DB.prepare(
+          const defaultGrpResult = await c.env.DB.prepare(
             'INSERT INTO groups (mentor_id, name, invite_code, description) VALUES (?, ?, ?, ?)'
           ).bind(mentorId, `${name} 선생님 반`, inviteCode, '').run();
+          try {
+            const defGroupId = defaultGrpResult.meta.last_row_id;
+            if (defGroupId) {
+              await c.env.DB.prepare(
+                "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+              ).bind(defGroupId, `${name} 선생님 반 게시판`).run();
+            }
+          } catch (e) { console.error('Board creation hook error:', e); }
         }
 
         mentor = await c.env.DB.prepare('SELECT * FROM mentors WHERE id = ?').bind(mentorId).first();
@@ -1358,6 +1456,24 @@ app.get('/api/auth/external-login', async (c) => {
               // 배치 실행 (그룹 동기화만, 학생은 별도)
               if (batchStmts.length > 0) {
                 await c.env.DB.batch(batchStmts);
+                // 새로 생성된 그룹에 커뮤니티 보드 자동 생성
+                if (newGroups.length > 0) {
+                  try {
+                    const allGroups: any = await c.env.DB.prepare(
+                      'SELECT id, name FROM groups WHERE mentor_id = ? AND is_active = 1'
+                    ).bind(mentor.id).all();
+                    for (const g of (allGroups.results || [])) {
+                      const boardExists: any = await c.env.DB.prepare(
+                        "SELECT id FROM community_boards WHERE board_type = 'group' AND group_id = ?"
+                      ).bind(g.id).first();
+                      if (!boardExists) {
+                        await c.env.DB.prepare(
+                          "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+                        ).bind(g.id, `${g.name} 게시판`).run();
+                      }
+                    }
+                  } catch (e) { console.error('Board creation hook error:', e); }
+                }
               }
             }
           }
@@ -1543,6 +1659,7 @@ app.post('/api/auth/student/login', async (c) => {
         xp: student.xp,
         level: student.level,
         groupId: student.group_id,
+        nickname: student.nickname || null,
       },
       group: group ? {
         id: group.id,
@@ -1592,6 +1709,15 @@ app.post('/api/mentor/groups', async (c) => {
     const result = await c.env.DB.prepare(
       'INSERT INTO groups (mentor_id, name, invite_code, description, max_students) VALUES (?, ?, ?, ?, ?)'
     ).bind(mentorId, name, inviteCode, description || '', maxStudents || 30).run();
+    // 커뮤니티 보드 자동 생성
+    try {
+      const newGrpId = result.meta.last_row_id;
+      if (newGrpId) {
+        await c.env.DB.prepare(
+          "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+        ).bind(newGrpId, `${name} 게시판`).run();
+      }
+    } catch (e) { console.error('Board creation hook error:', e); }
 
     return c.json({
       success: true,
@@ -3719,7 +3845,168 @@ app.get('/api/seed-test-data', async (c) => {
       return c.json({ success: true, step: 4, message: 'All seed data complete!', counts });
     }
 
-    return c.json({ error: 'Invalid step. Use step=0,1,2,3,4', usage: 'Call /api/seed-test-data?step=0 then step=1,2,3,4 in order' }, 400);
+    // ==================== Step 5: Community Seed Data ====================
+    if (step === 5) {
+      const kstTs = (offsetDays: number = 0) => {
+        const d = new Date(Date.now() + offsetDays * 86400000 + 9 * 3600000);
+        return d.toISOString().replace('T', ' ').substring(0, 19);
+      };
+
+      // 5a. Clean existing community data
+      const ph = studentIds.map(() => '?').join(',');
+      await DB.prepare(`DELETE FROM community_notifications WHERE recipient_id IN (${ph}) AND recipient_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM community_comments WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM community_likes WHERE user_id IN (${ph}) AND user_type='student'`).bind(...studentIds).run();
+      // Delete photos for posts by these students
+      const existingPosts: any = await DB.prepare(`SELECT id FROM community_posts WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).all();
+      for (const ep of (existingPosts.results || [])) {
+        await DB.prepare('DELETE FROM community_post_photos WHERE post_id = ?').bind(ep.id).run();
+      }
+      await DB.prepare(`DELETE FROM community_posts WHERE author_id IN (${ph}) AND author_type='student'`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM friendships WHERE student_id_1 IN (${ph}) OR student_id_2 IN (${ph})`).bind(...studentIds, ...studentIds).run();
+      await DB.prepare(`DELETE FROM friend_invite_codes WHERE student_id IN (${ph})`).bind(...studentIds).run();
+      await DB.prepare(`DELETE FROM learning_share_settings WHERE student_id IN (${ph})`).bind(...studentIds).run();
+
+      // 5b. Set nicknames
+      const nicknames = ['길동이냥', '서연이여우', '준호사자', '하은토끼', '민재곰돌', '예린유니콘'];
+      for (let i = 0; i < Math.min(studentIds.length, nicknames.length); i++) {
+        await DB.prepare('UPDATE students SET nickname = ? WHERE id = ?').bind(nicknames[i], studentIds[i]).run();
+      }
+      await DB.prepare('UPDATE mentors SET nickname = ? WHERE id = ?').bind('멘토선생님', mentorId).run();
+
+      // 5c. Get boards
+      const boards: any = await DB.prepare('SELECT id, board_type FROM community_boards WHERE is_active = 1 LIMIT 5').all();
+      const boardIds = (boards.results || []).map((b: any) => b.id);
+      if (boardIds.length === 0) {
+        return c.json({ success: true, step: 5, message: 'No boards found. Run migration first.', counts: {} });
+      }
+
+      // 5d. Create posts
+      const postContents = [
+        { title: '물리 2단원 이해가 안 돼요...', content: '뉴턴 운동 법칙 중에서 <b>제2법칙</b> F=ma 부분이 잘 이해가 안 가요.<br>특히 마찰력 있는 경우에 자유물체도 그리기가 어렵네요. 도움 부탁드려요!' },
+        { title: '영어 단어 외우는 꿀팁 공유합니다!', content: '제가 효과 본 방법인데요,<br>1. 접두사/접미사로 묶어서 외우기<br>2. 문장 속에서 뜻 유추하기<br>3. <b>하루 30개씩 3일 반복</b>이 제일 효과 좋았어요!' },
+        { title: '다음 주 체육대회 준비 어떻게 하고 계세요?', content: '우리 반은 릴레이랑 줄넘기 나가는데 연습할 시간이 부족해요 ㅠㅠ<br>다른 분들은 어떤 종목 준비하시나요?' },
+        { title: '중간고사 시간표 정리해봤어요', content: '<b>1일차</b>: 국어, 수학<br><b>2일차</b>: 영어, 과학<br><b>3일차</b>: 한국사, 선택과목<br>시간표 참고하세요~' },
+        { title: '수학 치환적분 제가 이해한 방식으로 설명해볼게요', content: 'u = g(x)로 치환하면 du = g\'(x)dx 니까<br>원래 적분식에서 x를 u로 바꾸고, dx도 du/g\'(x)로 바꾸면 돼요.<br><b>핵심은 치환할 부분을 잘 고르는 것!</b>' },
+        { title: '오늘 국어 시간에 배운 현대시 정리', content: '윤동주의 <b>"서시"</b> 분석했어요.<br>"죽는 날까지 하늘을 우러러 한 점 부끄럼이 없기를" 이 부분이 주제의식을 가장 잘 드러낸대요.' },
+        { title: '과학실험 보고서 쓰는 법 공유', content: '1. 목적 → 2. 준비물 → 3. 실험과정 → 4. 결과 → 5. 고찰<br>특히 <b>고찰</b> 부분에서 오차 원인 분석을 꼭 넣어야 한대요.' },
+        { title: '한국사 연표 정리 같이 해요', content: '삼국시대부터 조선까지 주요 사건 연표를 정리하고 있는데, 같이 하실 분?<br>공유 문서 만들면 좋을 것 같아요!' },
+        { title: '시험 기간 집중력 높이는 방법', content: '<b>뽀모도로 테크닉</b> 추천합니다!<br>25분 집중 → 5분 휴식 반복하면 효율이 확 올라요.<br>타이머 앱 추천: Forest, Tide' },
+        { title: '영어 문법 정리 - 관계대명사', content: 'who/which/that 구분법:<br>- <b>who</b>: 사람 (주격/목적격)<br>- <b>which</b>: 사물/동물<br>- <b>that</b>: 사람+사물 모두 가능<br>that은 계속적 용법에서는 사용 불가!' },
+      ];
+
+      const postIds: number[] = [];
+      for (let i = 0; i < postContents.length; i++) {
+        const p = postContents[i];
+        const authorIdx = i % studentIds.length;
+        const boardIdx = i % boardIds.length;
+        const result: any = await DB.prepare(
+          "INSERT INTO community_posts (board_id, author_type, author_id, title, content, like_count, comment_count, is_deleted, created_at, updated_at) VALUES (?, 'student', ?, ?, ?, 0, 0, 0, ?, ?)"
+        ).bind(boardIds[boardIdx], studentIds[authorIdx], p.title, p.content, kstTs(-13 + i), kstTs(-13 + i)).run();
+        if (result.meta.last_row_id) postIds.push(result.meta.last_row_id);
+      }
+
+      // 5e. Create comments
+      const commentTexts = [
+        '저도 그거 헷갈렸는데, 교과서 p.45 보면 이해돼요!',
+        '좋은 정보 감사합니다!',
+        '맞아요, 저도 같은 생각이에요',
+        '그러면 이 부분은 어떻게 되는 건가요?',
+        '화이팅! 같이 공부해요',
+        '와 정리 진짜 잘하셨네요 👍',
+        '저도 해볼게요!',
+        '공감합니다 ㅠㅠ',
+        '오 이거 진짜 도움 됐어요',
+        '선생님한테 물어보니까 이렇게 설명해주셨어요',
+      ];
+      for (let pi = 0; pi < postIds.length; pi++) {
+        const numComments = 1 + (pi % 4); // 1~4 comments per post
+        for (let ci = 0; ci < numComments; ci++) {
+          const authorIdx = (pi + ci + 1) % studentIds.length;
+          const textIdx = (pi * 3 + ci) % commentTexts.length;
+          await DB.prepare(
+            "INSERT INTO community_comments (post_id, author_type, author_id, content, is_deleted, created_at) VALUES (?, 'student', ?, ?, 0, ?)"
+          ).bind(postIds[pi], studentIds[authorIdx], commentTexts[textIdx], kstTs(-12 + pi)).run();
+        }
+      }
+
+      // Update comment counts
+      for (const pid of postIds) {
+        await DB.prepare('UPDATE community_posts SET comment_count = (SELECT COUNT(*) FROM community_comments WHERE post_id = ? AND is_deleted = 0) WHERE id = ?').bind(pid, pid).run();
+      }
+
+      // 5f. Create likes
+      for (let si = 0; si < studentIds.length; si++) {
+        const numLikes = 3 + (si % 3);
+        for (let li = 0; li < numLikes && li < postIds.length; li++) {
+          const pidx = (si + li * 2) % postIds.length;
+          try {
+            await DB.prepare(
+              "INSERT INTO community_likes (post_id, user_type, user_id, created_at) VALUES (?, 'student', ?, ?)"
+            ).bind(postIds[pidx], studentIds[si], kstTs(-10 + si)).run();
+          } catch (_) { /* duplicate */ }
+        }
+      }
+      for (const pid of postIds) {
+        await DB.prepare('UPDATE community_posts SET like_count = (SELECT COUNT(*) FROM community_likes WHERE post_id = ?) WHERE id = ?').bind(pid, pid).run();
+      }
+
+      // 5g. Create friendships
+      const friendPairs = [[0, 1], [0, 2], [1, 3], [2, 4]];
+      for (const [a, b] of friendPairs) {
+        if (a < studentIds.length && b < studentIds.length) {
+          const id1 = Math.min(studentIds[a], studentIds[b]);
+          const id2 = Math.max(studentIds[a], studentIds[b]);
+          try {
+            await DB.prepare(
+              "INSERT INTO friendships (student_id_1, student_id_2, status, invited_by, accepted_at, created_at) VALUES (?, ?, 'accepted', ?, ?, ?)"
+            ).bind(id1, id2, studentIds[a], kstTs(-5), kstTs(-5)).run();
+          } catch (_) { /* duplicate */ }
+        }
+      }
+
+      // 5h. Create invite codes
+      const code1 = 'JYCC-' + Math.random().toString(36).substring(2, 6).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+      await DB.prepare(
+        "INSERT INTO friend_invite_codes (student_id, code, max_uses, use_count, expires_at, is_active, created_at) VALUES (?, ?, 5, 0, ?, 1, ?)"
+      ).bind(studentIds[0], code1, kstTs(7), kstTs(0)).run();
+
+      // 5i. Create share settings
+      const shareConfigs = [
+        [1,1,1,1,1], [1,1,0,0,0], [0,0,1,1,0], [0,0,0,0,0], [1,0,1,0,1], [1,1,1,1,1]
+      ];
+      for (let i = 0; i < Math.min(studentIds.length, shareConfigs.length); i++) {
+        const sc = shareConfigs[i];
+        await DB.prepare(
+          "INSERT INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).bind(studentIds[i], sc[0], sc[1], sc[2], sc[3], sc[4], kstTs(0)).run();
+      }
+
+      // 5j. Create notifications
+      for (let pi = 0; pi < Math.min(5, postIds.length); pi++) {
+        const postAuthorIdx = pi % studentIds.length;
+        const actorIdx = (pi + 1) % studentIds.length;
+        await DB.prepare(
+          "INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES ('student', ?, 'comment', ?, 'student', ?, ?, ?)"
+        ).bind(studentIds[postAuthorIdx], postIds[pi], studentIds[actorIdx], pi < 2 ? 0 : 1, kstTs(-3 + pi)).run();
+        if (pi < 3) {
+          await DB.prepare(
+            "INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES ('student', ?, 'like', ?, 'student', ?, 0, ?)"
+          ).bind(studentIds[postAuthorIdx], postIds[pi], studentIds[(actorIdx + 1) % studentIds.length], kstTs(-2 + pi)).run();
+        }
+      }
+
+      // 5k. Return counts
+      const communityTables = ['community_boards', 'community_posts', 'community_comments', 'community_likes', 'community_notifications', 'community_reports', 'friendships', 'friend_invite_codes', 'learning_share_settings'];
+      const counts: Record<string, number> = {};
+      for (const t of communityTables) {
+        const r: any = await DB.prepare(`SELECT COUNT(*) as cnt FROM ${t}`).first();
+        counts[t] = r?.cnt || 0;
+      }
+      return c.json({ success: true, step: 5, message: 'Community seed data complete!', counts });
+    }
+
+    return c.json({ error: 'Invalid step. Use step=0,1,2,3,4,5', usage: 'Call /api/seed-test-data?step=0 then step=1,2,3,4,5 in order' }, 400);
   } catch (e: any) {
     console.error('Seed error:', e);
     return c.json({ error: e.message, stack: e.stack }, 500);
@@ -3894,10 +4181,71 @@ app.get('/api/migrate', async (c) => {
       // ===== 진로 프로파일 (앱티핏 전공적성 검사 결과) =====
       `CREATE TABLE IF NOT EXISTS career_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, test_provider TEXT DEFAULT 'aptifit', test_date TEXT, raw_data TEXT DEFAULT '{}', top_departments TEXT DEFAULT '[]', dream_department TEXT DEFAULT '{}', field_profile TEXT DEFAULT '{}', major_profile TEXT DEFAULT '{}', career_advice TEXT DEFAULT '', careers TEXT DEFAULT '[]', pdf_r2_key TEXT DEFAULT NULL, parse_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS idx_career_profiles_student ON career_profiles(student_id)`,
+      // ===== 커뮤니티(소통) 테이블 =====
+      `ALTER TABLE students ADD COLUMN nickname TEXT`,
+      `ALTER TABLE mentors ADD COLUMN nickname TEXT`,
+      `CREATE TABLE IF NOT EXISTS community_boards (id INTEGER PRIMARY KEY AUTOINCREMENT, board_type TEXT NOT NULL, group_id INTEGER, academy_name TEXT, name TEXT NOT NULL, description TEXT DEFAULT '', is_active INTEGER DEFAULT 1, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id INTEGER NOT NULL, author_type TEXT NOT NULL, author_id INTEGER NOT NULL, title TEXT, content TEXT DEFAULT '', like_count INTEGER DEFAULT 0, comment_count INTEGER DEFAULT 0, is_deleted INTEGER DEFAULT 0, deleted_by TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_post_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, photo_data TEXT, r2_key TEXT, thumbnail TEXT DEFAULT '', mime_type TEXT DEFAULT 'image/jpeg', file_size INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, author_type TEXT NOT NULL, author_id INTEGER NOT NULL, content TEXT NOT NULL, is_deleted INTEGER DEFAULT 0, deleted_by TEXT, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_likes (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, user_type TEXT NOT NULL, user_id INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_type TEXT NOT NULL, reporter_id INTEGER NOT NULL, target_type TEXT NOT NULL, target_id INTEGER NOT NULL, reason TEXT DEFAULT '', status TEXT DEFAULT 'pending', resolved_by INTEGER, resolved_at DATETIME, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS community_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, recipient_type TEXT NOT NULL, recipient_id INTEGER NOT NULL, type TEXT NOT NULL, post_id INTEGER, actor_type TEXT NOT NULL, actor_id INTEGER NOT NULL, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS friendships (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id_1 INTEGER NOT NULL, student_id_2 INTEGER NOT NULL, status TEXT DEFAULT 'accepted', invited_by INTEGER, invite_code TEXT, accepted_at DATETIME, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS friend_invite_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, code TEXT NOT NULL UNIQUE, max_uses INTEGER DEFAULT 5, use_count INTEGER DEFAULT 0, expires_at DATETIME, is_active INTEGER DEFAULT 1, created_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE TABLE IF NOT EXISTS learning_share_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL UNIQUE, share_class_records INTEGER DEFAULT 0, share_question_count INTEGER DEFAULT 0, share_teach_count INTEGER DEFAULT 0, share_mission_status INTEGER DEFAULT 0, share_xp_level INTEGER DEFAULT 0, updated_at DATETIME DEFAULT (datetime('now','+9 hours')))`,
+      // 커뮤니티 인덱스
+      `CREATE INDEX IF NOT EXISTS idx_community_posts_board ON community_posts(board_id, is_deleted, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_community_posts_author ON community_posts(author_type, author_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_community_post_photos_post ON community_post_photos(post_id, sort_order)`,
+      `CREATE INDEX IF NOT EXISTS idx_community_comments_post ON community_comments(post_id, is_deleted, created_at ASC)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_community_likes_unique ON community_likes(post_id, user_type, user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_community_reports_status ON community_reports(status, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_community_notifications_recipient ON community_notifications(recipient_type, recipient_id, is_read, created_at DESC)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_friendships_pair ON friendships(student_id_1, student_id_2)`,
+      `CREATE INDEX IF NOT EXISTS idx_friendships_student1 ON friendships(student_id_1, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_friendships_student2 ON friendships(student_id_2, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_friend_invite_codes_student ON friend_invite_codes(student_id)`,
+      // idx_friend_invite_codes_code: 불필요 (CREATE TABLE에서 UNIQUE 제약 이미 선언)
+      // idx_learning_share_settings_student: 불필요 (CREATE TABLE에서 UNIQUE 제약 이미 선언)
     ];
     const errors: string[] = [];
     for (const sql of stmts) {
       try { await c.env.DB.prepare(sql).run(); } catch(e: any) { errors.push(e.message || String(e)); }
+    }
+
+    // ===== 커뮤니티 보드 자동 시딩 =====
+    try {
+      // 학원별 게시판
+      const academies: any = await c.env.DB.prepare(
+        "SELECT DISTINCT academy_name FROM mentors WHERE academy_name IS NOT NULL AND academy_name != ''"
+      ).all();
+      for (const row of (academies.results || [])) {
+        const existing: any = await c.env.DB.prepare(
+          "SELECT id FROM community_boards WHERE board_type = 'academy' AND academy_name = ?"
+        ).bind(row.academy_name).first();
+        if (!existing) {
+          await c.env.DB.prepare(
+            "INSERT INTO community_boards (board_type, academy_name, name, description) VALUES ('academy', ?, ?, '')"
+          ).bind(row.academy_name, `${row.academy_name} 게시판`).run();
+        }
+      }
+      // 반별 게시판
+      const activeGroups: any = await c.env.DB.prepare(
+        "SELECT id, name FROM groups WHERE is_active = 1"
+      ).all();
+      for (const grp of (activeGroups.results || [])) {
+        const existing: any = await c.env.DB.prepare(
+          "SELECT id FROM community_boards WHERE board_type = 'group' AND group_id = ?"
+        ).bind(grp.id).first();
+        if (!existing) {
+          await c.env.DB.prepare(
+            "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
+          ).bind(grp.id, `${grp.name} 게시판`).run();
+        }
+      }
+    } catch (e) {
+      console.error('Board auto-seeding error:', e);
     }
 
     // croquet_points 테이블 마이그레이션: mentor_id를 nullable로 변경 (자동 지급 지원)
@@ -3937,6 +4285,1047 @@ app.get('/api/migrate', async (c) => {
   }
 });
 
+
+// ==================== 커뮤니티(소통) API ====================
+
+// GET /api/community/boards — 사용자가 접근 가능한 게시판 목록
+app.get('/api/community/boards', async (c) => {
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id는 필수입니다' }, 400);
+
+  try {
+    let academyName = '';
+    let groupId = 0;
+    let mentorId = 0;
+
+    if (userType === 'student') {
+      const student: any = await c.env.DB.prepare(
+        'SELECT s.group_id, m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
+      ).bind(userId).first();
+      if (!student) return c.json({ success: false, error: '학생을 찾을 수 없습니다' }, 404);
+      academyName = student.academy_name || '';
+      groupId = student.group_id;
+    } else if (userType === 'mentor') {
+      const mentor: any = await c.env.DB.prepare('SELECT id, academy_name FROM mentors WHERE id = ?').bind(userId).first();
+      if (!mentor) return c.json({ success: false, error: '멘토를 찾을 수 없습니다' }, 404);
+      academyName = mentor.academy_name || '';
+      mentorId = mentor.id;
+    } else {
+      return c.json({ success: false, error: 'user_type은 student 또는 mentor만 가능합니다' }, 400);
+    }
+
+    let boards: any;
+    if (userType === 'student') {
+      boards = await c.env.DB.prepare(
+        `SELECT b.*, COALESCE(pc.cnt, 0) as postCount
+         FROM community_boards b
+         LEFT JOIN (SELECT board_id, COUNT(*) as cnt FROM community_posts WHERE is_deleted = 0 GROUP BY board_id) pc ON b.id = pc.board_id
+         WHERE b.is_active = 1 AND (
+           (b.board_type = 'group' AND b.group_id = ?)
+           OR (b.board_type = 'academy' AND b.academy_name = ?)
+         )`
+      ).bind(groupId, academyName).all();
+    } else {
+      boards = await c.env.DB.prepare(
+        `SELECT b.*, COALESCE(pc.cnt, 0) as postCount
+         FROM community_boards b
+         LEFT JOIN (SELECT board_id, COUNT(*) as cnt FROM community_posts WHERE is_deleted = 0 GROUP BY board_id) pc ON b.id = pc.board_id
+         WHERE b.is_active = 1 AND (
+           (b.board_type = 'group' AND b.group_id IN (SELECT id FROM groups WHERE mentor_id = ?))
+           OR (b.board_type = 'academy' AND b.academy_name = ?)
+         )`
+      ).bind(mentorId, academyName).all();
+    }
+
+    const boardList = (boards.results || []).map((b: any) => ({
+      id: b.id,
+      board_type: b.board_type,
+      name: b.name,
+      group_id: b.group_id,
+      description: b.description || '',
+      postCount: b.postCount || 0
+    }));
+
+    return c.json({ success: true, data: { boards: boardList } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/community/boards/:boardId/posts — 게시판 게시글 목록 (페이지네이션)
+app.get('/api/community/boards/:boardId/posts', async (c) => {
+  const boardId = Number(c.req.param('boardId'));
+  if (!boardId || isNaN(boardId)) return c.json({ success: false, error: '유효하지 않은 게시판 ID입니다' }, 400);
+  const page = Math.max(1, Number(c.req.query('page')) || 1);
+  const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 20));
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id는 필수입니다' }, 400);
+
+  try {
+    // 게시판 조회
+    const board: any = await c.env.DB.prepare('SELECT * FROM community_boards WHERE id = ? AND is_active = 1').bind(boardId).first();
+    if (!board) return c.json({ success: false, error: '게시판을 찾을 수 없습니다' }, 404);
+
+    // 접근 권한 확인
+    if (board.board_type === 'group') {
+      if (userType === 'student') {
+        const student: any = await c.env.DB.prepare('SELECT group_id FROM students WHERE id = ? AND is_active = 1').bind(userId).first();
+        if (!student || student.group_id !== board.group_id) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
+      } else {
+        const group: any = await c.env.DB.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+        if (!group || group.mentor_id !== userId) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
+      }
+    } else if (board.board_type === 'academy') {
+      let userAcademy = '';
+      if (userType === 'student') {
+        const row: any = await c.env.DB.prepare(
+          'SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
+        ).bind(userId).first();
+        userAcademy = row?.academy_name || '';
+      } else {
+        const row: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(userId).first();
+        userAcademy = row?.academy_name || '';
+      }
+      if (userAcademy !== board.academy_name) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
+    }
+
+    // 총 게시글 수
+    const countResult: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM community_posts WHERE board_id = ? AND is_deleted = 0').bind(boardId).first();
+    const totalCount = countResult?.cnt || 0;
+    const offset = (page - 1) * limit;
+
+    // 게시글 목록 조회
+    const postsResult: any = await c.env.DB.prepare(
+      `SELECT p.id, p.title, p.content, p.like_count, p.comment_count, p.created_at,
+              p.author_type, p.author_id,
+              CASE WHEN p.author_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as authorNickname,
+              CASE WHEN p.author_type = 'student' THEN s.profile_emoji ELSE '🎓' END as authorEmoji,
+              (SELECT COUNT(*) FROM community_post_photos WHERE post_id = p.id) as photoCount
+       FROM community_posts p
+       LEFT JOIN students s ON p.author_type = 'student' AND p.author_id = s.id
+       LEFT JOIN mentors m ON p.author_type = 'mentor' AND p.author_id = m.id
+       WHERE p.board_id = ? AND p.is_deleted = 0
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`
+    ).bind(boardId, limit, offset).all();
+
+    const posts = (postsResult.results || []).map((p: any) => ({
+      id: p.id,
+      title: p.title || null,
+      contentPreview: stripHtmlForPreview(p.content || ''),
+      authorNickname: p.authorNickname || '익명',
+      authorEmoji: p.authorEmoji || '😊',
+      likeCount: p.like_count || 0,
+      commentCount: p.comment_count || 0,
+      hasPhotos: (p.photoCount || 0) > 0,
+      createdAt: p.created_at
+    }));
+
+    return c.json({ success: true, data: { posts, hasMore: totalCount > page * limit, totalCount } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 게시글 CRUD ====================
+
+// POST /api/community/boards/:boardId/posts — 게시글 작성
+app.post('/api/community/boards/:boardId/posts', async (c) => {
+  const boardId = Number(c.req.param('boardId'));
+  if (!boardId || isNaN(boardId)) return c.json({ success: false, error: '유효하지 않은 게시판 ID입니다' }, 400);
+  try {
+    const { author_type, author_id, title, content, photos } = await c.req.json();
+    if (!author_type || !author_id) return c.json({ success: false, error: 'author_type과 author_id는 필수입니다' }, 400);
+    if (title && title.length > 100) return c.json({ success: false, error: '제목은 100자 이내로 작성해주세요' }, 400);
+    if (content && content.length > 10000) return c.json({ success: false, error: '내용은 10,000자 이내로 작성해주세요' }, 400);
+    if (photos && photos.length > 5) return c.json({ success: false, error: '사진은 최대 5장까지 첨부할 수 있습니다' }, 400);
+
+    const hasAccess = await canAccessBoard(c.env.DB, boardId, author_type, author_id);
+    if (!hasAccess) return c.json({ success: false, error: '이 게시판에 접근 권한이 없습니다' }, 403);
+
+    const sanitized = sanitizeHTML(content || '');
+    const now = getKSTString();
+    const result = await c.env.DB.prepare(
+      'INSERT INTO community_posts (board_id, author_type, author_id, title, content, like_count, comment_count, is_deleted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?)'
+    ).bind(boardId, author_type, author_id, title || null, sanitized, now, now).run();
+    const postId = result.meta.last_row_id;
+
+    if (photos && photos.length > 0 && postId) {
+      const photoStmts = photos.map((p: any, i: number) =>
+        c.env.DB.prepare(
+          'INSERT INTO community_post_photos (post_id, photo_data, thumbnail, mime_type, file_size, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(postId, p.data || '', p.thumbnail || '', p.mime_type || 'image/jpeg', p.file_size || 0, i, now)
+      );
+      await c.env.DB.batch(photoStmts);
+    }
+
+    return c.json({ success: true, data: { postId } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/community/posts/:postId — 게시글 상세 조회
+app.get('/api/community/posts/:postId', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  const userType = c.req.query('user_type') || '';
+  const userId = Number(c.req.query('user_id')) || 0;
+
+  try {
+    const post: any = await c.env.DB.prepare(
+      `SELECT p.*,
+              CASE WHEN p.author_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as authorNickname,
+              CASE WHEN p.author_type = 'student' THEN s.profile_emoji ELSE '🎓' END as authorEmoji
+       FROM community_posts p
+       LEFT JOIN students s ON p.author_type = 'student' AND p.author_id = s.id
+       LEFT JOIN mentors m ON p.author_type = 'mentor' AND p.author_id = m.id
+       WHERE p.id = ? AND p.is_deleted = 0`
+    ).bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const photosResult: any = await c.env.DB.prepare(
+      'SELECT id, photo_data, thumbnail, mime_type, file_size, sort_order FROM community_post_photos WHERE post_id = ? ORDER BY sort_order'
+    ).bind(postId).all();
+
+    let isLikedByMe = false;
+    if (userType && userId) {
+      const like: any = await c.env.DB.prepare(
+        'SELECT id FROM community_likes WHERE post_id = ? AND user_type = ? AND user_id = ?'
+      ).bind(postId, userType, userId).first();
+      isLikedByMe = !!like;
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        post: {
+          id: post.id,
+          boardId: post.board_id,
+          title: post.title,
+          content: post.content,
+          authorType: post.author_type,
+          authorId: post.author_id,
+          authorNickname: post.authorNickname || '익명',
+          authorEmoji: post.authorEmoji || '😊',
+          likeCount: post.like_count || 0,
+          commentCount: post.comment_count || 0,
+          photos: (photosResult.results || []).map((p: any) => ({
+            id: p.id, photoData: p.photo_data, thumbnail: p.thumbnail,
+            mimeType: p.mime_type, fileSize: p.file_size, sortOrder: p.sort_order
+          })),
+          isLikedByMe,
+          createdAt: post.created_at,
+          updatedAt: post.updated_at
+        }
+      }
+    });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/community/posts/:postId — 게시글 수정
+app.put('/api/community/posts/:postId', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { author_type, author_id, title, content, photos } = await c.req.json();
+    if (!author_type || !author_id) return c.json({ success: false, error: 'author_type과 author_id는 필수입니다' }, 400);
+    if (title && title.length > 100) return c.json({ success: false, error: '제목은 100자 이내로 작성해주세요' }, 400);
+    if (content && content.length > 10000) return c.json({ success: false, error: '내용은 10,000자 이내로 작성해주세요' }, 400);
+
+    const post: any = await c.env.DB.prepare('SELECT * FROM community_posts WHERE id = ? AND is_deleted = 0').bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+    if (post.author_type !== author_type || post.author_id !== author_id) {
+      return c.json({ success: false, error: '본인의 게시글만 수정할 수 있습니다' }, 403);
+    }
+
+    const sanitized = sanitizeHTML(content || '');
+    const now = getKSTString();
+    await c.env.DB.prepare(
+      'UPDATE community_posts SET title = ?, content = ?, updated_at = ? WHERE id = ?'
+    ).bind(title || null, sanitized, now, postId).run();
+
+    if (photos !== undefined) {
+      await c.env.DB.prepare('DELETE FROM community_post_photos WHERE post_id = ?').bind(postId).run();
+      if (photos && photos.length > 0) {
+        const photoStmts = photos.slice(0, 5).map((p: any, i: number) =>
+          c.env.DB.prepare(
+            'INSERT INTO community_post_photos (post_id, photo_data, thumbnail, mime_type, file_size, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(postId, p.data || '', p.thumbnail || '', p.mime_type || 'image/jpeg', p.file_size || 0, i, now)
+        );
+        await c.env.DB.batch(photoStmts);
+      }
+    }
+
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// DELETE /api/community/posts/:postId — 게시글 삭제 (소프트 삭제)
+app.delete('/api/community/posts/:postId', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: 'user_type과 user_id는 필수입니다' }, 400);
+
+    const post: any = await c.env.DB.prepare('SELECT * FROM community_posts WHERE id = ? AND is_deleted = 0').bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const isAuthor = post.author_type === user_type && post.author_id === user_id;
+    let isMentorOfBoard = false;
+    if (!isAuthor && user_type === 'mentor') {
+      const board: any = await c.env.DB.prepare('SELECT * FROM community_boards WHERE id = ?').bind(post.board_id).first();
+      if (board) {
+        if (board.board_type === 'group') {
+          const g: any = await c.env.DB.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+          isMentorOfBoard = g && g.mentor_id === user_id;
+        } else if (board.board_type === 'academy') {
+          const m: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(user_id).first();
+          isMentorOfBoard = m && m.academy_name === board.academy_name;
+        }
+      }
+    }
+
+    if (!isAuthor && !isMentorOfBoard) return c.json({ success: false, error: '삭제 권한이 없습니다' }, 403);
+
+    const now = getKSTString();
+    await c.env.DB.prepare(
+      'UPDATE community_posts SET is_deleted = 1, deleted_by = ?, updated_at = ? WHERE id = ?'
+    ).bind(`${user_type}:${user_id}`, now, postId).run();
+
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 댓글 + 좋아요 ====================
+
+// GET /api/community/posts/:postId/comments — 댓글 목록
+app.get('/api/community/posts/:postId/comments', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  const page = Math.max(1, Number(c.req.query('page')) || 1);
+  const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 20));
+  const offset = (page - 1) * limit;
+
+  try {
+    const countResult: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_comments WHERE post_id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    const totalCount = countResult?.cnt || 0;
+
+    const result: any = await c.env.DB.prepare(
+      `SELECT cc.id, cc.content, cc.author_type, cc.author_id, cc.created_at,
+              CASE WHEN cc.author_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as authorNickname,
+              CASE WHEN cc.author_type = 'student' THEN s.profile_emoji ELSE '🎓' END as authorEmoji
+       FROM community_comments cc
+       LEFT JOIN students s ON cc.author_type = 'student' AND cc.author_id = s.id
+       LEFT JOIN mentors m ON cc.author_type = 'mentor' AND cc.author_id = m.id
+       WHERE cc.post_id = ? AND cc.is_deleted = 0
+       ORDER BY cc.created_at ASC
+       LIMIT ? OFFSET ?`
+    ).bind(postId, limit, offset).all();
+
+    const comments = (result.results || []).map((c: any) => ({
+      id: c.id, content: c.content, authorNickname: c.authorNickname || '익명',
+      authorEmoji: c.authorEmoji || '😊', authorType: c.author_type,
+      authorId: c.author_id, createdAt: c.created_at
+    }));
+
+    return c.json({ success: true, data: { comments, hasMore: totalCount > page * limit, totalCount } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/community/posts/:postId/comments — 댓글 작성
+app.post('/api/community/posts/:postId/comments', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { author_type, author_id, content } = await c.req.json();
+    if (!author_type || !author_id || !content) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+    if (content.length > 1000) return c.json({ success: false, error: '댓글은 1,000자 이내로 작성해주세요' }, 400);
+
+    const post: any = await c.env.DB.prepare(
+      'SELECT id, author_type, author_id FROM community_posts WHERE id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const now = getKSTString();
+    const stmts: any[] = [
+      c.env.DB.prepare('INSERT INTO community_comments (post_id, author_type, author_id, content, is_deleted, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(postId, author_type, author_id, content, now),
+      c.env.DB.prepare('UPDATE community_posts SET comment_count = comment_count + 1 WHERE id = ?').bind(postId)
+    ];
+    // 본인 게시글이 아닌 경우에만 알림 생성
+    if (post.author_type !== author_type || post.author_id !== author_id) {
+      stmts.push(c.env.DB.prepare(
+        'INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+      ).bind(post.author_type, post.author_id, 'comment', postId, author_type, author_id, now));
+    }
+
+    const batchResult = await c.env.DB.batch(stmts);
+    const commentId = batchResult[0]?.meta?.last_row_id;
+    return c.json({ success: true, data: { commentId } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// DELETE /api/community/comments/:commentId — 댓글 삭제 (소프트 삭제)
+app.delete('/api/community/comments/:commentId', async (c) => {
+  const commentId = Number(c.req.param('commentId'));
+  if (!commentId || isNaN(commentId)) return c.json({ success: false, error: '유효하지 않은 댓글 ID입니다' }, 400);
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+
+    const comment: any = await c.env.DB.prepare(
+      'SELECT id, post_id, author_type, author_id FROM community_comments WHERE id = ? AND is_deleted = 0'
+    ).bind(commentId).first();
+    if (!comment) return c.json({ success: false, error: '댓글을 찾을 수 없습니다' }, 404);
+
+    const isAuthor = comment.author_type === user_type && comment.author_id === user_id;
+    let isMentor = false;
+    if (!isAuthor && user_type === 'mentor') {
+      const post: any = await c.env.DB.prepare('SELECT board_id FROM community_posts WHERE id = ?').bind(comment.post_id).first();
+      if (post) {
+        const board: any = await c.env.DB.prepare('SELECT * FROM community_boards WHERE id = ?').bind(post.board_id).first();
+        if (board && board.board_type === 'group') {
+          const g: any = await c.env.DB.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+          isMentor = g && g.mentor_id === user_id;
+        } else if (board && board.board_type === 'academy') {
+          const m: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(user_id).first();
+          isMentor = m && m.academy_name === board.academy_name;
+        }
+      }
+    }
+    if (!isAuthor && !isMentor) return c.json({ success: false, error: '삭제 권한이 없습니다' }, 403);
+
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE community_comments SET is_deleted = 1, deleted_by = ? WHERE id = ?').bind(`${user_type}:${user_id}`, commentId),
+      c.env.DB.prepare('UPDATE community_posts SET comment_count = MAX(comment_count - 1, 0) WHERE id = ?').bind(comment.post_id)
+    ]);
+
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/community/posts/:postId/like — 좋아요 토글
+app.post('/api/community/posts/:postId/like', async (c) => {
+  const postId = Number(c.req.param('postId'));
+  if (!postId || isNaN(postId)) return c.json({ success: false, error: '유효하지 않은 게시글 ID입니다' }, 400);
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: '필수 항목을 입력해주세요' }, 400);
+
+    const post: any = await c.env.DB.prepare(
+      'SELECT id, author_type, author_id FROM community_posts WHERE id = ? AND is_deleted = 0'
+    ).bind(postId).first();
+    if (!post) return c.json({ success: false, error: '게시글을 찾을 수 없습니다' }, 404);
+
+    const existingLike: any = await c.env.DB.prepare(
+      'SELECT id FROM community_likes WHERE post_id = ? AND user_type = ? AND user_id = ?'
+    ).bind(postId, user_type, user_id).first();
+
+    if (existingLike) {
+      // Unlike
+      await c.env.DB.batch([
+        c.env.DB.prepare('DELETE FROM community_likes WHERE id = ?').bind(existingLike.id),
+        c.env.DB.prepare('UPDATE community_posts SET like_count = MAX(like_count - 1, 0) WHERE id = ?').bind(postId)
+      ]);
+      const updated: any = await c.env.DB.prepare('SELECT like_count FROM community_posts WHERE id = ?').bind(postId).first();
+      return c.json({ success: true, data: { liked: false, likeCount: updated?.like_count || 0 } });
+    } else {
+      // Like
+      const now = getKSTString();
+      const stmts: any[] = [
+        c.env.DB.prepare('INSERT INTO community_likes (post_id, user_type, user_id, created_at) VALUES (?, ?, ?, ?)').bind(postId, user_type, user_id, now),
+        c.env.DB.prepare('UPDATE community_posts SET like_count = like_count + 1 WHERE id = ?').bind(postId)
+      ];
+      if (post.author_type !== user_type || post.author_id !== user_id) {
+        stmts.push(c.env.DB.prepare(
+          'INSERT INTO community_notifications (recipient_type, recipient_id, type, post_id, actor_type, actor_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+        ).bind(post.author_type, post.author_id, 'like', postId, user_type, user_id, now));
+      }
+      await c.env.DB.batch(stmts);
+      const updated: any = await c.env.DB.prepare('SELECT like_count FROM community_posts WHERE id = ?').bind(postId).first();
+      return c.json({ success: true, data: { liked: true, likeCount: updated?.like_count || 0 } });
+    }
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 알림 ====================
+
+// GET /api/community/notifications/unread-count — 읽지 않은 알림 수 (탭 뱃지용)
+app.get('/api/community/notifications/unread-count', async (c) => {
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+  try {
+    const result: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_notifications WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(userType, userId).first();
+    return c.json({ success: true, data: { unreadCount: result?.cnt || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/community/notifications/read-all — 모든 알림 읽음 처리
+app.put('/api/community/notifications/read-all', async (c) => {
+  try {
+    const { user_type, user_id } = await c.req.json();
+    if (!user_type || !user_id) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+    const result = await c.env.DB.prepare(
+      'UPDATE community_notifications SET is_read = 1 WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(user_type, user_id).run();
+    return c.json({ success: true, data: { markedCount: result.meta.changes || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/community/notifications — 알림 목록
+app.get('/api/community/notifications', async (c) => {
+  const userType = c.req.query('user_type');
+  const userId = Number(c.req.query('user_id'));
+  if (!userType || !userId) return c.json({ success: false, error: 'user_type과 user_id가 필요합니다' }, 400);
+  const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 20));
+  try {
+    const notifs: any = await c.env.DB.prepare(
+      `SELECT n.id, n.type, n.post_id, n.actor_type, n.actor_id, n.is_read, n.created_at,
+              p.title as post_title,
+              CASE WHEN n.actor_type = 'student' THEN COALESCE(s.nickname, '익명') ELSE COALESCE(m.nickname, '멘토') END as actor_nickname
+       FROM community_notifications n
+       LEFT JOIN community_posts p ON n.post_id = p.id
+       LEFT JOIN students s ON n.actor_type = 'student' AND n.actor_id = s.id
+       LEFT JOIN mentors m ON n.actor_type = 'mentor' AND n.actor_id = m.id
+       WHERE n.recipient_type = ? AND n.recipient_id = ?
+       ORDER BY n.created_at DESC
+       LIMIT ?`
+    ).bind(userType, userId, limit).all();
+
+    const unreadResult: any = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM community_notifications WHERE recipient_type = ? AND recipient_id = ? AND is_read = 0'
+    ).bind(userType, userId).first();
+
+    const notifications = (notifs.results || []).map((n: any) => ({
+      id: n.id, type: n.type, postId: n.post_id,
+      postTitle: n.post_title || '', actorNickname: n.actor_nickname || '익명',
+      isRead: n.is_read === 1, createdAt: n.created_at
+    }));
+
+    return c.json({ success: true, data: { notifications, unreadCount: unreadResult?.cnt || 0 } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 친구 ====================
+
+// POST /api/student/:studentId/friends/invite-code — 친구 초대 코드 생성
+app.post('/api/student/:studentId/friends/invite-code', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    // 기존 활성 코드가 있으면 반환
+    const existing: any = await c.env.DB.prepare(
+      "SELECT code, expires_at FROM friend_invite_codes WHERE student_id = ? AND is_active = 1 AND expires_at > datetime('now','+9 hours') AND use_count < max_uses ORDER BY created_at DESC LIMIT 1"
+    ).bind(studentId).first();
+    if (existing) return c.json({ success: true, data: { code: existing.code, expiresAt: existing.expires_at } });
+
+    // 새 코드 생성 (충돌 시 3회 재시도)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const code = generateInviteCode();
+      try {
+        const now = getKSTString();
+        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+        await c.env.DB.prepare(
+          'INSERT INTO friend_invite_codes (student_id, code, max_uses, use_count, expires_at, is_active, created_at) VALUES (?, ?, 5, 0, ?, 1, ?)'
+        ).bind(studentId, code, expires, now).run();
+        return c.json({ success: true, data: { code, expiresAt: expires } });
+      } catch (e: any) {
+        if (attempt === 2) throw e;
+      }
+    }
+    return c.json({ success: false, error: '코드 생성에 실패했습니다' }, 500);
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/student/:studentId/friends/accept-code — 친구 초대 코드 수락
+app.post('/api/student/:studentId/friends/accept-code', async (c) => {
+  const accepterId = Number(c.req.param('studentId'));
+  if (!accepterId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const { code } = await c.req.json();
+    if (!code) return c.json({ success: false, error: '초대 코드를 입력해주세요' }, 400);
+
+    const invite: any = await c.env.DB.prepare(
+      'SELECT * FROM friend_invite_codes WHERE code = ? AND is_active = 1'
+    ).bind(code.toUpperCase()).first();
+    if (!invite) return c.json({ success: false, error: '유효하지 않은 초대 코드입니다' }, 400);
+
+    const now = getKSTString();
+    if (invite.expires_at && invite.expires_at < now) return c.json({ success: false, error: '초대 코드가 만료되었습니다' }, 400);
+    if (invite.use_count >= invite.max_uses) return c.json({ success: false, error: '초대 코드 사용 횟수가 초과되었습니다' }, 400);
+
+    const inviterId = invite.student_id;
+    if (inviterId === accepterId) return c.json({ success: false, error: '자신의 초대 코드는 사용할 수 없습니다' }, 400);
+
+    // 같은 학원 검증
+    const inviterAcademy = await getStudentAcademy(c.env.DB, inviterId);
+    const accepterAcademy = await getStudentAcademy(c.env.DB, accepterId);
+    if (!inviterAcademy || !accepterAcademy || inviterAcademy !== accepterAcademy) {
+      return c.json({ success: false, error: '같은 학원 학생만 친구 추가가 가능합니다' }, 403);
+    }
+
+    // ID 정규화
+    const id1 = Math.min(inviterId, accepterId);
+    const id2 = Math.max(inviterId, accepterId);
+
+    const existingFriend: any = await c.env.DB.prepare(
+      'SELECT id FROM friendships WHERE student_id_1 = ? AND student_id_2 = ?'
+    ).bind(id1, id2).first();
+    if (existingFriend) return c.json({ success: false, error: '이미 친구입니다' }, 409);
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO friendships (student_id_1, student_id_2, status, invited_by, invite_code, accepted_at, created_at) VALUES (?, ?, 'accepted', ?, ?, ?, ?)"
+      ).bind(id1, id2, inviterId, code, now, now),
+      c.env.DB.prepare('UPDATE friend_invite_codes SET use_count = use_count + 1 WHERE id = ?').bind(invite.id)
+    ]);
+
+    const friend: any = await c.env.DB.prepare('SELECT nickname, profile_emoji, school_name FROM students WHERE id = ?').bind(inviterId).first();
+    return c.json({ success: true, data: { friendNickname: friend?.nickname || '익명', friendEmoji: friend?.profile_emoji || '😊' } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/friends — 친구 목록
+app.get('/api/student/:studentId/friends', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const result: any = await c.env.DB.prepare(
+      `SELECT f.id as friendshipId,
+              CASE WHEN f.student_id_1 = ? THEN f.student_id_2 ELSE f.student_id_1 END as friendStudentId,
+              CASE WHEN f.student_id_1 = ? THEN s2.nickname ELSE s1.nickname END as nickname,
+              CASE WHEN f.student_id_1 = ? THEN s2.profile_emoji ELSE s1.profile_emoji END as emoji,
+              CASE WHEN f.student_id_1 = ? THEN s2.school_name ELSE s1.school_name END as schoolName
+       FROM friendships f
+       LEFT JOIN students s1 ON f.student_id_1 = s1.id
+       LEFT JOIN students s2 ON f.student_id_2 = s2.id
+       WHERE (f.student_id_1 = ? OR f.student_id_2 = ?) AND f.status = 'accepted'`
+    ).bind(studentId, studentId, studentId, studentId, studentId, studentId).all();
+
+    const friends = (result.results || []).map((f: any) => ({
+      friendshipId: f.friendshipId, studentId: f.friendStudentId,
+      nickname: f.nickname || '익명', emoji: f.emoji || '😊', schoolName: f.schoolName || ''
+    }));
+    return c.json({ success: true, data: { friends } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// DELETE /api/student/:studentId/friends/:friendshipId — 친구 삭제
+app.delete('/api/student/:studentId/friends/:friendshipId', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  const friendshipId = Number(c.req.param('friendshipId'));
+  if (!studentId || !friendshipId) return c.json({ success: false, error: '유효하지 않은 ID입니다' }, 400);
+  try {
+    const friendship: any = await c.env.DB.prepare(
+      'SELECT id FROM friendships WHERE id = ? AND (student_id_1 = ? OR student_id_2 = ?)'
+    ).bind(friendshipId, studentId, studentId).first();
+    if (!friendship) return c.json({ success: false, error: '친구 관계를 찾을 수 없습니다' }, 404);
+    await c.env.DB.prepare('DELETE FROM friendships WHERE id = ?').bind(friendshipId).run();
+    return c.json({ success: true, data: { message: '친구가 삭제되었습니다' } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티: 닉네임 + 공유설정 ====================
+
+// PUT /api/student/:studentId/nickname — 학생 닉네임 설정/변경
+app.put('/api/student/:studentId/nickname', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const { nickname } = await c.req.json();
+    if (!nickname) return c.json({ success: false, error: '닉네임을 입력해주세요' }, 400);
+    const validation = validateNickname(nickname);
+    if (!validation.valid) return c.json({ success: false, error: validation.error }, 400);
+
+    const academy = await getStudentAcademy(c.env.DB, studentId);
+    if (!academy) return c.json({ success: false, error: '학생 정보를 찾을 수 없습니다' }, 404);
+
+    const trimmed = nickname.trim();
+    const dup: any = await c.env.DB.prepare(
+      `SELECT id FROM students WHERE nickname = ? AND id != ? AND group_id IN (SELECT g.id FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE m.academy_name = ?)
+       UNION SELECT id FROM mentors WHERE nickname = ? AND academy_name = ?`
+    ).bind(trimmed, studentId, academy, trimmed, academy).first();
+    if (dup) return c.json({ success: false, error: '이미 사용 중인 닉네임입니다' }, 409);
+
+    await c.env.DB.prepare('UPDATE students SET nickname = ? WHERE id = ?').bind(trimmed, studentId).run();
+    return c.json({ success: true, data: { nickname: trimmed } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/mentor/:mentorId/nickname — 멘토 닉네임 설정/변경
+app.put('/api/mentor/:mentorId/nickname', async (c) => {
+  const mentorId = Number(c.req.param('mentorId'));
+  if (!mentorId) return c.json({ success: false, error: '유효하지 않은 멘토 ID입니다' }, 400);
+  try {
+    const { nickname } = await c.req.json();
+    if (!nickname) return c.json({ success: false, error: '닉네임을 입력해주세요' }, 400);
+    const validation = validateNickname(nickname);
+    if (!validation.valid) return c.json({ success: false, error: validation.error }, 400);
+
+    const mentor: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(mentorId).first();
+    if (!mentor) return c.json({ success: false, error: '멘토 정보를 찾을 수 없습니다' }, 404);
+
+    const trimmed = nickname.trim();
+    const dup: any = await c.env.DB.prepare(
+      `SELECT id FROM mentors WHERE nickname = ? AND id != ? AND academy_name = ?
+       UNION SELECT id FROM students WHERE nickname = ? AND group_id IN (SELECT g.id FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE m.academy_name = ?)`
+    ).bind(trimmed, mentorId, mentor.academy_name, trimmed, mentor.academy_name).first();
+    if (dup) return c.json({ success: false, error: '이미 사용 중인 닉네임입니다' }, 409);
+
+    await c.env.DB.prepare('UPDATE mentors SET nickname = ? WHERE id = ?').bind(trimmed, mentorId).run();
+    return c.json({ success: true, data: { nickname: trimmed } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/share-settings — 공유 설정 조회
+app.get('/api/student/:studentId/share-settings', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    let row: any = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(studentId).first();
+    if (!row) {
+      const now = getKSTString();
+      await c.env.DB.prepare(
+        'INSERT INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, 0, 0, 0, 0, 0, ?)'
+      ).bind(studentId, now).run();
+      row = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(studentId).first();
+    }
+    return c.json({ success: true, data: {
+      share_class_records: row.share_class_records, share_question_count: row.share_question_count,
+      share_teach_count: row.share_teach_count, share_mission_status: row.share_mission_status,
+      share_xp_level: row.share_xp_level
+    }});
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/student/:studentId/share-settings — 공유 설정 변경
+app.put('/api/student/:studentId/share-settings', async (c) => {
+  const studentId = Number(c.req.param('studentId'));
+  if (!studentId) return c.json({ success: false, error: '유효하지 않은 학생 ID입니다' }, 400);
+  try {
+    const body = await c.req.json();
+    const fields = ['share_class_records', 'share_question_count', 'share_teach_count', 'share_mission_status', 'share_xp_level'];
+    for (const f of fields) {
+      if (body[f] !== undefined && body[f] !== 0 && body[f] !== 1) return c.json({ success: false, error: '설정 값은 0 또는 1이어야 합니다' }, 400);
+    }
+    const now = getKSTString();
+    await c.env.DB.prepare(
+      'INSERT OR REPLACE INTO learning_share_settings (student_id, share_class_records, share_question_count, share_teach_count, share_mission_status, share_xp_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(studentId, body.share_class_records || 0, body.share_question_count || 0, body.share_teach_count || 0, body.share_mission_status || 0, body.share_xp_level || 0, now).run();
+    return c.json({ success: true, data: {
+      share_class_records: body.share_class_records || 0, share_question_count: body.share_question_count || 0,
+      share_teach_count: body.share_teach_count || 0, share_mission_status: body.share_mission_status || 0,
+      share_xp_level: body.share_xp_level || 0
+    }});
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/student/:studentId/learning-profile — 친구의 학습 프로필 조회
+app.get('/api/student/:studentId/learning-profile', async (c) => {
+  const targetId = Number(c.req.param('studentId'));
+  const viewerId = Number(c.req.query('viewer_id'));
+  if (!targetId || !viewerId) return c.json({ success: false, error: 'viewer_id가 필요합니다' }, 400);
+  try {
+    // 친구 관계 확인
+    const id1 = Math.min(targetId, viewerId);
+    const id2 = Math.max(targetId, viewerId);
+    const friendship: any = await c.env.DB.prepare(
+      "SELECT id FROM friendships WHERE student_id_1 = ? AND student_id_2 = ? AND status = 'accepted'"
+    ).bind(id1, id2).first();
+    if (!friendship) return c.json({ success: false, error: '친구만 프로필을 볼 수 있습니다' }, 403);
+
+    const student: any = await c.env.DB.prepare('SELECT nickname, profile_emoji, school_name, grade, xp, level FROM students WHERE id = ?').bind(targetId).first();
+    if (!student) return c.json({ success: false, error: '학생 정보를 찾을 수 없습니다' }, 404);
+
+    const settings: any = await c.env.DB.prepare('SELECT * FROM learning_share_settings WHERE student_id = ?').bind(targetId).first();
+
+    const profile: any = {
+      nickname: student.nickname || '익명', profileEmoji: student.profile_emoji || '😊',
+      schoolName: student.school_name || '', grade: student.grade || 1
+    };
+
+    if (settings?.share_class_records) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM class_records WHERE student_id = ?').bind(targetId).first();
+      profile.classRecordCount = r?.cnt || 0;
+    }
+    if (settings?.share_question_count) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM question_records WHERE student_id = ?').bind(targetId).first();
+      profile.questionCount = r?.cnt || 0;
+    }
+    if (settings?.share_teach_count) {
+      const r: any = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM teach_records WHERE student_id = ?').bind(targetId).first();
+      profile.teachCount = r?.cnt || 0;
+    }
+    if (settings?.share_mission_status) {
+      const r: any = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM assignments WHERE student_id = ? AND status = 'completed'").bind(targetId).first();
+      profile.completedAssignmentCount = r?.cnt || 0;
+    }
+    if (settings?.share_xp_level) {
+      profile.xp = student.xp || 0;
+      profile.level = student.level || 1;
+    }
+
+    return c.json({ success: true, data: profile });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// ==================== 커뮤니티 신고/모더레이션 API ====================
+
+// Helper: 멘토가 해당 게시판을 관리할 수 있는지 확인
+async function canMentorModerateBoard(db: any, mentorId: number, boardId: number): Promise<boolean> {
+  const mentor: any = await db.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(mentorId).first();
+  if (!mentor) return false;
+  const board: any = await db.prepare('SELECT * FROM community_boards WHERE id = ?').bind(boardId).first();
+  if (!board) return false;
+  if (board.board_type === 'academy') {
+    return board.academy_name === mentor.academy_name;
+  }
+  if (board.board_type === 'group') {
+    const group: any = await db.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
+    return group?.mentor_id === mentorId;
+  }
+  return false;
+}
+
+// POST /api/community/report — 신고 생성
+app.post('/api/community/report', async (c) => {
+  try {
+    const { reporter_type, reporter_id, target_type, target_id, reason } = await c.req.json();
+    if (!reporter_type || !reporter_id || !target_type || !target_id || !reason) {
+      return c.json({ success: false, error: '필수 항목이 누락되었습니다' }, 400);
+    }
+    if (!['post', 'comment'].includes(target_type)) {
+      return c.json({ success: false, error: 'target_type은 post 또는 comment이어야 합니다' }, 400);
+    }
+
+    // 대상 존재 및 삭제 여부 확인
+    const tableName = target_type === 'post' ? 'community_posts' : 'community_comments';
+    const target: any = await c.env.DB.prepare(
+      `SELECT id, is_deleted FROM ${tableName} WHERE id = ?`
+    ).bind(target_id).first();
+    if (!target) {
+      return c.json({ success: false, error: '신고 대상을 찾을 수 없습니다' }, 404);
+    }
+    if (target.is_deleted === 1) {
+      return c.json({ success: false, error: '이미 삭제된 콘텐츠입니다' }, 400);
+    }
+
+    // 중복 신고 확인
+    const dup: any = await c.env.DB.prepare(
+      'SELECT id FROM community_reports WHERE reporter_type = ? AND reporter_id = ? AND target_type = ? AND target_id = ?'
+    ).bind(reporter_type, reporter_id, target_type, target_id).first();
+    if (dup) {
+      return c.json({ success: false, error: '이미 신고한 콘텐츠입니다' }, 409);
+    }
+
+    const result: any = await c.env.DB.prepare(
+      "INSERT INTO community_reports (reporter_type, reporter_id, target_type, target_id, reason, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', datetime('now','+9 hours'))"
+    ).bind(reporter_type, reporter_id, target_type, target_id, reason).run();
+
+    return c.json({ success: true, data: { reportId: result.meta.last_row_id } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// GET /api/mentor/:mentorId/community-reports — 멘토 관할 게시판 신고 목록
+app.get('/api/mentor/:mentorId/community-reports', async (c) => {
+  try {
+    const mentorId = Number(c.req.param('mentorId'));
+    if (!mentorId || isNaN(mentorId)) return c.json({ success: false, error: '유효하지 않은 멘토 ID입니다' }, 400);
+
+    // 멘토 academy 조회
+    const mentor: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(mentorId).first();
+    if (!mentor) return c.json({ success: false, error: '멘토를 찾을 수 없습니다' }, 404);
+
+    // 멘토 관할 게시판 ID 수집
+    const groupBoards: any = await c.env.DB.prepare(
+      "SELECT cb.id FROM community_boards cb JOIN groups g ON cb.group_id = g.id WHERE g.mentor_id = ? AND cb.board_type = 'group' AND cb.is_active = 1"
+    ).bind(mentorId).all();
+    const academyBoards: any = await c.env.DB.prepare(
+      "SELECT id FROM community_boards WHERE board_type = 'academy' AND academy_name = ? AND is_active = 1"
+    ).bind(mentor.academy_name).all();
+
+    const boardIds = [
+      ...(groupBoards.results || []).map((r: any) => r.id),
+      ...(academyBoards.results || []).map((r: any) => r.id),
+    ];
+    if (boardIds.length === 0) {
+      return c.json({ success: true, data: { reports: [] } });
+    }
+
+    // pending 신고 조회 — post 대상
+    const placeholders = boardIds.map(() => '?').join(',');
+    const postReports: any = await c.env.DB.prepare(
+      `SELECT cr.id, cr.reporter_type, cr.reporter_id, cr.target_type, cr.target_id, cr.reason, cr.status, cr.created_at,
+              cp.title as post_title, cp.content as post_content, cp.board_id
+       FROM community_reports cr
+       JOIN community_posts cp ON cr.target_id = cp.id
+       WHERE cr.target_type = 'post' AND cr.status = 'pending' AND cp.board_id IN (${placeholders})`
+    ).bind(...boardIds).all();
+
+    // pending 신고 조회 — comment 대상
+    const commentReports: any = await c.env.DB.prepare(
+      `SELECT cr.id, cr.reporter_type, cr.reporter_id, cr.target_type, cr.target_id, cr.reason, cr.status, cr.created_at,
+              cc.content as comment_content, cc.post_id, cp.title as post_title, cp.board_id
+       FROM community_reports cr
+       JOIN community_comments cc ON cr.target_id = cc.id
+       JOIN community_posts cp ON cc.post_id = cp.id
+       WHERE cr.target_type = 'comment' AND cr.status = 'pending' AND cp.board_id IN (${placeholders})`
+    ).bind(...boardIds).all();
+
+    // 결과 병합 및 reporter 닉네임 조회
+    const allReports = [...(postReports.results || []), ...(commentReports.results || [])];
+    const reports = [];
+    for (const r of allReports) {
+      let reporterNickname = '알 수 없음';
+      if (r.reporter_type === 'student') {
+        const s: any = await c.env.DB.prepare('SELECT nickname, name FROM students WHERE id = ?').bind(r.reporter_id).first();
+        reporterNickname = s?.nickname || s?.name || '학생';
+      } else if (r.reporter_type === 'mentor') {
+        const m: any = await c.env.DB.prepare('SELECT nickname, name FROM mentors WHERE id = ?').bind(r.reporter_id).first();
+        reporterNickname = m?.nickname || m?.name || '멘토';
+      }
+
+      const targetPreview = r.target_type === 'post'
+        ? stripHtmlForPreview(r.post_content || '', 100)
+        : (r.comment_content || '').substring(0, 100);
+
+      reports.push({
+        id: r.id,
+        reporterNickname,
+        targetType: r.target_type,
+        targetId: r.target_id,
+        targetPreview,
+        postTitle: r.post_title || null,
+        reason: r.reason,
+        status: r.status,
+        createdAt: r.created_at,
+      });
+    }
+
+    // 최신순 정렬
+    reports.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return c.json({ success: true, data: { reports } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
+
+// PUT /api/community/reports/:reportId — 신고 처리 (resolve/dismiss)
+app.put('/api/community/reports/:reportId', async (c) => {
+  try {
+    const reportId = Number(c.req.param('reportId'));
+    if (!reportId || isNaN(reportId)) return c.json({ success: false, error: '유효하지 않은 신고 ID입니다' }, 400);
+
+    const { status, resolved_by, delete_content } = await c.req.json();
+    if (!status || !resolved_by) {
+      return c.json({ success: false, error: '필수 항목이 누락되었습니다' }, 400);
+    }
+    if (!['resolved', 'dismissed'].includes(status)) {
+      return c.json({ success: false, error: 'status는 resolved 또는 dismissed이어야 합니다' }, 400);
+    }
+
+    // 신고 존재 및 상태 확인
+    const report: any = await c.env.DB.prepare('SELECT * FROM community_reports WHERE id = ?').bind(reportId).first();
+    if (!report) return c.json({ success: false, error: '신고를 찾을 수 없습니다' }, 404);
+    if (report.status !== 'pending') {
+      return c.json({ success: false, error: '이미 처리된 신고입니다' }, 400);
+    }
+
+    // 멘토 권한 확인: 신고 대상의 게시판을 관리하는 멘토인지
+    let boardId: number | null = null;
+    if (report.target_type === 'post') {
+      const post: any = await c.env.DB.prepare('SELECT board_id FROM community_posts WHERE id = ?').bind(report.target_id).first();
+      boardId = post?.board_id;
+    } else if (report.target_type === 'comment') {
+      const comment: any = await c.env.DB.prepare('SELECT post_id FROM community_comments WHERE id = ?').bind(report.target_id).first();
+      if (comment) {
+        const post: any = await c.env.DB.prepare('SELECT board_id FROM community_posts WHERE id = ?').bind(comment.post_id).first();
+        boardId = post?.board_id;
+      }
+    }
+    if (!boardId || !(await canMentorModerateBoard(c.env.DB, resolved_by, boardId))) {
+      return c.json({ success: false, error: '권한이 없습니다' }, 403);
+    }
+
+    // 신고 상태 업데이트
+    await c.env.DB.prepare(
+      "UPDATE community_reports SET status = ?, resolved_by = ?, resolved_at = datetime('now','+9 hours') WHERE id = ?"
+    ).bind(status, resolved_by, reportId).run();
+
+    // 콘텐츠 삭제 (resolved + delete_content)
+    if (status === 'resolved' && delete_content === true) {
+      if (report.target_type === 'post') {
+        const target: any = await c.env.DB.prepare('SELECT is_deleted FROM community_posts WHERE id = ?').bind(report.target_id).first();
+        if (target && target.is_deleted === 0) {
+          await c.env.DB.prepare(
+            "UPDATE community_posts SET is_deleted = 1, deleted_by = ? WHERE id = ?"
+          ).bind(`mentor:${resolved_by}`, report.target_id).run();
+        }
+      } else if (report.target_type === 'comment') {
+        const target: any = await c.env.DB.prepare('SELECT is_deleted, post_id FROM community_comments WHERE id = ?').bind(report.target_id).first();
+        if (target && target.is_deleted === 0) {
+          await c.env.DB.batch([
+            c.env.DB.prepare("UPDATE community_comments SET is_deleted = 1, deleted_by = ? WHERE id = ?").bind(`mentor:${resolved_by}`, report.target_id),
+            c.env.DB.prepare("UPDATE community_posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?").bind(target.post_id),
+          ]);
+        }
+      }
+    }
+
+    return c.json({ success: true, data: { reportId, status } });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
+  }
+});
 
 // ==================== 진로 프로파일 API ====================
 
@@ -6052,6 +7441,7 @@ app.get('/', (c) => {
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
   <script src="/static/app.js"></script>
   <script type="module">
     import ArchiveModule from '/modules/records/records.js';
