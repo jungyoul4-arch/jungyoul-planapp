@@ -144,20 +144,20 @@ export function renderCareerUpload() {
               <img class="pu-note-img" src="${mainPhoto}" alt="체험 사진">
               <div class="pu-note-done-badge">촬영 완료</div>
               <div class="pu-note-actions">
-                <label class="pu-note-retake">
+                <div class="pu-note-retake" style="cursor:pointer" onclick="this.querySelector('input').click()">
                   다시 촬영
-                  <input type="file" accept="image/*"style="display:none" onchange="_RM.careerHandleMain(this)">
-                </label>
+                  <input type="file" accept="image/*"style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.careerHandleMain(this)">
+                </div>
                 <button class="pu-note-delete" onclick="_RM.careerRemoveMain()">삭제</button>
               </div>
             </div>
           ` : `
-            <label class="pu-note-upload">
+            <div class="pu-note-upload" style="cursor:pointer" onclick="this.querySelector('input').click()">
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#10b981"></i>
               <span style="font-weight:600;color:#10b981">체험 사진 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장 촬영</span>
-              <input type="file" accept="image/*"style="display:none" onchange="_RM.careerHandleMain(this)">
-            </label>
+              <input type="file" accept="image/*"style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.careerHandleMain(this)">
+            </div>
           `}
         </div>
 
@@ -178,11 +178,11 @@ export function renderCareerUpload() {
               </div>
             `).join('')}
             ${refCount < 14 ? `
-              <label class="pu-ref-add-tile">
+              <div class="pu-ref-add-tile" style="position:relative;cursor:pointer" onclick="this.querySelector('input').click()">
                 <i class="fas fa-plus" style="font-size:20px;margin-bottom:4px"></i>
                 <span>${refCount > 0 ? '추가' : '사진 추가'}</span>
-                <input type="file" accept="image/*" multiple style="display:none" onchange="_RM.careerHandleRef(this)">
-              </label>
+                <input type="file" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.careerHandleRef(this)">
+              </div>
             ` : ''}
           </div>
           <div class="pu-ref-count">${refCount}/14장</div>
