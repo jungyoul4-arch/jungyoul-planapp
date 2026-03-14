@@ -169,20 +169,20 @@ export function renderAhaInput() {
                 </div>
               `).join('')}
               ${notePhotos.length < 3 ? `
-                <div class="pu-ref-add-tile" onclick="this.querySelector('input').click()">
+                <label class="pu-ref-add-tile">
                   <i class="fas fa-camera" style="font-size:20px;margin-bottom:4px"></i>
                   <span>추가 촬영</span>
-                  <input type="file" accept="image/*" multiple style="position:absolute;opacity:0;width:0;height:0" onchange="_RM.handleAhaNoteUpload(this)">
-                </div>
+                  <input type="file" accept="image/*" multiple style="display:none" onchange="_RM.handleAhaNoteUpload(this)">
+                </label>
               ` : ''}
             </div>
           ` : `
-            <div class="pu-note-upload" onclick="this.querySelector('input').click()">
+            <label class="pu-note-upload">
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#7c6aef"></i>
               <span style="font-weight:600;color:#7c6aef">노트 사진 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">최대 3장</span>
-              <input type="file" accept="image/*" multiple style="position:absolute;opacity:0;width:0;height:0" onchange="_RM.handleAhaNoteUpload(this)">
-            </div>
+              <input type="file" accept="image/*" multiple style="display:none" onchange="_RM.handleAhaNoteUpload(this)">
+            </label>
           `}
         </div>
 
@@ -203,11 +203,11 @@ export function renderAhaInput() {
               </div>
             `).join('')}
             ${refPhotos.length < 5 ? `
-              <div class="pu-ref-add-tile" onclick="this.querySelector('input').click()">
+              <label class="pu-ref-add-tile">
                 <i class="fas fa-plus" style="font-size:20px;margin-bottom:4px"></i>
                 <span>${refPhotos.length > 0 ? '추가' : '사진 추가'}</span>
-                <input type="file" accept="image/*" multiple style="position:absolute;opacity:0;width:0;height:0" onchange="_RM.handleAhaRefUpload(this)">
-              </div>
+                <input type="file" accept="image/*" multiple style="display:none" onchange="_RM.handleAhaRefUpload(this)">
+              </label>
             ` : ''}
           </div>
           <div class="pu-ref-count">${refPhotos.length}/5장</div>
