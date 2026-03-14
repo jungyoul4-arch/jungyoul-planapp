@@ -4057,6 +4057,171 @@ app.get('/api/admin/cleanup-duplicate-records', async (c) => {
 });
 
 
+// ==================== 탐구 소재 분석 (멘토용) ====================
+
+// POST: AI 분석 실행
+app.post('/api/mentor/:mentorId/student/:studentId/question-analysis', async (c) => {
+  try {
+    const mentorId = parseInt(c.req.param('mentorId'))
+    const studentId = parseInt(c.req.param('studentId'))
+    const { subjects, dateFrom, dateTo } = await c.req.json() as { subjects?: string[], dateFrom?: string, dateTo?: string }
+
+    const subjectsKey = (subjects && subjects.length > 0) ? subjects.sort().join(',') : '전체'
+    const dfKey = dateFrom || ''
+    const dtKey = dateTo || ''
+
+    // 24시간 캐시 확인
+    const cached: any = await c.env.DB.prepare(
+      `SELECT * FROM question_analysis WHERE student_id = ? AND mentor_id = ? AND subjects = ? AND COALESCE(date_from,'') = ? AND COALESCE(date_to,'') = ? AND created_at > datetime('now','+9 hours','-24 hours') ORDER BY created_at DESC LIMIT 1`
+    ).bind(studentId, mentorId, subjectsKey, dfKey, dtKey).first()
+    if (cached) {
+      return c.json({ success: true, data: { ...cached, result_json: JSON.parse(cached.result_json), cached: true } })
+    }
+
+    // 질문 조회
+    let query = 'SELECT id, subject, title, content, status, created_at, source FROM my_questions WHERE student_id = ?'
+    const params: any[] = [studentId]
+    if (subjects && subjects.length > 0 && !subjects.includes('전체')) {
+      query += ` AND subject IN (${subjects.map(() => '?').join(',')})`
+      params.push(...subjects)
+    }
+    if (dateFrom) { query += ' AND created_at >= ?'; params.push(dateFrom) }
+    if (dateTo) { query += ' AND created_at < datetime(?, \'+1 day\')'; params.push(dateTo) }
+    query += ' ORDER BY created_at DESC LIMIT 200'
+
+    const questions: any = await c.env.DB.prepare(query).bind(...params).all()
+    const qList = questions.results || []
+    if (qList.length === 0) {
+      return c.json({ success: false, error: '분석할 질문이 없습니다. 질문방에 질문을 먼저 등록해주세요.' }, 400)
+    }
+
+    // 답변도 함께 조회
+    const qIds = qList.map((q: any) => q.id)
+    let answers: any[] = []
+    if (qIds.length > 0) {
+      const ansRes: any = await c.env.DB.prepare(
+        `SELECT question_id, content FROM my_answers WHERE question_id IN (${qIds.map(() => '?').join(',')}) ORDER BY created_at ASC`
+      ).bind(...qIds).all()
+      answers = ansRes.results || []
+    }
+    const answerMap: Record<number, string[]> = {}
+    for (const a of answers) {
+      if (!answerMap[a.question_id]) answerMap[a.question_id] = []
+      answerMap[a.question_id].push(a.content)
+    }
+
+    // AI 프롬프트 구성
+    const questionLines = qList.map((q: any, i: number) => {
+      const ans = answerMap[q.id] ? answerMap[q.id].join(' / ') : '(미답변)'
+      return `[${i}] 과목:${q.subject || '기타'} | 제목:${q.title} | 내용:${q.content || ''} | 답변:${ans} | 상태:${q.status} | 출처:${q.source || ''} | 날짜:${q.created_at?.slice(0, 10) || ''}`
+    }).join('\n')
+
+    // 학생 이름 조회
+    const student: any = await c.env.DB.prepare('SELECT name, school_name, grade FROM students WHERE id = ?').bind(studentId).first()
+    const studentName = student?.name || '학생'
+
+    const prompt = `당신은 고등학교 교육 전문가이자 탐구보고서 지도 멘토입니다.
+아래는 ${studentName} 학생이 질문방에 기록한 질문 목록입니다. 이 질문들의 패턴을 분석하고, 학생에게 적합한 탐구보고서 소재를 추천해주세요.
+
+## 학생 정보
+- 이름: ${studentName}
+- 학교: ${student?.school_name || '미입력'}
+- 학년: ${student?.grade || '미입력'}학년
+
+## 질문 목록 (총 ${qList.length}개)
+${questionLines}
+
+## 분석 지시사항
+1. 질문들을 주제별로 클러스터링하세요 (3~6개 클러스터)
+2. 각 클러스터에서 학생의 관심사와 사고 패턴을 분석하세요
+3. 이 학생에게 적합한 탐구보고서 소재를 5~8개 추천하세요
+4. 각 추천에 탐구 깊이(depth)를 1(기초탐구), 2(심화탐구), 3(융합탐구)으로 표시하세요
+
+다음 JSON 형식으로 응답하세요:
+{
+  "summary": "학생의 질문 패턴과 학습 성향 요약 (2~3문장)",
+  "clusters": [
+    { "theme": "클러스터 주제", "questions": [질문 인덱스 배열], "insight": "이 클러스터에서 발견된 학생의 관심사/사고 패턴" }
+  ],
+  "recommendations": [
+    {
+      "title": "탐구 주제 제목",
+      "subject": "관련 교과목",
+      "description": "탐구 내용 설명 (2~3문장)",
+      "rationale": "이 학생에게 이 주제가 적합한 이유",
+      "approach": "구체적인 탐구 접근법/방법론",
+      "depth": 1,
+      "keywords": ["핵심", "키워드"]
+    }
+  ]
+}`
+
+    const { text, source } = await callGeminiWithFallback({
+      geminiKey: c.env.GEMINI_API_KEY,
+      openaiKey: c.env.OPENAI_API_KEY,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      prompt,
+      jsonMode: true,
+      temperature: 0.4,
+    })
+
+    let resultJson: any
+    try { resultJson = JSON.parse(text) } catch { resultJson = { summary: text, clusters: [], recommendations: [] } }
+
+    // 학생당 최대 5개 저장 — 초과 시 가장 오래된 것 삭제
+    const existing: any = await c.env.DB.prepare(
+      'SELECT id FROM question_analysis WHERE student_id = ? ORDER BY created_at DESC'
+    ).bind(studentId).all()
+    if ((existing.results || []).length >= 5) {
+      const toDelete = (existing.results as any[]).slice(4)
+      for (const row of toDelete) {
+        await c.env.DB.prepare('DELETE FROM question_analysis WHERE id = ?').bind(row.id).run()
+      }
+    }
+
+    // 저장
+    const ins: any = await c.env.DB.prepare(
+      'INSERT INTO question_analysis (student_id, mentor_id, subjects, date_from, date_to, question_count, result_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(studentId, mentorId, subjectsKey, dateFrom || null, dateTo || null, qList.length, JSON.stringify(resultJson)).run()
+
+    return c.json({ success: true, data: { id: ins.meta?.last_row_id, student_id: studentId, mentor_id: mentorId, subjects: subjectsKey, date_from: dateFrom || null, date_to: dateTo || null, question_count: qList.length, result_json: resultJson, ai_source: source, cached: false } })
+  } catch (e: any) {
+    console.error('question-analysis error:', e)
+    return c.json({ success: false, error: e.message || '분석 중 오류가 발생했습니다' }, 500)
+  }
+})
+
+// GET: 분석 이력 목록
+app.get('/api/mentor/:mentorId/student/:studentId/question-analysis', async (c) => {
+  try {
+    const mentorId = parseInt(c.req.param('mentorId'))
+    const studentId = parseInt(c.req.param('studentId'))
+    const rows: any = await c.env.DB.prepare(
+      'SELECT id, student_id, mentor_id, subjects, date_from, date_to, question_count, created_at FROM question_analysis WHERE student_id = ? ORDER BY created_at DESC LIMIT 20'
+    ).bind(studentId).all()
+    return c.json({ success: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+// GET: 분석 상세
+app.get('/api/mentor/:mentorId/student/:studentId/question-analysis/:id', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    const studentId = parseInt(c.req.param('studentId'))
+    const row: any = await c.env.DB.prepare(
+      'SELECT * FROM question_analysis WHERE id = ? AND student_id = ?'
+    ).bind(id, studentId).first()
+    if (!row) return c.json({ success: false, error: '분석 결과를 찾을 수 없습니다' }, 404)
+    row.result_json = JSON.parse(row.result_json || '{}')
+    return c.json({ success: true, data: row })
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500)
+  }
+})
+
+
 // ==================== DB 자동 마이그레이션 ====================
 app.get('/api/migrate', async (c) => {
   const adminKey = c.req.query('key')
@@ -4229,6 +4394,10 @@ app.get('/api/migrate', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_friend_invite_codes_student ON friend_invite_codes(student_id)`,
       // idx_friend_invite_codes_code: 불필요 (CREATE TABLE에서 UNIQUE 제약 이미 선언)
       // idx_learning_share_settings_student: 불필요 (CREATE TABLE에서 UNIQUE 제약 이미 선언)
+      // ===== 탐구 소재 분석 (멘토용) =====
+      `CREATE TABLE IF NOT EXISTS question_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, mentor_id INTEGER NOT NULL, subjects TEXT DEFAULT '전체', date_from TEXT, date_to TEXT, question_count INTEGER DEFAULT 0, result_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now','+9 hours')))`,
+      `CREATE INDEX IF NOT EXISTS idx_qa_student ON question_analysis(student_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_qa_mentor ON question_analysis(mentor_id)`,
     ];
     const errors: string[] = [];
     for (const sql of stmts) {
@@ -5908,9 +6077,29 @@ app.post('/api/my-questions', async (c) => {
       if (dup) return c.json({ success: true, questionId: dup.id, duplicate: true })
     }
 
+    // 사진이 base64이면 R2에 업로드 후 r2:키로 저장
+    let storedImageKey = imageKey || null
+    let storedThumbnailKey = thumbnailKey || null
+    if (imageKey && typeof imageKey === 'string' && imageKey.startsWith('data:image/')) {
+      if (c.env.R2) {
+        try {
+          const r2Key = `questions/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
+          const match = imageKey.match(/^data:(image\/\w+);base64,(.+)$/)
+          const rawBase64 = match ? match[2] : imageKey.replace(/^data:image\/\w+;base64,/, '')
+          const binary = Uint8Array.from(atob(rawBase64), ch => ch.charCodeAt(0))
+          await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } })
+          storedImageKey = `r2:${r2Key}`
+          storedThumbnailKey = imageKey.slice(0, 200) // 썸네일용 base64 앞부분
+        } catch (e) {
+          console.error('R2 upload failed for question photo, using base64 fallback:', e)
+          // R2 실패 시 base64 그대로 저장 (폴백)
+        }
+      }
+    }
+
     const result = await c.env.DB.prepare(
       'INSERT INTO my_questions (student_id, subject, class_record_id, title, content, image_key, thumbnail_key, question_level, ai_improved, source, period, date, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(studentId, subject || '기타', classRecordId || null, title.trim(), content || '', imageKey || null, thumbnailKey || null, questionLevel || null, aiImproved || null, source || null, period || null, date || null, parentId || null).run()
+    ).bind(studentId, subject || '기타', classRecordId || null, title.trim(), content || '', storedImageKey, storedThumbnailKey, questionLevel || null, aiImproved || null, source || null, period || null, date || null, parentId || null).run()
 
     // XP +3 (skipXp=true이면 건너뜀 — 수업 기록 자동 등록 시)
     if (!skipXp) {
@@ -5945,6 +6134,27 @@ app.get('/api/my-questions', async (c) => {
     query += ' ORDER BY q.created_at DESC'
 
     const questions = await c.env.DB.prepare(query).bind(...binds).all()
+
+    // R2 사진 해석: image_key가 'r2:'로 시작하면 R2에서 조회하여 base64로 변환
+    if (c.env.R2 && questions.results) {
+      const r2Questions = questions.results.filter((q: any) => q.image_key && q.image_key.startsWith('r2:'))
+      await Promise.all(r2Questions.map(async (q: any) => {
+        try {
+          const r2Key = q.image_key.slice(3)
+          const obj = await c.env.R2.get(r2Key)
+          if (obj) {
+            const buf = await obj.arrayBuffer()
+            const bytes = new Uint8Array(buf)
+            let binary = ''
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+            const base64 = btoa(binary)
+            const mime = obj.httpMetadata?.contentType || 'image/jpeg'
+            q.image_key = `data:${mime};base64,${base64}`
+          }
+        } catch (e) { console.error('R2 read failed:', e) }
+      }))
+    }
+
     return c.json({ questions: questions.results })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -5995,7 +6205,47 @@ app.get('/api/my-questions/:id', async (c) => {
     const question: any = await c.env.DB.prepare('SELECT * FROM my_questions WHERE id = ?').bind(id).first()
     if (!question) return c.json({ error: '질문을 찾을 수 없습니다' }, 404)
 
+    // R2 사진 해석: image_key가 'r2:'로 시작하면 R2에서 조회하여 base64로 변환
+    if (question.image_key && question.image_key.startsWith('r2:') && c.env.R2) {
+      try {
+        const r2Key = question.image_key.slice(3)
+        const obj = await c.env.R2.get(r2Key)
+        if (obj) {
+          const buf = await obj.arrayBuffer()
+          const bytes = new Uint8Array(buf)
+          let binary = ''
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+          const base64 = btoa(binary)
+          const mime = obj.httpMetadata?.contentType || 'image/jpeg'
+          question.image_key = `data:${mime};base64,${base64}`
+        }
+      } catch (e) {
+        console.error('R2 read failed for question photo:', e)
+        // R2 실패 시 image_key 그대로 유지 (r2:... 형태)
+      }
+    }
+
     const answers = await c.env.DB.prepare('SELECT * FROM my_answers WHERE question_id = ? ORDER BY created_at DESC').bind(id).all()
+
+    // 답변 사진도 R2 해석
+    if (c.env.R2 && answers.results) {
+      const r2Answers = answers.results.filter((a: any) => a.image_key && a.image_key.startsWith('r2:'))
+      await Promise.all(r2Answers.map(async (a: any) => {
+        try {
+          const r2Key = a.image_key.slice(3)
+          const obj = await c.env.R2.get(r2Key)
+          if (obj) {
+            const buf = await obj.arrayBuffer()
+            const bytes = new Uint8Array(buf)
+            let binary = ''
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+            const base64 = btoa(binary)
+            const mime = obj.httpMetadata?.contentType || 'image/jpeg'
+            a.image_key = `data:${mime};base64,${base64}`
+          }
+        } catch (e) { console.error('R2 read failed for answer photo:', e) }
+      }))
+    }
 
     return c.json({ question, answers: answers.results })
   } catch (e: any) {
@@ -6017,9 +6267,24 @@ app.post('/api/my-questions/:id/answer', async (c) => {
     const resolveHours = (Date.now() - new Date(question.created_at).getTime()) / (1000 * 60 * 60)
     const resolveDays = Math.ceil(resolveHours / 24)
 
+    // 답변 사진도 R2에 업로드
+    let storedAnswerImageKey = imageKey || null
+    if (imageKey && typeof imageKey === 'string' && imageKey.startsWith('data:image/') && c.env.R2) {
+      try {
+        const r2Key = `answers/${studentId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
+        const match = imageKey.match(/^data:(image\/\w+);base64,(.+)$/)
+        const rawBase64 = match ? match[2] : imageKey.replace(/^data:image\/\w+;base64,/, '')
+        const binary = Uint8Array.from(atob(rawBase64), ch => ch.charCodeAt(0))
+        await c.env.R2.put(r2Key, binary, { httpMetadata: { contentType: match?.[1] || 'image/jpeg' } })
+        storedAnswerImageKey = `r2:${r2Key}`
+      } catch (e) {
+        console.error('R2 upload failed for answer photo:', e)
+      }
+    }
+
     const result = await c.env.DB.prepare(
       'INSERT INTO my_answers (question_id, student_id, content, image_key, resolve_hours, resolve_days) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(questionId, studentId, content.trim(), imageKey || null, Math.round(resolveHours * 10) / 10, resolveDays).run()
+    ).bind(questionId, studentId, content.trim(), storedAnswerImageKey, Math.round(resolveHours * 10) / 10, resolveDays).run()
 
     // 질문 상태를 '답변완료'로 업데이트
     await c.env.DB.prepare("UPDATE my_questions SET status = '답변완료' WHERE id = ?").bind(questionId).run()

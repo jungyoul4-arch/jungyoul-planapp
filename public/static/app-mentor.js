@@ -590,6 +590,15 @@ async function __mentorLoadStudentDetail(studentId, studentName) {
   _mentor.detailLoading = true;
   _mentor.detailTab = 'timeline';
   _mentor.studentDetail = null;
+  // 탐구분석 상태 초기화
+  _mentor.researchResult = null;
+  _mentor.researchHistory = [];
+  _mentor.researchHistoryLoaded = false;
+  _mentor._researchSubjectsLoaded = false;
+  _mentor.researchSubjects = [];
+  _mentor._researchSelectedSubjects = [];
+  _mentor.researchDateFrom = '';
+  _mentor.researchDateTo = '';
   renderScreen();
   try {
     const res = await fetch(`/api/mentor/student/${studentId}/all-records`);
@@ -1325,6 +1334,7 @@ function __renderMentorStudentDetail() {
     { id: 'exams', label: `📝 시험 (${(d.exams||[]).length})` },
     { id: 'photos', label: `📸 사진 (${s.classPhotos || 0})` },
     { id: 'feedback', label: `💬 피드백 (${(d.feedbacks||[]).length})` },
+    { id: 'research', label: '🔬 탐구분석' },
   ];
 
   // 학생 정보 찾기
@@ -1378,6 +1388,7 @@ function renderMentorDetailTab() {
     case 'exams': return renderDetailExams();
     case 'photos': return renderDetailPhotos();
     case 'feedback': return renderDetailFeedback();
+    case 'research': return renderDetailResearch();
     default: return renderDetailTimeline();
   }
 }
@@ -1564,6 +1575,246 @@ function renderDetailFeedback() {
       `).join('')}
   `;
 }
+
+// ==================== 탐구 소재 분석 ====================
+
+function renderDetailResearch() {
+  const sid = _mentor.selectedStudentId;
+  if (!sid) return '';
+
+  // 과목 체크박스 목록 (학생 질문에서 추출)
+  const subjectList = _mentor.researchSubjects || [];
+  const selectedSubjects = _mentor._researchSelectedSubjects || [];
+  const dateFrom = _mentor.researchDateFrom || '';
+  const dateTo = _mentor.researchDateTo || '';
+  const loading = _mentor.researchLoading;
+  const result = _mentor.researchResult;
+  const history = _mentor.researchHistory || [];
+
+  // 과목 목록 로드 (최초 1회)
+  if (!_mentor._researchSubjectsLoaded) {
+    _mentor._researchSubjectsLoaded = true;
+    _loadResearchSubjects(sid);
+  }
+
+  // 이력 로드 (최초 1회)
+  if (!_mentor.researchHistoryLoaded) {
+    _mentor.researchHistoryLoaded = true;
+    _loadResearchHistory(sid);
+  }
+
+  return `
+    <div style="padding:4px 0">
+      <!-- 필터 영역 -->
+      <div class="stat-card" style="margin-bottom:16px">
+        <div style="font-weight:700;margin-bottom:10px;font-size:15px">🔬 질문 패턴 → 탐구 소재 AI 분석</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">학생의 질문방 데이터를 AI가 분석하여 탐구보고서 소재를 추천합니다.</p>
+
+        <!-- 과목 선택 -->
+        <div style="margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">과목 필터</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px" id="research-subjects">
+            <label style="display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:8px;background:var(--bg-input);font-size:12px;cursor:pointer;border:1px solid ${selectedSubjects.length===0?'var(--primary-light)':'var(--border)'}">
+              <input type="checkbox" ${selectedSubjects.length===0?'checked':''} onchange="_researchToggleAll(this.checked)" style="accent-color:var(--primary-light)"> 전체
+            </label>
+            ${subjectList.map(s => `
+              <label style="display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:8px;background:var(--bg-input);font-size:12px;cursor:pointer;border:1px solid ${selectedSubjects.includes(s)?'var(--primary-light)':'var(--border)'}">
+                <input type="checkbox" ${selectedSubjects.includes(s)?'checked':''} onchange="_researchToggleSubject('${s}',this.checked)" style="accent-color:var(--primary-light)"> ${s}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- 기간 -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
+          <div style="flex:1">
+            <label style="font-size:12px;color:var(--text-muted)">시작일</label>
+            <input type="date" value="${dateFrom}" onchange="_mentor.researchDateFrom=this.value" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-main);font-size:13px">
+          </div>
+          <div style="flex:1">
+            <label style="font-size:12px;color:var(--text-muted)">종료일</label>
+            <input type="date" value="${dateTo}" onchange="_mentor.researchDateTo=this.value" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-main);font-size:13px">
+          </div>
+        </div>
+
+        <button onclick="_runResearchAnalysis()" ${loading?'disabled':''} class="btn-primary" style="width:100%;padding:10px;font-size:14px">
+          ${loading ? '<i class="fas fa-spinner fa-spin"></i> 분석 중...' : '🔬 AI 탐구 소재 분석 실행'}
+        </button>
+      </div>
+
+      <!-- 결과 영역 -->
+      ${result ? _renderResearchResult(result) : ''}
+
+      <!-- 이력 영역 -->
+      ${history.length > 0 ? `
+        <div class="stat-card" style="margin-top:16px">
+          <div style="font-weight:700;margin-bottom:10px;font-size:14px">📋 이전 분석 이력</div>
+          ${history.map(h => `
+            <div onclick="_loadResearchDetail(${h.id})" style="padding:10px 12px;margin-bottom:6px;border-radius:10px;background:var(--bg-input);cursor:pointer;border:1px solid var(--border);transition:border-color 0.2s" onmouseover="this.style.borderColor='var(--primary-light)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-size:13px;font-weight:600">${h.subjects || '전체'}</span>
+                <span style="font-size:11px;color:var(--text-muted)">${h.created_at?.slice(0,16) || ''}</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px">질문 ${h.question_count}개 분석${h.date_from ? ` · ${h.date_from}~${h.date_to||''}` : ''}</div>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function _renderResearchResult(result) {
+  const r = result.result_json || result;
+  const depthLabel = { 1: '기초탐구', 2: '심화탐구', 3: '융합탐구' };
+  const depthColor = { 1: '#10b981', 2: '#6366f1', 3: '#f59e0b' };
+
+  return `
+    <div class="stat-card">
+      ${result.cached ? '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">📦 캐시된 결과 (24시간 이내 동일 조건)</div>' : ''}
+
+      <!-- 요약 -->
+      <div style="padding:14px;border-radius:12px;background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(139,92,246,0.04));border:1px solid rgba(99,102,241,0.15);margin-bottom:16px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:var(--primary-light)">📊 분석 요약</div>
+        <div style="font-size:13px;line-height:1.6;color:var(--text-main)">${r.summary || ''}</div>
+      </div>
+
+      <!-- 클러스터 -->
+      ${(r.clusters || []).length > 0 ? `
+        <div style="margin-bottom:16px">
+          <div style="font-weight:700;font-size:14px;margin-bottom:10px">🧩 질문 클러스터</div>
+          ${r.clusters.map((cl, i) => `
+            <details style="margin-bottom:8px;border:1px solid var(--border);border-radius:10px;overflow:hidden" ${i===0?'open':''}>
+              <summary style="padding:10px 14px;cursor:pointer;background:var(--bg-input);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">
+                <span style="width:24px;height:24px;border-radius:50%;background:var(--primary-light);color:white;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">${i+1}</span>
+                ${cl.theme} <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:auto">${(cl.questions||[]).length}개 질문</span>
+              </summary>
+              <div style="padding:12px 14px;font-size:13px;line-height:1.6;color:var(--text-secondary)">${cl.insight || ''}</div>
+            </details>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <!-- 추천 탐구 소재 -->
+      <div style="font-weight:700;font-size:14px;margin-bottom:10px">💡 추천 탐구 소재</div>
+      ${(r.recommendations || []).map((rec, i) => `
+        <div style="padding:14px;margin-bottom:10px;border-radius:12px;border:1px solid var(--border);background:var(--bg-card)">
+          <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+            <span style="width:28px;height:28px;border-radius:8px;background:${depthColor[rec.depth]||'#6b7280'}22;color:${depthColor[rec.depth]||'#6b7280'};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0">${i+1}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700;font-size:14px;color:var(--text-main)">${rec.title}</div>
+              <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+                <span style="padding:2px 8px;border-radius:6px;background:${depthColor[rec.depth]||'#6b7280'}18;color:${depthColor[rec.depth]||'#6b7280'};font-size:11px;font-weight:600">${depthLabel[rec.depth]||'탐구'}</span>
+                <span style="padding:2px 8px;border-radius:6px;background:var(--bg-input);color:var(--text-secondary);font-size:11px">${rec.subject||''}</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:6px">${rec.description||''}</div>
+          <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:6px"><strong>적합 이유:</strong> ${rec.rationale||''}</div>
+          <div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:6px"><strong>접근법:</strong> ${rec.approach||''}</div>
+          ${(rec.keywords||[]).length > 0 ? `
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
+              ${rec.keywords.map(k => `<span style="padding:2px 8px;border-radius:12px;background:var(--bg-input);color:var(--text-muted);font-size:11px">#${k}</span>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function _loadResearchSubjects(studentId) {
+  try {
+    const res = await fetch(`/api/my-questions/stats?studentId=${studentId}`);
+    const data = await res.json();
+    if (data.success && data.data?.subjectStats) {
+      _mentor.researchSubjects = data.data.subjectStats.map(s => s.subject).filter(Boolean);
+    } else if (data.subjectStats) {
+      _mentor.researchSubjects = data.subjectStats.map(s => s.subject).filter(Boolean);
+    }
+    renderScreen(true);
+  } catch (e) { console.error('loadResearchSubjects:', e); }
+}
+
+async function _loadResearchHistory(studentId) {
+  try {
+    const mentorId = state._authUser?.id;
+    if (!mentorId) return;
+    const res = await fetch(`/api/mentor/${mentorId}/student/${studentId}/question-analysis`);
+    const data = await res.json();
+    if (data.success) {
+      _mentor.researchHistory = data.data || [];
+      renderScreen(true);
+    }
+  } catch (e) { console.error('loadResearchHistory:', e); }
+}
+
+async function _loadResearchDetail(analysisId) {
+  try {
+    const mentorId = state._authUser?.id;
+    const studentId = _mentor.selectedStudentId;
+    if (!mentorId || !studentId) return;
+    const res = await fetch(`/api/mentor/${mentorId}/student/${studentId}/question-analysis/${analysisId}`);
+    const data = await res.json();
+    if (data.success) {
+      _mentor.researchResult = data.data;
+      renderScreen(true);
+    }
+  } catch (e) { console.error('loadResearchDetail:', e); }
+}
+
+async function _runResearchAnalysis() {
+  const sid = _mentor.selectedStudentId;
+  const mentorId = state._authUser?.id;
+  if (!sid || !mentorId) return;
+
+  _mentor.researchLoading = true;
+  _mentor.researchResult = null;
+  renderScreen(true);
+
+  try {
+    const subjects = (_mentor._researchSelectedSubjects || []).length > 0 ? _mentor._researchSelectedSubjects : [];
+    const body = { subjects };
+    if (_mentor.researchDateFrom) body.dateFrom = _mentor.researchDateFrom;
+    if (_mentor.researchDateTo) body.dateTo = _mentor.researchDateTo;
+
+    const res = await fetch(`/api/mentor/${mentorId}/student/${sid}/question-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.success) {
+      _mentor.researchResult = data.data;
+      // 이력 다시 로드
+      _mentor.researchHistoryLoaded = false;
+    } else {
+      alert(data.error || '분석에 실패했습니다');
+    }
+  } catch (e) {
+    console.error('runResearchAnalysis:', e);
+    alert('분석 중 오류가 발생했습니다: ' + e.message);
+  } finally {
+    _mentor.researchLoading = false;
+    renderScreen(true);
+  }
+}
+
+function _researchToggleAll(checked) {
+  if (checked) _mentor._researchSelectedSubjects = [];
+  renderScreen(true);
+}
+
+function _researchToggleSubject(subject, checked) {
+  if (!_mentor._researchSelectedSubjects) _mentor._researchSelectedSubjects = [];
+  if (checked) {
+    if (!_mentor._researchSelectedSubjects.includes(subject)) _mentor._researchSelectedSubjects.push(subject);
+  } else {
+    _mentor._researchSelectedSubjects = _mentor._researchSelectedSubjects.filter(s => s !== subject);
+  }
+  renderScreen(true);
+}
+
 
 function renderPhotoModal() {
   return `

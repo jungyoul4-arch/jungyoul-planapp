@@ -466,7 +466,7 @@ function _renderScreenImpl(forced) {
 
   // 같은 화면이면 DOM 전체 교체 스킵 (깜빡임 방지)
   const _m = typeof _mentor !== 'undefined' ? _mentor : {};
-  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}`;
+  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}|${state._assignmentUsePlan}`;
   const skipFullRender = !forced && (_lastRenderedKey === renderKey) && _lastRenderedKey !== '';
   if (!skipFullRender) {
     _lastRenderedKey = renderKey;
@@ -11427,7 +11427,7 @@ function saveAssignment(goToPlan) {
       state.viewingAssignment = a.id;
       goScreen('assignment-plan');
     } else {
-      showXpPopup(5, '과제 수정 완료!');
+      showToast('과제가 수정되었습니다 ✅');
     }
     return;
   }
@@ -15585,6 +15585,10 @@ const _mentor = {
   viewerLoading: false, viewerTab: 'home', viewerScreen: 'main',
   _savedAuthUser: null, _savedAuthRole: null, _savedState: null,
   qaStats: {}, // 질문방 통계 (user_id => { total: {q, a}, subjects: [{q, a}...] })
+  // 탐구 소재 분석
+  researchResult: null, researchHistory: [], researchLoading: false,
+  researchHistoryLoaded: false, researchSubjects: [],
+  researchDateFrom: '', researchDateTo: '',
 };
 
 // 멘토 코드 지연 로딩
