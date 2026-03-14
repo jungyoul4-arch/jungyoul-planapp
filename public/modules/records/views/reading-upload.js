@@ -144,7 +144,7 @@ export function renderReadingUpload() {
               <div class="pu-note-actions">
                 <label class="pu-note-retake">
                   다시 촬영
-                  <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.readingHandleMain(this)">
+                  <input type="file" accept="image/*"style="display:none" onchange="_RM.readingHandleMain(this)">
                 </label>
                 <button class="pu-note-delete" onclick="_RM.readingRemoveMain()">삭제</button>
               </div>
@@ -154,7 +154,7 @@ export function renderReadingUpload() {
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#ec4899"></i>
               <span style="font-weight:600;color:#ec4899">책 표지 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장 촬영</span>
-              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.readingHandleMain(this)">
+              <input type="file" accept="image/*"style="display:none" onchange="_RM.readingHandleMain(this)">
             </label>
           `}
         </div>

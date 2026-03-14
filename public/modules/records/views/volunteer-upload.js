@@ -144,7 +144,7 @@ export function renderVolunteerUpload() {
               <div class="pu-note-actions">
                 <label class="pu-note-retake">
                   다시 촬영
-                  <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.volHandleMain(this)">
+                  <input type="file" accept="image/*"style="display:none" onchange="_RM.volHandleMain(this)">
                 </label>
                 <button class="pu-note-delete" onclick="_RM.volRemoveMain()">삭제</button>
               </div>
@@ -154,7 +154,7 @@ export function renderVolunteerUpload() {
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#06b6d4"></i>
               <span style="font-weight:600;color:#06b6d4">활동 사진 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장 촬영</span>
-              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.volHandleMain(this)">
+              <input type="file" accept="image/*"style="display:none" onchange="_RM.volHandleMain(this)">
             </label>
           `}
         </div>

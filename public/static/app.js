@@ -5202,7 +5202,7 @@ function renderAhaReport() {
           </div>
 
           <!-- 숨겨진 파일 입력 -->
-          <input type="file" id="aha-camera-input" accept="image/*" capture="environment" style="display:none" onchange="ahaHandlePhotos(this)" />
+          <input type="file" id="aha-camera-input" accept="image/*" style="display:none" onchange="ahaHandlePhotos(this)" />
           <input type="file" id="aha-photo-input" accept="image/*" multiple style="display:none" onchange="ahaHandlePhotos(this)" />
 
           <div id="aha-photo-error" style="display:none;padding:10px;background:rgba(214,48,49,0.1);border:1px solid rgba(214,48,49,0.3);border-radius:8px;font-size:12px;color:var(--danger);margin-bottom:12px;text-align:center"></div>
@@ -7031,7 +7031,7 @@ function renderExamResultInput() {
                       <label style="width:48px;height:48px;border-radius:8px;border:2px dashed var(--border-color);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-size:10px;color:var(--text-muted);gap:2px;transition:all 0.2s" onmouseover="this.style.borderColor='var(--primary-light)'" onmouseout="this.style.borderColor='var(--border-color)'">
                         <i class="fas fa-camera" style="font-size:14px"></i>
                         <span>촬영</span>
-                        <input type="file" accept="image/*" capture="environment" style="display:none" onchange="handleWrongAnswerImage(event,${activeSubj},${wi})">
+                        <input type="file" accept="image/*" style="display:none" onchange="handleWrongAnswerImage(event,${activeSubj},${wi})">
                       </label>
                     </div>
                   </div>
@@ -10221,7 +10221,7 @@ function renderRecordQuestion() {
               <span class="q-attach-hint">문제지, 풀이 과정 등을 찍어 올려보세요</span>
             </div>
             <input type="file" id="q-image-upload" accept="image/*" multiple style="display:none" onchange="handleQuestionImageUpload(this)">
-            <input type="file" id="q-camera-capture" accept="image/*" capture="environment" style="display:none" onchange="handleQuestionImageUpload(this)">
+            <input type="file" id="q-camera-capture" accept="image/*" style="display:none" onchange="handleQuestionImageUpload(this)">
           </div>
           <div class="input-hint">💡 <strong>B단계 이상</strong> 판정 조건: ① 구체적 대상 ② 자기 생각 ③ 맥락 연결</div>
         </div>
@@ -16407,7 +16407,7 @@ function _renderTTPhoto() {
             : '<div style="color:var(--text-muted)"><i class="fas fa-image" style="font-size:48px;margin-bottom:12px;display:block"></i><p style="font-size:14px">시간표 사진을 선택해주세요</p></div>'
           }
         </div>
-        <input type="file" id="tt-file-input" accept="image/*" capture="environment" style="display:none" onchange="ttHandleFileInput(this)">
+        <input type="file" id="tt-file-input" accept="image/*" style="display:none" onchange="ttHandleFileInput(this)">
         <div style="display:flex;gap:12px;width:100%;max-width:400px">
           <button class="btn-secondary" onclick="var i=document.getElementById('tt-file-input');if(i){i.removeAttribute('capture');i.click();}" style="flex:1">
             <i class="fas fa-camera" style="margin-right:6px"></i> 촬영

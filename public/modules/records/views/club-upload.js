@@ -145,7 +145,7 @@ export function renderClubUpload() {
               <div class="pu-note-actions">
                 <label class="pu-note-retake">
                   다시 촬영
-                  <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.clubHandleMain(this)">
+                  <input type="file" accept="image/*"style="display:none" onchange="_RM.clubHandleMain(this)">
                 </label>
                 <button class="pu-note-delete" onclick="_RM.clubRemoveMain()">삭제</button>
               </div>
@@ -155,7 +155,7 @@ export function renderClubUpload() {
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#6366f1"></i>
               <span style="font-weight:600;color:#6366f1">활동 사진 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장 촬영</span>
-              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.clubHandleMain(this)">
+              <input type="file" accept="image/*"style="display:none" onchange="_RM.clubHandleMain(this)">
             </label>
           `}
         </div>

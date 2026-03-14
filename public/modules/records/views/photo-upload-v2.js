@@ -234,7 +234,7 @@ export function renderPhotoUpload() {
               <div class="pu-note-actions">
                 <label class="pu-note-retake">
                   다시 촬영
-                  <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.handleNoteUpload(this)">
+                  <input type="file" accept="image/*"style="display:none" onchange="_RM.handleNoteUpload(this)">
                 </label>
                 <button class="pu-note-delete" onclick="_RM.removeNote()">✕ 삭제</button>
               </div>
@@ -244,7 +244,7 @@ export function renderPhotoUpload() {
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#7c6aef"></i>
               <span style="font-weight:600;color:#7c6aef">필기 노트 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장만 촬영</span>
-              <input type="file" accept="image/*" capture="environment" style="display:none" onchange="_RM.handleNoteUpload(this)">
+              <input type="file" accept="image/*"style="display:none" onchange="_RM.handleNoteUpload(this)">
             </label>
           `}
           <div class="pu-note-hint">※ MY CREDIT LOG 양식에 손으로 작성한 필기만 촬영해주세요</div>
