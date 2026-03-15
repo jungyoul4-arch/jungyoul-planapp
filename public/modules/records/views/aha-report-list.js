@@ -68,6 +68,15 @@ export function registerHandlers(RM) {
       d.student_name || state.studentName || ''
     );
   };
+  RM.deleteAhaReport = async (id) => {
+    if (!confirm('이 아하 리포트를 삭제할까요?\n삭제하면 복구할 수 없습니다.')) return;
+    const ok = await DB.deleteAhaReport(id);
+    if (ok) {
+      state._ahaDetail = null;
+      state._viewingAhaId = null;
+      navigate('aha-list');
+    }
+  };
 }
 
 export function renderAhaList() {
@@ -401,6 +410,9 @@ export function renderAhaDetail() {
         <div class="cl-action-bar">
           <button class="cl-pdf-btn" onclick="_RM.downloadAhaDetailPDF()">
             <i class="fas fa-file-pdf" style="margin-right:6px"></i>PDF로 저장
+          </button>
+          <button class="cl-pdf-btn" style="color:#FF6B6B;border-color:rgba(255,107,107,0.3)" onclick="_RM.deleteAhaReport(${detail.id})">
+            <i class="fas fa-trash-alt" style="margin-right:6px"></i>삭제
           </button>
         </div>
       </div>

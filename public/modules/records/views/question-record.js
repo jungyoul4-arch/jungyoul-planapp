@@ -275,6 +275,7 @@ async function _loadQuestionDetail(id) {
   }
 }
 
+const _resolvedXpGiven = new Set();
 async function toggleResolved(id, currentStatus) {
   const newResolved = currentStatus !== '답변완료';
   if (!newResolved) {
@@ -282,7 +283,8 @@ async function toggleResolved(id, currentStatus) {
     if (!confirm('해결을 취소하시겠습니까?')) return;
   }
   await DB.resolveMyQuestion(id, newResolved);
-  if (newResolved) {
+  if (newResolved && !_resolvedXpGiven.has(id)) {
+    _resolvedXpGiven.add(id);
     showXpPopup(5, '질문 해결! +5 XP');
     events.emit(EVENTS.XP_EARNED, { amount: 5, label: '질문 해결' });
   }
@@ -1092,6 +1094,11 @@ function _renderCardList(questions) {
 
 /* ── 메인 렌더 ── */
 export function renderRecordQuestion() {
+  // 이미 해결된 질문은 XP 중복 지급 방지를 위해 Set에 등록
+  (state._myQuestions || []).forEach(q => {
+    if (q.status === '답변완료') _resolvedXpGiven.add(q.id);
+  });
+
   // 질문 입력 화면
   if (state._qbInputMode) {
     return _renderQuestionInput();

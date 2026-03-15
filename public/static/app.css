@@ -958,7 +958,8 @@ body {
 }
 .form-input::placeholder { color:var(--text-muted); opacity:0.5; }
 /* date input 다크테마 */
-.form-input[type="date"] {
+.form-input[type="date"],
+input[type="date"] {
   color-scheme:dark;
 }
 

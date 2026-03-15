@@ -74,7 +74,7 @@ npm run cf-typegen
 - **대상**: ~150명 학생, ~10명 멘토, 다중 반 지원
 - **운영**: 정율사관학원 (부천-인천 지역 42개 고등학교 대상)
 - **핵심 철학**: 교학상장(敎學相長) — 학생이 서로 가르치며 함께 성장
-- **Production**: https://credit-planner-v8.pages.dev
+- **Production**: https://credit-planner-v8-359.pages.dev
 
 ---
 
@@ -270,7 +270,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 - [2026-03-04] ai-credit-log.js 다중 렌더러 export: `renderAiLoading` + `renderAiResult` 2개 렌더러를 export하여 SCREEN_MAP에 `ai-loading`과 `ai-result` 2개 화면 등록. assignment-list.js와 동일 패턴
 - [2026-03-04] `_classPhotos`와 `_classPhotoTags` 동기화: 사진 추가/삭제 시 두 배열을 반드시 동시에 조작해야 함. `_classPhotos.push()` 시 `_classPhotoTags.push('note')`, `splice(idx,1)` 시 양쪽 모두 실행. class-record.js, class-edit.js, photo-upload-v2.js 모두 해당
 - [2026-03-04] DB record의 `ai_credit_log` 타입 주의: DB에서 TEXT로 저장되어 로드 시 string일 수 있고, api.js의 `loadClassRecords`에서 `tryParseJSON`으로 파싱 후 object가 됨. 그러나 뷰에서 안전하게 `typeof === 'string'` 체크 + `tryParseJSON` 폴백 권장
-- [2026-03-06] Gemini 모델 버전 주의: OCR 전담 모델은 `gemini-3.1-flash` 사용. 기존 `callGeminiWithFallback`은 `gemini-2.0-flash`, `callGeminiMultiImage` 및 아하 리포트(analyze-v2, feedback)는 `gemini-3.1-flash` 사용. `gemini-2.5-flash`는 더 이상 사용하지 않음
+- [2026-03-14] Gemini 모델 버전 주의: 프로젝트 전체에서 `gemini-3-flash-preview` 사용 (GEMINI_MODEL 상수 + 직접 URL 7곳). `gemini-3.0-flash`는 404 반환하므로 사용 금지. `gemini-2.5-flash`도 작동하지만 OCR 품질이 낮으므로 `gemini-3-flash-preview` 유지. 모델명 변경 시 반드시 API로 테스트 후 변경할 것
 - [2026-03-04] AI 응답 필드 다형성: `assignment` 필드가 string/object/null 3가지 타입으로 올 수 있음. 백엔드에서 정규화하되, 프론트엔드에서도 `typeof` 분기 필수. `getAssignmentDisplayText()` 같은 공유 헬퍼로 통일 처리 권장
 - [2026-03-04] 공유 로직 추출 시 import 정리: 인라인 로직을 유틸로 추출하면 기존 파일의 import가 불필요해짐. 추출 후 반드시 소비 파일의 미사용 import 확인 및 제거
 - [2026-03-04] AI 프롬프트에서 날짜 기반 계산 지시: AI에게 상대 날짜("다음 주 월요일")를 YYYY-MM-DD로 변환하라고 지시할 때, 반드시 fullPrompt에 오늘 날짜를 함께 전달해야 함. 현재 `날짜: ${date}` 형태로 이미 포함됨
@@ -289,10 +289,10 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-05] 개발 서버 실행: `wrangler pages dev public`이 아니라 `npm run dev` (Vite)가 올바른 로컬 개발 서버. Vite가 src/index.tsx를 Functions로 처리함. `wrangler pages dev public`은 Functions shimming 없이 정적 파일만 서빙하므로 API 404 발생
 - [2026-03-05] 기록 모듈 테스트: 메인 앱(`/`)이 아니라 `/modules/records/dev.html`에서 기록 모듈 독립 테스트. 로그인 없이 바로 모듈 확인 가능. 경로를 `/dev.html`로 착각하지 말 것
-- [2026-03-06] Gemini 모델명 혼동 주의:
-  정확한 모델명: gemini-3.0-flash
-  잘못된 모델명: gemini-3.1-flash, gemini-3.2-flash, gemini-2.5-flash
-  → 3.0 이외 버전은 404 오류 발생. 절대 임의로 버전 변경 금지.
+- [2026-03-14] Gemini 모델명 확인 (API 테스트 기준):
+  작동하는 모델명: `gemini-3-flash-preview` (프로젝트 기본), `gemini-2.5-flash`, `gemini-2.0-flash`
+  404 반환하는 모델명: `gemini-3.0-flash`, `gemini-3.1-flash`, `gemini-3.2-flash`
+  → 모델명 변경 전 반드시 `curl`로 API 테스트 필수. Google이 모델명을 변경할 수 있으므로 CLAUDE.md 기록보다 실제 API 응답을 신뢰할 것.
 ### 배포/설정 관련
 <!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-04] `.dev.vars` 키 범위: 로컬 개발 시 `.dev.vars`에 필요한 API 키가 모두 있는지 확인. `callGeminiMultiImage`는 `GEMINI_API_KEY` + `OPENAI_API_KEY` 둘 다 필요 (Gemini 실패 시 OpenAI 폴백). 프로덕션은 `wrangler pages secret put`으로 별도 설정

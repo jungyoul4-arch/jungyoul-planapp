@@ -22,7 +22,7 @@
   --skill-card-blur: 20px;
 
   /* Spacing */
-  --skill-grid-gap: 14px;
+  --skill-grid-gap: 16px;
   --skill-card-padding: 18px;
   --skill-card-radius: 16px;
 
@@ -40,7 +40,7 @@
   flex-direction: column;
   gap: var(--skill-grid-gap);
   padding: 0;
-  margin: 0 0 16px;
+  margin: 8px 0 16px;
 }
 
 /* ==================== Card Base (Glassmorphism) ==================== */
@@ -170,17 +170,18 @@
 #archive-container-tablet .skill-card-grid {
   display: grid !important;
   grid-template-columns: repeat(3, 1fr) !important;
-  gap: var(--skill-grid-gap) !important;
+  gap: 16px !important;
   width: 100% !important;
   max-width: none !important;
   margin: 0 !important;
-  padding: 0 16px !important;
+  padding: 4px 16px 16px !important;
 }
 #archive-container-tablet .skill-card {
   flex-direction: column !important;
   text-align: center !important;
-  padding: 28px 20px !important;
+  padding: 20px 16px !important;
   gap: 0 !important;
+  min-height: 160px !important;
 }
 #archive-container-tablet .skill-icon-wrap {
   width: 64px !important;
@@ -210,6 +211,24 @@
   margin: 0 auto !important;
 }
 
+/* ==================== Career Banner — Tablet: keep horizontal & compact ==================== */
+#archive-container-tablet .skill-card-career {
+  flex-direction: row !important;
+  text-align: left !important;
+  padding: 14px 20px !important;
+  min-height: auto !important;
+  gap: 14px !important;
+  margin-bottom: 16px !important;
+}
+#archive-container-tablet .skill-card-career .skill-icon-wrap {
+  margin: 0 !important;
+  width: 48px !important;
+  height: 48px !important;
+}
+#archive-container-tablet .skill-card-career .skill-card-info {
+  margin-bottom: 0 !important;
+}
+
 /* ==================== Wide Card (col-span-2) — Tablet Only ==================== */
 #archive-container-tablet .skill-card-wide {
   grid-column: span 2 !important;
@@ -217,7 +236,8 @@
   text-align: left !important;
   align-items: center !important;
   gap: 16px !important;
-  padding: 20px 24px !important;
+  padding: 16px 24px !important;
+  min-height: auto !important;
 }
 #archive-container-tablet .skill-card-wide .skill-icon-wrap {
   margin: 0 !important;

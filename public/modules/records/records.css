@@ -2635,7 +2635,7 @@
   display: flex; flex-direction: column; height: 100%;
 }
 .archive-module .qbi-body {
-  flex: 1; overflow-y: auto; padding: 16px;
+  flex: 1; overflow-y: auto; padding: 16px; padding-bottom: 100px;
   display: flex; flex-direction: column; gap: 16px;
 }
 .archive-module .qbi-textarea {

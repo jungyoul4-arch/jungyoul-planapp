@@ -5793,7 +5793,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
       console.error('Gemini Vision failed, trying OpenAI:', geminiErr.message)
 
       // 2차: OpenAI GPT-4o Vision 폴백
-      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5811,7 +5811,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
           temperature: 0.1,
           response_format: { type: 'json_object' }
         })
-      })
+      }, 55000)
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
         console.error('OpenAI Vision error:', errText)
@@ -6703,21 +6703,46 @@ app.post('/api/ai/activity-analyze', async (c) => {
       console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
       aiSource = 'openai'
       const openaiKey = c.env.OPENAI_API_KEY
-      if (!openaiKey) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
+      if (!openaiKey) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
 
       const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
       for (const img of imageDataList) {
         openaiContent.push({ type: 'image_url', image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' } })
       }
 
-      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: openaiContent }], temperature: 0.2, response_format: { type: 'json_object' } })
-      })
-      if (!openaiRes.ok) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 502)
-      const openaiData: any = await openaiRes.json()
-      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+      }, 55000)
+      if (!openaiRes.ok) {
+        // Step 3: Claude Vision 폴백
+        const anthropicKey = c.env.ANTHROPIC_API_KEY
+        if (anthropicKey) {
+          console.log('Activity AI: OpenAI fail, Claude fallback')
+          aiSource = 'claude'
+          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+          for (const img of imageDataList) {
+            claudeContent.push({ type: 'image', source: { type: 'base64', media_type: img.mime_type, data: img.data } })
+          }
+          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
+          }, 55000)
+          if (claudeRes.ok) {
+            const claudeData: any = await claudeRes.json()
+            rawText = claudeData.content?.[0]?.text || '{}'
+          } else {
+            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
+          }
+        } else {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
+        }
+      } else {
+        const openaiData: any = await openaiRes.json()
+        rawText = openaiData.choices?.[0]?.message?.content || '{}'
+      }
     }
 
     let result: any
@@ -6836,7 +6861,7 @@ OCR 규칙:
 
       const openaiKey = c.env.OPENAI_API_KEY
       if (!openaiKey) {
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 502)
+        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
       }
 
       const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
@@ -6847,7 +6872,7 @@ OCR 규칙:
         })
       }
 
-      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${openaiKey}`,
@@ -6859,16 +6884,54 @@ OCR 규칙:
           temperature: 0.2,
           response_format: { type: 'json_object' }
         })
-      })
+      }, 55000)
 
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
         console.log('OpenAI fallback error (v2):', openaiRes.status, errText)
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 502)
-      }
 
-      const openaiData: any = await openaiRes.json()
-      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+        // Step 3: Claude Vision 폴백 (Gemini+OpenAI 모두 지역 차단 시)
+        const anthropicKey = c.env.ANTHROPIC_API_KEY
+        if (anthropicKey) {
+          console.log('OpenAI 실패, Claude Vision으로 폴백')
+          aiSource = 'claude'
+          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+          for (const img of imageDataList) {
+            claudeContent.push({
+              type: 'image',
+              source: { type: 'base64', media_type: img.mime_type, data: img.data }
+            })
+          }
+          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'x-api-key': anthropicKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-6',
+              max_tokens: 4096,
+              temperature: 0.2,
+              messages: [{ role: 'user', content: claudeContent }],
+            })
+          }, 55000)
+
+          if (claudeRes.ok) {
+            const claudeData: any = await claudeRes.json()
+            rawText = claudeData.content?.[0]?.text || '{}'
+          } else {
+            const claudeErr = await claudeRes.text()
+            console.log('Claude fallback error (v2):', claudeRes.status, claudeErr)
+            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
+          }
+        } else {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 500)
+        }
+      } else {
+        const openaiData: any = await openaiRes.json()
+        rawText = openaiData.choices?.[0]?.message?.content || '{}'
+      }
     }
 
     let result: any
@@ -6902,141 +6965,184 @@ OCR 규칙:
   }
 })
 
-// ==================== 아하 리포트 v2 피드백 ====================
+// ==================== 아하 리포트 v2 피드백 (Claude Sonnet 4.6) ====================
 app.post('/api/aha-report/feedback', async (c) => {
   try {
-    const geminiKey = c.env.GEMINI_API_KEY
-    const { sa, pa, da, poa, ppa, subject } = await c.req.json<{
+    const anthropicKey = c.env.ANTHROPIC_API_KEY
+    if (!anthropicKey) return c.json({ error: 'Anthropic API 키가 설정되지 않았습니다.' }, 500)
+
+    const { sa, pa, da, poa, ppa, subject, studentName } = await c.req.json<{
       sa: string, pa: string[], da: string, poa: string,
-      ppa: { change?: string, lacking?: string }, subject?: string
+      ppa: { change?: string, lacking?: string }, subject?: string, studentName?: string
     }>()
 
-    const paJoined = Array.isArray(pa) ? pa.join(', ') : String(pa || '')
+    const paJoined = Array.isArray(pa) ? pa.join('\n- ') : String(pa || '')
 
-    const promptText = `당신은 고교학점제 탐구보고서 전문가입니다.
+    const systemPrompt = `당신은 **고등학교 탐구보고서 코치이자 고교학점제 평가 전문가**입니다.
+역할은 학생이 AHA 탐구보고서에 작성한 내용을 읽고,
+어떤 과목이든지 적용 가능한 **탐구 역량(질문–과정–근거–성찰)** 기준으로
+구체적이고 따뜻한 피드백을 제공하는 것입니다.
 
-학생의 아하 리포트를 평가하고 피드백을 작성해주세요.
+#### 1. 당신의 기본 역할
 
-[입력 데이터]
-과목: ${subject || '미입력'}
-SA (문제상황): ${sa || ''}
-PA (탐구질문): ${paJoined}
-DA (탐구과정 & 결론): ${da || ''}
-POA (아하포인트): ${poa || ''}
-PPA (성찰): ${JSON.stringify(ppa || {})}
+- 특정 과목의 세부 내용 전문가가 아니라, **탐구 방법·사고력·글쓰기 구조·고교학점제 평가 관점**의 전문가입니다.
+- 보고서를 **정답/오답 채점**하려고 하지 말고, 학생이 보여준 **생각의 과정과 성장 가능성**을 읽어내는 데 초점을 둡니다.
+- 학생이 위축되지 않도록, 항상 **강점을 먼저 구체적으로 칭찬**하고, 이후에 **한 단계 더 성장할 수 있는 개선 방향**을 제안합니다.
+- 피드백은 학교 수행평가·세특·생기부에 활용해도 어색하지 않을 수준의 **논리성과 품위**를 유지하되, 말투는 사람 선생님처럼 **자연스럽고 따뜻하게** 유지합니다.
 
-[피드백 작성 규칙]
-- 따뜻하고 격려하는 톤, 반드시 존댓말 사용
-- 300~500자 내외
-- 각 섹션에 대한 간단한 평가와 개선 조언 또는 칭찬
-- 심화 탐구 방향 제안
-- 고교학점제에서 이 탐구가 갖는 의미
-- 학교 세부능력특기사항과 연결 팁
+#### 2. 평가·피드백의 네 가지 핵심 기준
 
-반드시 아래 JSON 형식으로만 응답:
+피드백을 줄 때, 반드시 아래 네 영역을 기준으로 생각하고, 각 영역에 대해 코멘트를 해 주세요.
+모든 과목(국어·영어·수학·과학·사회·예체능·융합 등)에 공통으로 적용합니다.
+
+1) **문제 인식·질문 설정**
+- 수업·과제·시험·생활 경험 등 구체적인 문제 상황이 보고서에 드러나는가?
+- 단순한 주제 나열이 아니라, 학생이 스스로 던진 명확한 질문·목표가 적혀 있는가?
+- "왜 이 주제를 택했는지, 무엇이 궁금했는지"가 읽는 사람에게 분명하게 전달되는가?
+
+2) **자료 조사·탐구 과정**
+- 어떤 자료와 활동을 활용했는지 출처와 방식이 드러나는가?
+- 자료와 활동을 단순 나열하지 않고, 비교, 분류, 패턴 찾기, 가설 설정·수정, 모형 만들기 등 생각의 과정이 보이는가?
+
+3) **근거 기반 분석·결론**
+- 학생의 주장·결론이 수집한 근거와 논리에 의해 뒷받침되는가?
+- 단순 정리·요약을 넘어서 자기만의 해석·패턴·원인 분석을 시도했는가?
+
+4) **성찰·확장(공부법·생활·진로 연결)**
+- 탐구 전과 후를 비교했을 때, 학생의 생각·태도·공부 방법이 어떻게 달라졌는지 서술되어 있는가?
+- 이번 탐구 경험을 앞으로의 학습 전략, 과목 선택, 동아리 활동, 진로 탐색과 연결해 보려는 시도가 있는가?
+
+#### 3. 말투와 태도
+
+- 학생 이름 정보가 있으면, **이름을 불러 주며 친근하게** 시작합니다.
+  예: "성현아, 이번 AHA 탐구보고서 정말 재미있게 잘 읽었어."
+- 항상 **잘한 점부터**, 그리고 **구체적인 근거**를 들어 칭찬합니다.
+  학생이 실제로 쓴 문장·시도·자료를 언급하며 "이 부분을 이렇게 쓴 건 정말 좋았다"라고 설명합니다.
+- 개선이 필요한 부분은 **비판이 아니라 제안**의 형식으로 말합니다.
+- 학생의 수준을 가정하지 말고, 지금 보고서에서 보이는 행동과 표현만을 근거로 판단합니다.
+- 과목 특수 용어를 과하게 사용하기보다, 탐구 방법·글쓰기 측면의 언어를 중심으로 설명합니다.
+
+#### 4. 피드백 구성 형식
+
+1) **도입 + 전체 인상 한 줄** — 학생 이름을 부르며, 보고서를 읽고 느낀 전체 인상을 짧게 말합니다.
+2) **잘한 점 2–4가지** — 네 가지 핵심 기준 중에서 특히 잘한 부분을 골라, 학생 글의 내용을 인용·요약하며 칭찬합니다.
+3) **더 깊은 탐구로 업그레이드할 포인트 2–4가지** — 구체적인 행동 제안으로 작성합니다. (질문 다듬기, 자료 확장, 분석 기준·표 만들기, 근거-결론 연결 강화, 성찰·다음 단계 쓰기 등)
+4) **마무리 응원 한 단락** — 잘하고 있는 부분을 다시 짚고, 다음 AHA 탐구에서 도전해 볼 구체적인 다음 목표를 제안합니다.
+
+#### 5. 세부 주의사항
+
+- 학생을 평가할 때 과목 점수·성적 수준을 추측하거나 언급하지 않습니다.
+- 내용이 다소 부정확하더라도, 먼저 탐구하려는 시도와 사고 과정을 인정한 뒤, 수정 방향과 참고할 수 있는 행동을 제안합니다.
+- 목표는 "학생 보고서를 더 깊이 있는 탐구 경험으로 성장시키는 것"입니다.
+
+#### 6. 출력 형식 규칙
+- 반드시 순수 텍스트(plain text)로만 작성. 마크다운 문법 절대 금지 (##, **, *, ---, \`\`\`, > 등 사용 금지)
+- 이모지, 이모티콘, 특수 장식 문자 절대 사용 금지 (😊, ✅, 🚀, 💬, 🔋 등 모두 불가)
+- 구조는 줄바꿈과 번호/들여쓰기로만 표현
+- 섹션 구분은 빈 줄 하나로만 처리 (--- 금지)
+
+반드시 아래 JSON 형식으로만 응답하세요:
 {
-  "feedback": "피드백 전체 텍스트"
+  "feedback": "피드백 전체 텍스트 (순수 텍스트만, 마크다운/이모지 절대 금지)"
 }`
 
-    let rawText = '{}'
-    let aiSource = 'gemini'
+    const userPrompt = `[학생 AHA 탐구보고서 데이터]
+학생 이름: ${studentName || '(미입력)'}
+과목: ${subject || '미입력'}
 
-    // Step 1: Gemini 시도
-    if (geminiKey) {
+SA (문제상황):
+${sa || '(비어있음)'}
+
+PA (탐구질문):
+- ${paJoined || '(비어있음)'}
+
+DA (탐구과정 & 결론):
+${da || '(비어있음)'}
+
+POA (아하포인트):
+${poa || '(비어있음)'}
+
+PPA (성찰):
+- 전후 변화: ${ppa?.change || '(비어있음)'}
+- 부족했던 점: ${ppa?.lacking || '(비어있음)'}
+
+위 보고서 내용을 바탕으로 피드백을 작성해주세요. 반드시 JSON 형식으로만 응답하세요.`
+
+    let rawText = '{}'
+    let aiSource = 'claude'
+
+    // Step 1: Claude Sonnet 4.6 (기본)
+    try {
+      const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4096,
+          temperature: 0.5,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        })
+      }, 55000)
+
+      if (claudeRes.ok) {
+        const data: any = await claudeRes.json()
+        rawText = data.content?.[0]?.text || '{}'
+      } else {
+        const errText = await claudeRes.text()
+        console.log('Claude feedback error:', claudeRes.status, errText)
+        throw new Error(`Claude ${claudeRes.status}`)
+      }
+    } catch (claudeErr) {
+      // Step 2: Gemini 폴백
+      console.log('Claude feedback 실패, Gemini로 폴백:', claudeErr)
+      aiSource = 'gemini'
+      const geminiKey = c.env.GEMINI_API_KEY
+      if (!geminiKey) {
+        return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
+      }
+
       try {
-        const geminiRes = await fetch(
+        const geminiRes = await fetchWithTimeout(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              contents: [{ parts: [{ text: promptText }] }],
-              generationConfig: {
-                temperature: 0.4,
-                responseMimeType: 'application/json'
-              }
+              contents: [{ parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }],
+              generationConfig: { temperature: 0.5, responseMimeType: 'application/json' }
             })
-          }
+          }, 55000
         )
-
         if (geminiRes.ok) {
           const data: any = await geminiRes.json()
           rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
         } else {
-          throw new Error(`Gemini ${geminiRes.status}`)
+          return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
       } catch (geminiErr) {
-        console.log('Gemini feedback 실패, OpenAI로 폴백:', geminiErr)
-        aiSource = 'openai'
-
-        const openaiKey = c.env.OPENAI_API_KEY
-        if (!openaiKey) {
-          return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 502)
-        }
-
-        const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openaiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o',
-            messages: [{ role: 'user', content: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }],
-            temperature: 0.4,
-            response_format: { type: 'json_object' }
-          })
-        })
-
-        if (!openaiRes.ok) {
-          const errText = await openaiRes.text()
-          console.log('OpenAI feedback fallback error:', openaiRes.status, errText)
-          return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 502)
-        }
-
-        const openaiData: any = await openaiRes.json()
-        rawText = openaiData.choices?.[0]?.message?.content || '{}'
+        console.log('Gemini feedback fallback error:', geminiErr)
+        return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
       }
-    } else {
-      // No Gemini key, try OpenAI directly
-      aiSource = 'openai'
-      const openaiKey = c.env.OPENAI_API_KEY
-      if (!openaiKey) {
-        return c.json({ error: 'API 키가 설정되지 않았습니다.' }, 500)
-      }
-
-      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openaiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }],
-          temperature: 0.4,
-          response_format: { type: 'json_object' }
-        })
-      })
-
-      if (!openaiRes.ok) {
-        return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.' }, 502)
-      }
-
-      const openaiData: any = await openaiRes.json()
-      rawText = openaiData.choices?.[0]?.message?.content || '{}'
     }
 
     let result: any
     try {
-      result = JSON.parse(rawText)
+      // Claude가 JSON 코드블록으로 감싸서 반환할 수 있으므로 정리
+      const cleaned = rawText.replace(/^```json\s*\n?/, '').replace(/\n?```\s*$/, '').trim()
+      result = JSON.parse(cleaned)
     } catch {
       return c.json({ error: '피드백 결과를 파싱할 수 없습니다.', raw: rawText }, 500)
     }
 
     return c.json({
       success: true,
-      feedback: result.feedback || ''
+      feedback: result.feedback || '',
+      ai_source: aiSource
     })
   } catch (e: any) {
     console.log('AHA Report feedback error:', e)
@@ -7162,7 +7268,7 @@ OCR 규칙:
 
       const openaiKey = c.env.OPENAI_API_KEY
       if (!openaiKey) {
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 502)
+        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
       }
 
       const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
@@ -7173,7 +7279,7 @@ OCR 규칙:
         })
       }
 
-      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${openaiKey}`,
@@ -7185,16 +7291,39 @@ OCR 규칙:
           temperature: 0.2,
           response_format: { type: 'json_object' }
         })
-      })
+      }, 55000)
 
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
         console.log('OpenAI fallback error:', openaiRes.status, errText)
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 502)
-      }
 
-      const openaiData: any = await openaiRes.json()
-      rawText = openaiData.choices?.[0]?.message?.content || '{}'
+        // Step 3: Claude Vision 폴백
+        const anthropicKey = c.env.ANTHROPIC_API_KEY
+        if (anthropicKey) {
+          console.log('OpenAI 실패, Claude Vision으로 폴백')
+          aiSource = 'claude'
+          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
+          for (const img of imageDataList) {
+            claudeContent.push({ type: 'image', source: { type: 'base64', media_type: img.mime_type, data: img.data } })
+          }
+          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
+          }, 55000)
+          if (claudeRes.ok) {
+            const claudeData: any = await claudeRes.json()
+            rawText = claudeData.content?.[0]?.text || '{}'
+          } else {
+            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
+          }
+        } else {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 500)
+        }
+      } else {
+        const openaiData: any = await openaiRes.json()
+        rawText = openaiData.choices?.[0]?.message?.content || '{}'
+      }
     }
 
     let result: any
@@ -7382,6 +7511,41 @@ app.get('/api/aha-report/:reportId', async (c) => {
     return c.json({ report })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
+  }
+})
+
+// ==================== 아하 리포트 삭제 ====================
+app.delete('/api/aha-report/:reportId', async (c) => {
+  try {
+    const reportId = Number(c.req.param('reportId'))
+    const studentId = Number(c.req.query('studentId'))
+    if (!reportId || !studentId) return c.json({ error: '필수 정보가 누락되었습니다.' }, 400)
+
+    // 본인 리포트인지 확인
+    const report: any = await c.env.DB.prepare(
+      'SELECT id, student_id, photos FROM aha_reports WHERE id = ?'
+    ).bind(reportId).first()
+
+    if (!report) return c.json({ error: '리포트를 찾을 수 없습니다.' }, 404)
+    if (report.student_id !== studentId) return c.json({ error: '본인의 리포트만 삭제할 수 있습니다.' }, 403)
+
+    // R2 사진 삭제
+    if (c.env.R2) {
+      try {
+        const photos: string[] = JSON.parse(report.photos || '[]')
+        for (const p of photos) {
+          if (p.startsWith('r2:')) {
+            try { await c.env.R2.delete(p.slice(3)) } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    await c.env.DB.prepare('DELETE FROM aha_reports WHERE id = ?').bind(reportId).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    console.log('AHA Report delete error:', e)
+    return c.json({ error: '삭제에 실패했어요.' }, 500)
   }
 })
 

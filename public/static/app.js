@@ -3,6 +3,9 @@
    학생 앱 UI 집중 리뉴얼
    ============================== */
 
+// AI API는 Pages 직접 URL로 호출 (커스텀 도메인 HKG 엣지에서 AI API 지역 차단 우회)
+const AI_API_BASE = 'https://credit-planner-v8-359.pages.dev';
+
 // ==================== XSS 방지 헬퍼 ====================
 function escapeHtml(str) {
   if (!str) return '';
@@ -5363,7 +5366,7 @@ async function ahaSubmit() {
   renderScreen();
 
   try {
-    const res = await fetch('/api/aha-report/analyze', {
+    const res = await fetch(`${AI_API_BASE}/api/aha-report/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5461,7 +5464,7 @@ async function ahaCroquetAutoGive() {
   if (aha.croquetGiven) return;
 
   try {
-    const res = await fetch('/api/aha-report/give-croquet', {
+    const res = await fetch(`${AI_API_BASE}/api/aha-report/give-croquet`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -10541,7 +10544,7 @@ function analyzeQuestion() {
   state._selectedSubject = subject; // 사용자 선택 과목 저장
   renderScreen();
   
-  fetch('/api/analyze', {
+  fetch(`${AI_API_BASE}/api/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question: questionText, subject, axis, studentId: state.studentId })
@@ -10579,7 +10582,7 @@ function analyzeWithImage(questionText, subject, axis) {
   const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
   
   // Step 1: Gemini 이미지 분석
-  fetch('/api/image-analyze', {
+  fetch(`${AI_API_BASE}/api/image-analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imageBase64: firstImage, mimeType, subject })
@@ -10593,7 +10596,7 @@ function analyzeWithImage(questionText, subject, axis) {
       (imageResult.analysis ? `\n[이미지 문제 분석: ${imageResult.analysis}]` : '');
     
     // 사용자가 선택한 과목을 항상 우선 사용 (이미지 분석 결과로 덮어쓰지 않음)
-    return fetch('/api/analyze', {
+    return fetch(`${AI_API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: enrichedQuestion, subject: subject, axis, studentId: state.studentId })
@@ -10636,7 +10639,7 @@ function sendSocratesMessage() {
   // API에 보낼 때 _hidden 메시지도 포함 (대화 맥락 유지)
   const apiMessages = state._socratesMessages.map(m => ({ role: m.role, content: m.content }));
   
-  fetch('/api/coaching', {
+  fetch(`${AI_API_BASE}/api/coaching`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -10748,7 +10751,7 @@ function submitChallenge() {
   state._challengeLoading = true;
   renderScreen();
 
-  fetch('/api/analyze', {
+  fetch(`${AI_API_BASE}/api/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question: text, subject, axis, studentId: state.studentId })
@@ -10784,7 +10787,7 @@ function startSocrates() {
   state._socratesMessages = [{ role: 'user', content: initMsg }];
   renderScreen();
 
-  fetch('/api/coaching', {
+  fetch(`${AI_API_BASE}/api/coaching`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

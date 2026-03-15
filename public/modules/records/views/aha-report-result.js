@@ -122,6 +122,7 @@ async function requestFeedback() {
       poa: r.poa || '',
       ppa: r.ppa || {},
       subject: state._ahaSubject || '',
+      studentName: state.studentName || '',
     });
     state._ahaFeedback = feedback;
   } catch (e) {
@@ -132,9 +133,15 @@ async function requestFeedback() {
   navigate(state.currentScreen, { replace: true });
 }
 
+let _ahaSaving = false;
+
 async function saveReport() {
   const r = state._ahaResult;
   if (!r) return;
+
+  // 중복 저장 방지
+  if (_ahaSaving) return;
+  _ahaSaving = true;
 
   const subject = state._ahaSubject || r.subject_detected || '';
   const source = state._ahaSource || '';
@@ -142,61 +149,71 @@ async function saveReport() {
   const photos = state._ahaPhotos || [];
   const photoTags = state._ahaPhotoTags || [];
 
-  const reportId = await DB.saveAhaReport({
-    subject,
-    source,
-    date,
-    photos,
-    photo_tags: JSON.stringify(photoTags),
-    section_sa: r.sa || '',
-    section_pa: JSON.stringify(r.pa || []),
-    section_da: r.da || '',
-    section_poa: r.poa || '',
-    section_ppa: JSON.stringify(r.ppa || {}),
-    ai_feedback: state._ahaFeedback || '',
-    ai_source: r.ai_source || 'gemini',
-    subject_detected: r.subject_detected || '',
-    student_name: r.student_name || '',
-  });
-
-  // PA 질문 → 나의 질문함 자동 등록
-  const paQuestions = r.pa || [];
-  if (paQuestions.length > 0) {
-    for (const q of paQuestions) {
-      if (!q || q.trim().length < 2) continue;
-      await DB.saveMyQuestion({
-        subject,
-        source: 'aha_report',
-        title: q,
-        date,
-        skipXp: true,
-      });
-    }
-  }
-
-  // 크로켓 포인트 지급
   try {
-    await fetch('/api/aha-report/give-croquet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId: state.studentId, subject }),
+    const reportId = await DB.saveAhaReport({
+      subject,
+      source,
+      date,
+      photos,
+      photo_tags: JSON.stringify(photoTags),
+      section_sa: r.sa || '',
+      section_pa: JSON.stringify(r.pa || []),
+      section_da: r.da || '',
+      section_poa: r.poa || '',
+      section_ppa: JSON.stringify(r.ppa || {}),
+      ai_feedback: state._ahaFeedback || '',
+      ai_source: r.ai_source || 'gemini',
+      subject_detected: r.subject_detected || '',
+      student_name: r.student_name || '',
     });
-  } catch (_) {}
 
-  // 리셋
-  state._ahaPhotos = [];
-  state._ahaPhotoTags = [];
-  state._ahaResult = null;
-  state._ahaEditing = false;
-  state._ahaFeedback = null;
-  state._ahaFeedbackLoading = false;
-  state._ahaSubject = '';
-  state._ahaSource = '';
-  state._ahaDate = '';
+    if (!reportId) {
+      _ahaSaving = false;
+      return;
+    }
 
-  showXpPopup(15, '아하 리포트 완료!');
-  events.emit(EVENTS.XP_EARNED, { amount: 15, label: '아하 리포트 완료!' });
-  navigate('aha-list');
+    // PA 질문 → 나의 질문함 자동 등록
+    const paQuestions = r.pa || [];
+    if (paQuestions.length > 0) {
+      for (const q of paQuestions) {
+        if (!q || q.trim().length < 2) continue;
+        await DB.saveMyQuestion({
+          subject,
+          source: 'aha_report',
+          title: q,
+          date,
+          skipXp: true,
+        });
+      }
+    }
+
+    // 크로켓 포인트 지급
+    try {
+      await fetch('/api/aha-report/give-croquet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: state.studentId, subject }),
+      });
+    } catch (_) {}
+
+    // 리셋
+    state._ahaPhotos = [];
+    state._ahaPhotoTags = [];
+    state._ahaResult = null;
+    state._ahaEditing = false;
+    state._ahaFeedback = null;
+    state._ahaFeedbackLoading = false;
+    state._ahaSubject = '';
+    state._ahaSource = '';
+    state._ahaDate = '';
+
+    showXpPopup(15, '아하 리포트 완료!');
+    events.emit(EVENTS.XP_EARNED, { amount: 15, label: '아하 리포트 완료!' });
+    navigate('aha-list');
+  } catch (e) {
+    console.error('saveReport error:', e);
+    _ahaSaving = false;
+  }
 }
 
 function downloadPDF() {
@@ -207,6 +224,15 @@ function downloadPDF() {
 
 function nl2br(text) {
   return (text || '').replace(/\n/g, '<br>');
+}
+
+function stripMarkdown(text) {
+  return (text || '')
+    .replace(/#{1,6}\s?/g, '')
+    .replace(/\*{1,3}(.*?)\*{1,3}/g, '$1')
+    .replace(/^---+$/gm, '')
+    .replace(/[^\p{L}\p{N}\p{P}\p{Z}\n]/gu, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // === 단계별 로딩 메시지 ===
@@ -412,7 +438,7 @@ export function renderAhaResult() {
                 <span class="aha-feedback-icon">🎯</span>
                 <span class="aha-feedback-title">아하 리포트 피드백</span>
               </div>
-              <div class="aha-feedback-body">${renderMath(nl2br(feedback))}</div>
+              <div class="aha-feedback-body">${renderMath(nl2br(stripMarkdown(feedback)))}</div>
             </div>
           ` : feedbackLoading ? `
             <div class="aha-feedback-loading">
@@ -436,8 +462,8 @@ export function renderAhaResult() {
           </button>
         </div>
 
-        <button class="btn-primary cl-save-btn" onclick="_RM.saveAhaReport()">
-          기록 완료 +15 XP ✨
+        <button class="btn-primary cl-save-btn" onclick="_RM.saveAhaReport()" ${_ahaSaving ? 'disabled style="opacity:0.5;pointer-events:none"' : ''}>
+          ${_ahaSaving ? '<i class="fas fa-spinner fa-spin" style="margin-right:8px"></i>저장 중...' : '기록 완료 +15 XP'}
         </button>
       </div>
     </div>

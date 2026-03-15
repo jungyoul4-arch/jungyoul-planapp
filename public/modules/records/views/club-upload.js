@@ -143,20 +143,20 @@ export function renderClubUpload() {
               <img class="pu-note-img" src="${mainPhoto}" alt="활동 사진">
               <div class="pu-note-done-badge">촬영 완료</div>
               <div class="pu-note-actions">
-                <div class="pu-note-retake" style="cursor:pointer" onclick="this.querySelector('input').click()">
+                <label class="pu-note-retake" style="cursor:pointer">
                   다시 촬영
-                  <input type="file" accept="image/*"style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.clubHandleMain(this)">
-                </div>
+                  <input type="file" accept="image/*" style="display:none" onchange="_RM.clubHandleMain(this)">
+                </label>
                 <button class="pu-note-delete" onclick="_RM.clubRemoveMain()">삭제</button>
               </div>
             </div>
           ` : `
-            <div class="pu-note-upload" style="cursor:pointer" onclick="this.querySelector('input').click()">
+            <label class="pu-note-upload" style="cursor:pointer">
               <i class="fas fa-camera" style="font-size:28px;margin-bottom:8px;color:#6366f1"></i>
               <span style="font-weight:600;color:#6366f1">활동 사진 촬영하기</span>
               <span style="font-size:11px;color:var(--text-muted);margin-top:4px">1장 촬영</span>
-              <input type="file" accept="image/*"style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.clubHandleMain(this)">
-            </div>
+              <input type="file" accept="image/*" style="display:none" onchange="_RM.clubHandleMain(this)">
+            </label>
           `}
         </div>
 
@@ -178,11 +178,11 @@ export function renderClubUpload() {
               </div>
             `).join('')}
             ${refCount < 14 ? `
-              <div class="pu-ref-add-tile" style="position:relative;cursor:pointer" onclick="this.querySelector('input').click()">
+              <label class="pu-ref-add-tile" style="cursor:pointer">
                 <i class="fas fa-plus" style="font-size:20px;margin-bottom:4px"></i>
                 <span>${refCount > 0 ? '추가' : '사진 추가'}</span>
-                <input type="file" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden" onchange="_RM.clubHandleRef(this)">
-              </div>
+                <input type="file" accept="image/*" multiple style="display:none" onchange="_RM.clubHandleRef(this)">
+              </label>
             ` : ''}
           </div>
           <div class="pu-ref-count">${refCount}/14장</div>

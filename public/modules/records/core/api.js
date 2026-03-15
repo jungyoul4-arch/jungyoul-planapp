@@ -6,6 +6,9 @@
 import { state } from './state.js';
 import { tryParseJSON } from './utils.js';
 
+// AI API는 Pages 직접 URL로 호출 (커스텀 도메인 HKG 엣지에서 AI API 지역 차단 우회)
+const AI_API_BASE = 'https://credit-planner-v8-359.pages.dev';
+
 function studentId() {
   return state.studentId;
 }
@@ -384,7 +387,7 @@ export const DB = {
   // 창체 활동 AI 분석
   async analyzeActivity(photos, activityType, comment) {
     try {
-      const res = await fetch('/api/ai/activity-analyze', {
+      const res = await fetch(`${AI_API_BASE}/api/ai/activity-analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ photos, activityType, comment: comment || '', studentId: studentId() })
@@ -787,7 +790,7 @@ export const DB = {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 90000);
     try {
-      const res = await fetch('/api/aha-report/analyze-v2', {
+      const res = await fetch(`${AI_API_BASE}/api/aha-report/analyze-v2`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ photos, subject, source, date, studentId: studentId() }),
@@ -809,10 +812,11 @@ export const DB = {
 
   async getAhaFeedback(sections) {
     try {
-      const res = await fetch('/api/aha-report/feedback', {
+      const { studentName, ...sectionData } = sections;
+      const res = await fetch(`${AI_API_BASE}/api/aha-report/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sections)
+        body: JSON.stringify({ ...sectionData, studentName: studentName || '' })
       });
       if (res.ok) {
         const data = await res.json();
@@ -864,6 +868,19 @@ export const DB = {
       }
     } catch (e) { console.error('getAhaReportDetail:', e); }
     return null;
+  },
+
+  async deleteAhaReport(id) {
+    const sid = studentId();
+    if (!sid || !id) return false;
+    try {
+      const res = await fetch(`/api/aha-report/${id}?studentId=${sid}`, { method: 'DELETE' });
+      if (res.ok) {
+        try { await this.loadAhaReports(); } catch (_) {}
+        return true;
+      }
+    } catch (e) { console.error('deleteAhaReport:', e); }
+    return false;
   },
 
   // === 전체 로드 ===

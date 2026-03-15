@@ -4,6 +4,15 @@
    ================================================================ */
 
 
+function stripMarkdown(text) {
+  return (text || '')
+    .replace(/#{1,6}\s?/g, '')
+    .replace(/\*{1,3}(.*?)\*{1,3}/g, '$1')
+    .replace(/^---+$/gm, '')
+    .replace(/[^\p{L}\p{N}\p{P}\p{Z}\n]/gu, '')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
 export function generateCreditLogPDF(creditLog, subject, date, studentName) {
   if (!creditLog) return;
 
@@ -670,7 +679,7 @@ body {
   ${feedback ? `
   <section class="feedback-sec">
     <div class="sec-label">아하 리포트 피드백</div>
-    <div class="feedback-body">${_esc(feedback).replace(/\\n/g, '<br>')}</div>
+    <div class="feedback-body">${_esc(stripMarkdown(feedback)).replace(/\n/g, '<br>')}</div>
   </section>` : ''}
 
 </main>

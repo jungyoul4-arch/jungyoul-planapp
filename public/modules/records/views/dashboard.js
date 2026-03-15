@@ -20,7 +20,7 @@ function _renderCareerBanner() {
   ].filter(Boolean);
 
   return `
-    <div class="skill-card" style="--glow-color:#6366f1;--glow-rgb:99,102,241;margin-bottom:8px;background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08));border-color:rgba(99,102,241,0.2)"
+    <div class="skill-card skill-card-career" style="--glow-color:#6366f1;--glow-rgb:99,102,241;margin-bottom:16px;background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08));border-color:rgba(99,102,241,0.2)"
          onclick="_RM.nav('career-detail')">
       <div class="skill-card-glow"></div>
       <div class="skill-icon-wrap" style="--icon-bg:rgba(99,102,241,0.15);color:#6366f1">
