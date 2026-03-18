@@ -606,7 +606,7 @@ export function renderAiResult() {
           </button>
         </div>
 
-        <button class="btn-primary cl-save-btn" onclick="_RM.saveCreditLog()">
+        <button class="btn-primary cl-save-btn" class="save-btn" onclick="_RM.saveCreditLog()">
           기록 완료 +15 XP ✨
         </button>
       </div>

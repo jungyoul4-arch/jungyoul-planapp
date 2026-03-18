@@ -1858,7 +1858,7 @@ app.get('/api/mentor/groups/:groupId/students', async (c) => {
   try {
     const groupId = c.req.param('groupId');
     const students = await c.env.DB.prepare(
-      'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, created_at FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
+      'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, created_at, external_user_id FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
     ).bind(groupId).all();
 
     return c.json({ students: students.results });
@@ -2951,7 +2951,7 @@ app.get('/api/mentor/groups/:groupId/summary', async (c) => {
 
     // 1. 학생 목록
     const students = await c.env.DB.prepare(
-      'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, croquet_balance FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
+      'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, croquet_balance, external_user_id FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
     ).bind(groupId).all();
 
     const studentIds = (students.results as any[]).map(s => s.id);

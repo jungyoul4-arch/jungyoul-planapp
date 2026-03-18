@@ -462,7 +462,7 @@ export function renderAhaResult() {
           </button>
         </div>
 
-        <button class="btn-primary cl-save-btn" onclick="_RM.saveAhaReport()" ${_ahaSaving ? 'disabled style="opacity:0.5;pointer-events:none"' : ''}>
+        <button class="btn-primary cl-save-btn" class="save-btn" onclick="_RM.saveAhaReport()" ${_ahaSaving ? 'disabled style="opacity:0.5;pointer-events:none"' : ''}>
           ${_ahaSaving ? '<i class="fas fa-spinner fa-spin" style="margin-right:8px"></i>저장 중...' : '기록 완료 +15 XP'}
         </button>
       </div>

@@ -360,7 +360,7 @@ function renderMidterm() {
         `}
 
         <div class="ea-bottom-bar">
-          <button class="btn-primary ea-save-btn" onclick="_RM.saveMidtermExam()" ${totalSubjects===0?'disabled':''}>
+          <button class="btn-primary ea-save-btn" class="save-btn" onclick="_RM.saveMidtermExam()" ${totalSubjects===0?'disabled':''}>
             <i class="fas fa-check" style="margin-right:8px"></i>${typeLabel} 저장
           </button>
         </div>

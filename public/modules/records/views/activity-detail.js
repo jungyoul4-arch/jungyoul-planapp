@@ -168,7 +168,7 @@ export function renderActivityDetail() {
               `).join('')}
             </div>
           </div>
-          <button class="btn-primary" onclick="_RM.saveActivityLog('${ec.id}')">
+          <button class="btn-primary" class="save-btn" onclick="_RM.saveActivityLog('${ec.id}')">
             📝 활동 기록 저장 +20 XP
           </button>
         </div>

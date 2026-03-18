@@ -135,7 +135,7 @@ function renderCareerResult(r) {
         ` : ''}
 
         <div style="position:fixed;bottom:0;left:0;right:0;padding:16px;background:var(--bg-primary);border-top:1px solid var(--border-color)">
-          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" onclick="_RM.activityResultSave()">
+          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" class="save-btn" onclick="_RM.activityResultSave()">
             <i class="fas fa-save" style="margin-right:8px"></i>저장하기
           </button>
         </div>
@@ -204,7 +204,7 @@ function renderClubResult(r) {
         ` : ''}
 
         <div style="position:fixed;bottom:0;left:0;right:0;padding:16px;background:var(--bg-primary);border-top:1px solid var(--border-color)">
-          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" onclick="_RM.activityResultSave()">
+          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" class="save-btn" onclick="_RM.activityResultSave()">
             <i class="fas fa-save" style="margin-right:8px"></i>저장하기
           </button>
         </div>
@@ -271,7 +271,7 @@ function renderGeneralResult(r, type) {
         ` : ''}
 
         <div style="position:fixed;bottom:0;left:0;right:0;padding:16px;background:var(--bg-primary);border-top:1px solid var(--border-color)">
-          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" onclick="_RM.activityResultSave()">
+          <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;font-weight:600" class="save-btn" onclick="_RM.activityResultSave()">
             <i class="fas fa-save" style="margin-right:8px"></i>저장하기
           </button>
         </div>

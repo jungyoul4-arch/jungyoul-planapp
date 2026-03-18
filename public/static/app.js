@@ -288,6 +288,7 @@ function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender =
       timetable: state.timetable || {},
       classmates: state.classmates || [],
       skipInitialRender: skipInitialRender,
+      viewOnly: _viewOnly, // 읽기 전용 모드 (선생님이 학생 플래너 조회 시)
       // 메인 앱에서 이미 로드한 DB 데이터 전달 → 아카이브 모듈의 중복 API 호출 제거
       preloadedData: {
         classRecords: state._dbClassRecords || [],
@@ -1502,15 +1503,17 @@ function logout() {
 
 // 자동 로그인 (페이지 로드 시)
 // ==================== 외부 앱 연동 (URL 파라미터 기반 자동 로그인) ====================
-// 호출 예: planner.jung-youl.com?user_id=1234&device_mode=1
+// 호출 예: planner.jung-youl.com?user_id=1234&device_mode=1&op_mode=view
 // device_mode: 1=핸드폰, 2=패드세로, 3=패드가로, 4=PC
 let _externalMode = false; // 외부 앱에서 호출된 경우 true
+let _viewOnly = false; // 읽기 전용 모드 (op_mode=view)
 
 function getUrlParams() {
   const params = new URLSearchParams(window.location.search);
   return {
     user_id: params.get('user_id'),
     device_mode: params.get('device_mode'),
+    op_mode: params.get('op_mode'),
   };
 }
 
@@ -1545,7 +1548,92 @@ function hideAuthUI() {
   document.head.appendChild(style);
 }
 
-async function externalLogin(userId, deviceMode) {
+// 멘토가 학생 플래너를 iframe으로 조회 (읽기 전용)
+function openStudentViewerIframe(externalUserId, studentName) {
+  // 기존 모달이 있으면 제거
+  const existing = document.getElementById('student-viewer-modal');
+  if (existing) existing.remove();
+
+  // 현재 device_mode 가져오기
+  const urlParams = new URLSearchParams(window.location.search);
+  const deviceMode = urlParams.get('device_mode') || '4';
+
+  // iframe URL 생성
+  const iframeSrc = `${window.location.origin}?user_id=${externalUserId}&device_mode=${deviceMode}&op_mode=view`;
+
+  // 모달 생성
+  const modal = document.createElement('div');
+  modal.id = 'student-viewer-modal';
+  modal.innerHTML = `
+    <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:var(--card-bg);border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:18px">👤</span>
+          <span style="font-weight:600;color:var(--text-primary)">${studentName || '학생'} 플래너</span>
+          <span style="font-size:12px;color:var(--accent);background:rgba(108,92,231,0.15);padding:2px 8px;border-radius:4px">열람 모드</span>
+        </div>
+        <button onclick="closeStudentViewerIframe()" style="background:none;border:none;font-size:24px;color:var(--text-muted);cursor:pointer;padding:4px 8px">&times;</button>
+      </div>
+      <iframe src="${iframeSrc}" style="flex:1;border:none;background:#fff"></iframe>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function closeStudentViewerIframe() {
+  const modal = document.getElementById('student-viewer-modal');
+  if (modal) modal.remove();
+}
+
+function applyViewOnlyMode() {
+  // 읽기 전용 모드 - 선생님이 학생 플래너 조회 시 쓰기/수정/삭제 버튼 숨김
+  _viewOnly = true;
+  sessionStorage.setItem('cp_viewOnly', 'true');
+  const style = document.createElement('style');
+  style.id = 'view-only-style';
+  style.textContent = `
+    /* 읽기 전용 모드: 저장/수정/삭제 버튼 숨김 */
+    .save-btn, .delete-btn, .edit-btn, .add-btn { display: none !important; }
+    .btn-save, .btn-delete, .btn-edit, .btn-add { display: none !important; }
+    [data-action="save"], [data-action="delete"], [data-action="edit"], [data-action="add"] { display: none !important; }
+    .view-only-hidden { display: none !important; }
+    /* 입력 필드 비활성화 표시 */
+    .view-only-disabled { pointer-events: none; opacity: 0.7; }
+  `;
+  document.head.appendChild(style);
+  document.body.classList.add('view-only-mode');
+
+  // 동적으로 버튼 숨김 + 입력 필드 비활성화
+  function hideActionButtons() {
+    // 입력 필드 비활성화
+    document.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(el => {
+      if (el.type !== 'hidden') {
+        el.setAttribute('readonly', true);
+        el.setAttribute('disabled', true);
+        el.style.pointerEvents = 'none';
+        el.style.opacity = '0.7';
+      }
+    });
+    document.querySelectorAll('button, .btn, [role="button"]').forEach(btn => {
+      const onclick = btn.getAttribute('onclick') || '';
+      const text = btn.textContent || '';
+      // onclick에 저장/삭제/수정 관련 함수가 있거나, 텍스트에 해당 단어가 있으면 숨김
+      if (/save|delete|삭제|저장|수정|추가|편집|사진|자동 입력/i.test(onclick + text)) {
+        // 단, 뒤로가기/닫기/취소 버튼은 제외
+        if (!/cancel|취소|닫기|back|뒤로/i.test(onclick + text)) {
+          btn.style.display = 'none';
+        }
+      }
+    });
+  }
+
+  // 초기 실행 + DOM 변경 감지
+  hideActionButtons();
+  const observer = new MutationObserver(() => hideActionButtons());
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+async function externalLogin(userId, deviceMode, opMode) {
   try {
     // 0. 이전 세션 완전 초기화 (항상 새로운 화면으로 시작)
     localStorage.removeItem('cp_auth');
@@ -1566,6 +1654,9 @@ async function externalLogin(userId, deviceMode) {
     }
 
     // 1. device_mode 적용
+    // op_mode 적용 (view=읽기전용)
+    console.log("[DEBUG] opMode:", opMode);
+    if (opMode === 'view') applyViewOnlyMode();
     if (deviceMode) applyDeviceMode(deviceMode);
 
     // 2. 원격 DB를 통해 사용자 정보 조회 및 자동 로그인
@@ -16151,11 +16242,17 @@ if ('serviceWorker' in navigator) {
 }
 
 const _urlParams = getUrlParams();
+
+// sessionStorage에서 viewOnly 상태 복원 (브라우저 뒤로/앞으로 시)
+if (sessionStorage.getItem('cp_viewOnly') === 'true' && !_viewOnly) {
+  applyViewOnlyMode();
+}
+
 if (_urlParams.user_id) {
   // 외부 앱에서 호출됨 → 이전 세션 완전 제거 후 새로 로그인
   localStorage.removeItem('cp_auth');
   _externalMode = true;
-  externalLogin(_urlParams.user_id, _urlParams.device_mode);
+  externalLogin(_urlParams.user_id, _urlParams.device_mode, _urlParams.op_mode);
 } else {
   // 일반 접속 → localStorage 기반 자동 로그인
   autoLogin();
@@ -16894,19 +16991,26 @@ function _initDelegatedEvents() {
   document.addEventListener('click', (e) => {
     const row = e.target.closest('.m-student-row');
     if (!row) return;
-    const sid = row.dataset.studentId;
     const sname = row.dataset.studentName;
-    const semoji = row.dataset.studentEmoji || '🐻';
-    if (sid && typeof mentorEnterStudentView === 'function') mentorEnterStudentView(parseInt(sid), sname, semoji);
+    const extId = row.dataset.externalId;
+    if (extId) {
+      openStudentViewerIframe(extId, sname);
+    } else {
+      alert('외부 연동 정보가 없는 학생입니다.');
+    }
   });
 
   // 경보 배너 클릭
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-alert-student]');
     if (!el) return;
-    const sid = el.dataset.alertStudent;
     const sname = el.dataset.alertName;
-    if (sid && typeof mentorEnterStudentView === 'function') mentorEnterStudentView(parseInt(sid), sname, '🐻');
+    const extId = el.dataset.alertExternalId;
+    if (extId) {
+      openStudentViewerIframe(extId, sname);
+    } else {
+      alert('외부 연동 정보가 없는 학생입니다.');
+    }
   });
 
   // 학생 상세 탭 전환

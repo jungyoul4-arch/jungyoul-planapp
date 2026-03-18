@@ -278,7 +278,7 @@ export function renderRecordClass() {
           <span class="period-badge">${period}교시</span>
         </div>
         ${renderClassRecordFields(subject)}
-        <button class="btn-primary class-record-submit" onclick="_RM.saveClassRecord()" disabled style="opacity:0.4;cursor:not-allowed">기록 완료 +10 XP ✨</button>
+        <button class="btn-primary class-record-submit view-only-hidden" onclick="_RM.saveClassRecord()" disabled style="opacity:0.4;cursor:not-allowed">기록 완료 +10 XP ✨</button>
       </div>
     </div>
   `;

@@ -8,6 +8,7 @@ import { events, EVENTS } from './events.js';
 const _initialState = {
   // 인증/학생 정보
   studentId: null,
+  viewOnly: false, // 읽기 전용 모드 (선생님이 학생 플래너 조회 시)
   studentName: '',
   xp: 0,
   level: 1,

@@ -217,6 +217,7 @@ const ArchiveModule = {
       timetable,
       classmates,
       standalone = false,
+      viewOnly = false,
       onXpEarned,
       onNavigate,
     } = config;
@@ -238,6 +239,47 @@ const ArchiveModule = {
 
     setContainer(el);
 
+    // 읽기 전용 모드 CSS 적용
+    if (viewOnly) {
+      el.classList.add('view-only-mode');
+
+      // 동적으로 버튼 숨김 + 입력 필드 비활성화
+      const hideActionButtons = () => {
+        // 입력 필드 비활성화
+        el.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(inp => {
+          if (inp.type !== 'hidden') {
+            inp.setAttribute('readonly', true);
+            inp.setAttribute('disabled', true);
+            inp.style.pointerEvents = 'none';
+            inp.style.opacity = '0.7';
+          }
+        });
+        el.querySelectorAll('button, .btn, [role="button"], .ps-record-btn, .pu-ai-btn, label.class-photo-add-btn').forEach(btn => {
+          const onclick = btn.getAttribute('onclick') || '';
+          const text = btn.textContent || '';
+          const className = btn.className || '';
+          // onclick에 저장/삭제/수정 관련 함수가 있거나, 텍스트에 해당 단어가 있으면 숨김
+          if (/save|delete|삭제|저장|수정|추가|편집|기록하기|업로드|분석|photo-add/i.test(onclick + text + className)) {
+            // 단, 뒤로가기/닫기/취소/조회 버튼은 제외
+            if (!/cancel|취소|닫기|back|뒤로|조회|보기|전체보기/i.test(onclick + text)) {
+              btn.style.display = 'none';
+            }
+          }
+        });
+        // input[type=file]도 숨김
+        el.querySelectorAll('input[type="file"]').forEach(input => {
+          input.style.display = 'none';
+          if (input.parentElement) input.parentElement.style.display = 'none';
+        });
+      };
+
+      // 초기 실행 + DOM 변경 감지
+      setTimeout(hideActionButtons, 100);
+      const observer = new MutationObserver(() => setTimeout(hideActionButtons, 50));
+      observer.observe(el, { childList: true, subtree: true });
+    }
+
+
     // 상태 초기화 — initialScreen이 지정되면 dashboard 대신 해당 화면으로 시작
     const startScreen = config.initialScreen || 'dashboard';
     setState({
@@ -246,6 +288,7 @@ const ArchiveModule = {
       timetable: timetable || state.timetable,
       classmates: classmates || [],
       standalone: !!standalone,
+      viewOnly: !!viewOnly,
       currentScreen: startScreen,
       _screenHistory: startScreen !== 'dashboard' ? ['dashboard'] : [],
     });

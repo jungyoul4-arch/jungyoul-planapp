@@ -112,7 +112,7 @@ export function renderClassRecordEdit() {
       <div class="screen-header">
         <button class="back-btn" onclick="_RM.nav('dashboard')"><i class="fas fa-arrow-left"></i></button>
         <h1>✏️ 수업 기록 수정</h1>
-        <button class="header-action-btn" onclick="_RM.saveClassRecordEdit()" style="color:var(--primary-light)"><i class="fas fa-save"></i></button>
+        <button class="header-action-btn" class="save-btn" onclick="_RM.saveClassRecordEdit()" style="color:var(--primary-light)"><i class="fas fa-save"></i></button>
       </div>
       <div class="form-body">
         <div class="card" style="margin-bottom:16px">
@@ -158,7 +158,7 @@ export function renderClassRecordEdit() {
             <input type="date" class="input-field" id="edit-cr-due" value="${assignmentDue}" style="font-size:13px">
           </div>
         </div>
-        <button class="btn-primary" style="width:100%;margin-top:20px" onclick="_RM.saveClassRecordEdit()">
+        <button class="btn-primary" style="width:100%;margin-top:20px" class="save-btn" onclick="_RM.saveClassRecordEdit()">
           <i class="fas fa-save" style="margin-right:6px"></i> 수정 완료
         </button>
       </div>

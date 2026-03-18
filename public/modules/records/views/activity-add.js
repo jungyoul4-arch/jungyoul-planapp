@@ -155,7 +155,7 @@ export function renderActivityAdd() {
             <input id="act-add-career" class="input-field" placeholder="이 활동이 진로와 어떻게 연결되나요?">
           </div>
         </div>
-        <button class="btn-primary" onclick="_RM.saveNewActivity()" style="margin-top:16px">
+        <button class="btn-primary" class="save-btn" onclick="_RM.saveNewActivity()" style="margin-top:16px">
           🚀 활동 등록하기!
         </button>
       </div>

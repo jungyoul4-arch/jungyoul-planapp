@@ -3347,3 +3347,41 @@
 @media (hover: none) {
   .archive-module .rg-card-delete-btn { opacity: 0.8; }
 }
+
+/* === 읽기 전용 모드 (선생님이 학생 플래너 조회 시) === */
+.archive-module.view-only-mode .save-btn,
+.archive-module.view-only-mode .delete-btn,
+.archive-module.view-only-mode .edit-btn,
+.archive-module.view-only-mode .add-btn,
+.archive-module.view-only-mode .btn-save,
+.archive-module.view-only-mode .btn-delete,
+.archive-module.view-only-mode .btn-edit,
+.archive-module.view-only-mode .btn-add,
+.archive-module.view-only-mode [data-action="save"],
+.archive-module.view-only-mode [data-action="delete"],
+.archive-module.view-only-mode [data-action="edit"],
+.archive-module.view-only-mode [data-action="add"],
+.archive-module.view-only-mode .view-only-hidden,
+.archive-module.view-only-mode .rg-card-delete-btn,
+.archive-module.view-only-mode .fab-btn,
+.archive-module.view-only-mode .floating-action-btn {
+  display: none !important;
+}
+/* 입력 필드 비활성화 표시 */
+.archive-module.view-only-mode .view-only-disabled {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+/* 추가 삭제/수정 버튼 숨김 */
+.archive-module.view-only-mode .pu-note-delete,
+.archive-module.view-only-mode .pu-ref-tile-delete,
+.archive-module.view-only-mode .header-action-btn[onclick*="delete"],
+.archive-module.view-only-mode .detail-photo-delete-btn,
+.archive-module.view-only-mode .qb-answer-delete-btn,
+.archive-module.view-only-mode .class-photo-add-btn,
+.archive-module.view-only-mode .pu-ai-btn,
+.archive-module.view-only-mode .ea-save-btn,
+.archive-module.view-only-mode .cl-save-btn {
+  display: none !important;
+}

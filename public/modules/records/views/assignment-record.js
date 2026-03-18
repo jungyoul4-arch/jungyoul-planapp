@@ -205,7 +205,7 @@ export function renderRecordAssignment() {
           <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit && a ? a.teacher : ''}">
         </div>
 
-        <div class="assignment-plan-cta animate-in" onclick="_RM.saveAssignment(true)">
+        <div class="assignment-plan-cta animate-in" class="save-btn" onclick="_RM.saveAssignment(true)">
           <div class="plan-cta-icon">📅</div>
           <div class="plan-cta-content">
             <h3>제출 계획 세우기</h3>
@@ -220,7 +220,7 @@ export function renderRecordAssignment() {
         </div>
         `}
 
-        <button class="btn-primary" onclick="_RM.saveAssignment(false)">
+        <button class="btn-primary" class="save-btn" onclick="_RM.saveAssignment(false)">
           ${isEdit ? '과제 수정 완료' : usePlan ? '과제 기록 완료 +15 XP ✨' : '과제 기록 완료 ✨'}
         </button>
       </div>

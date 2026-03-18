@@ -841,7 +841,7 @@ function __renderMentorStudents() {
         const statusColor = daysSince <= 1 ? 'green' : daysSince <= 3 ? 'yellow' : 'red';
         const statusText = daysSince <= 1 ? '오늘 활동' : daysSince <= 3 ? `${daysSince}일 전` : `${daysSince}일+ 미접속`;
         return `
-        <div class="stat-card m-student-row" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}" style="cursor:pointer;padding:16px;transition:all 0.2s;border:2px solid transparent" onmouseenter="this.style.borderColor='var(--primary-light)'" onmouseleave="this.style.borderColor='transparent'">
+        <div class="stat-card m-student-row" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}" data-external-id="${s.external_user_id || ''}" style="cursor:pointer;padding:16px;transition:all 0.2s;border:2px solid transparent" onmouseenter="this.style.borderColor='var(--primary-light)'" onmouseleave="this.style.borderColor='transparent'">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
             <div style="width:44px;height:44px;border-radius:50%;background:var(--bg-input);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${s.profile_emoji || '🐻'}</div>
             <div style="flex:1;min-width:0">
@@ -970,7 +970,7 @@ function __renderMentorFeedback() {
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
       ${students.map(s => `
-        <div class="stat-card m-student-row" style="cursor:pointer;display:flex;align-items:center;gap:12px" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}">
+        <div class="stat-card m-student-row" style="cursor:pointer;display:flex;align-items:center;gap:12px" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}" data-external-id="${s.external_user_id || ''}">
           <div style="width:40px;height:40px;border-radius:50%;background:var(--bg-input);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">${s.profile_emoji || '🐻'}</div>
           <div style="flex:1;min-width:0">
             <div style="font-weight:700;font-size:14px">${s.name}</div>
@@ -994,7 +994,7 @@ function __renderMentorExams() {
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
       ${students.map(s => `
-        <div class="stat-card m-student-row" style="cursor:pointer" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}">
+        <div class="stat-card m-student-row" style="cursor:pointer" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}" data-external-id="${s.external_user_id || ''}">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
             <span style="font-size:18px">${s.profile_emoji || '🐻'}</span>
             <span style="font-weight:700">${s.name}</span>
@@ -1020,7 +1020,7 @@ function __renderMentorNetwork() {
     ${teachActive.length === 0 ? '<div style="text-align:center;padding:40px;color:var(--text-muted)">이번 주 교학상장 활동이 없습니다</div>' : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px">
       ${teachActive.map((s, i) => `
-        <div class="stat-card m-student-row" style="cursor:pointer" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}">
+        <div class="stat-card m-student-row" style="cursor:pointer" data-student-id="${s.id}" data-student-name="${s.name}" data-student-emoji="${s.profile_emoji || '🐻'}" data-external-id="${s.external_user_id || ''}">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             <span style="font-size:16px;font-weight:800;color:var(--teach-green)">#${i+1}</span>
             <span style="font-weight:700">${s.profile_emoji || '🐻'} ${s.name}</span>
