@@ -272,6 +272,25 @@ async function _resolvePhotosAsync(recordId, rawPhotos, cacheKey) {
   }
 }
 
+async function _loadPhotosFromTable(recordId, cacheKey) {
+  try {
+    const res = await fetch(`/api/class-records/${recordId}/photos`);
+    if (!res.ok) { state[cacheKey] = []; render(); return; }
+    const data = await res.json();
+    const photoList = data.photos || [];
+    if (photoList.length === 0) { state[cacheKey] = []; render(); return; }
+    // photo ID로 ref:ID 배열 구성 후 resolvePhotos로 실제 데이터 로드
+    const refs = photoList.map(p => `ref:${p.id}`);
+    const resolved = await DB.resolvePhotos(refs);
+    state[cacheKey] = resolved;
+    render();
+  } catch (e) {
+    console.error('_loadPhotosFromTable:', e);
+    state[cacheKey] = [];
+    render();
+  }
+}
+
 function _renderDetailCreditLog(log, dbId) {
   const keywords = log.keywords || [];
   const seteukQs = log.seteuk_questions || [];
@@ -394,14 +413,22 @@ export function renderClassRecordDetail() {
       } else if (hasRefs) {
         photos = []; // 아직 로딩 중 — 빈 상태로 렌더 후 비동기 로드
         _resolvePhotosAsync(dbRec.id, rawPhotos, cacheKey);
+      } else if (rawPhotos.length === 0 && (dbRec.photo_count || 0) > 0 && !state[cacheKey]) {
+        // photos가 비었지만 photo_count > 0 → class_record_photos 테이블에서 직접 로드
+        photos = [];
+        _loadPhotosFromTable(dbRec.id, cacheKey);
+      } else if (rawPhotos.length === 0 && state[cacheKey]) {
+        // 캐시 로드 완료 (class_record_photos에서 가져온 결과)
+        photos = state[cacheKey];
       }
+      const resolvedPhotoCount = photos.length > 0 ? photos.length : (state[cacheKey] ? 0 : (dbRec.photo_count || rawPhotos.length));
       record = {
         subject: dbRec.subject, date: dbRec.date,
         topic: dbRec.topic || dbRec.content || '',
         pages: dbRec.pages || memo.pages || '',
         keywords: Array.isArray(dbRec.keywords) ? dbRec.keywords : [],
         photos,
-        photo_count: dbRec.photo_count || rawPhotos.length,
+        photo_count: resolvedPhotoCount,
         teacher_note: dbRec.teacher_note || memo.teacherNote || '',
         memo: dbRec.memo, period: memo.period || '', color: '#636e72', _dbId: dbRec.id,
         ai_credit_log: aiLog,
