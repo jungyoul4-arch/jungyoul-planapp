@@ -21,6 +21,7 @@ export function registerHandlers(RM) {
   RM.saveCreditLog = () => saveCreditLog();
   RM.downloadCreditLogPDF = () => downloadPDF();
   RM.retryAiAnalysis = () => retryAnalysis();
+  RM.aiResultBack = () => aiResultBack();
   RM.updateAssignmentField = (field, value) => {
     if (!state._aiCreditLog || !state._aiCreditLog.assignment) return;
     state._aiCreditLog.assignment[field] = value;
@@ -101,6 +102,18 @@ function retryAnalysis() {
   state._aiAnalyzing = true;
   state._aiAnalysisStep = 'analyzing';
   navigate('ai-loading', { replace: true });
+}
+
+function aiResultBack() {
+  if (state._aiCreditLog) {
+    if (confirm('AI 분석 결과가 저장되지 않습니다. 나가시겠습니까?')) {
+      state._aiCreditLog = null;
+      state._aiCreditLogEditing = false;
+      navigate('photo-upload');
+    }
+  } else {
+    navigate('photo-upload');
+  }
 }
 
 function toggleEdit() {
@@ -544,7 +557,7 @@ export function renderAiResult() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="_RM.nav('photo-upload')"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="_RM.aiResultBack()"><i class="fas fa-arrow-left"></i></button>
         <h1>수업 탐구 기록</h1>
         <span class="header-badge">${period}교시 ${subject}</span>
       </div>

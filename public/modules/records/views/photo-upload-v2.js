@@ -15,6 +15,7 @@ export function registerHandlers(RM) {
   RM.startAiAnalysis = () => startAiAnalysis();
   RM.skipToManualEntry = () => skipToManual();
   RM.updateStudentComment = (value) => { state._studentComment = value; };
+  RM.photoUploadBack = () => photoUploadBack();
 }
 
 function resizeImage(file, maxWidth = 1200) {
@@ -187,6 +188,20 @@ function skipToManual() {
   navigate('record-class');
 }
 
+function photoUploadBack() {
+  const photos = state._classPhotos || [];
+  if (photos.length > 0) {
+    if (confirm('업로드한 사진이 저장되지 않습니다. 나가시겠습니까?')) {
+      state._classPhotos = [];
+      state._classPhotoTags = [];
+      state._studentComment = '';
+      navigate('period-select');
+    }
+  } else {
+    navigate('period-select');
+  }
+}
+
 // === 렌더러 ===
 export function renderPhotoUpload() {
   const record = state.todayRecords[state._selectedPeriodIdx];
@@ -204,7 +219,7 @@ export function renderPhotoUpload() {
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
-        <button class="back-btn" onclick="_RM.nav('period-select')"><i class="fas fa-arrow-left"></i></button>
+        <button class="back-btn" onclick="_RM.photoUploadBack()"><i class="fas fa-arrow-left"></i></button>
         <h1>사진 업로드</h1>
         <span class="header-badge">${period}교시 ${subject}</span>
       </div>
