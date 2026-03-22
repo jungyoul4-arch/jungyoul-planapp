@@ -1118,11 +1118,16 @@ function validateNickname(nickname: string): { valid: boolean; error?: string } 
   return { valid: true };
 }
 
-/** 학생의 학원명 조회 (join chain) */
+/** 학생의 학원명 조회 (join chain via student_groups) */
 async function getStudentAcademy(db: any, studentId: number): Promise<string | null> {
-  const row: any = await db.prepare(
-    'SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
-  ).bind(studentId).first();
+  const row: any = await db.prepare(`
+    SELECT m.academy_name FROM students s
+    JOIN student_groups sg ON s.id = sg.student_id
+    JOIN groups g ON sg.group_id = g.id
+    JOIN mentors m ON g.mentor_id = m.id
+    WHERE s.id = ? AND s.is_active = 1
+    LIMIT 1
+  `).bind(studentId).first();
   return row?.academy_name || null;
 }
 
@@ -1131,8 +1136,11 @@ async function canAccessBoard(db: any, boardId: number, userType: string, userId
   if (!board) return false;
   if (board.board_type === 'group') {
     if (userType === 'student') {
-      const s: any = await db.prepare('SELECT group_id FROM students WHERE id = ? AND is_active = 1').bind(userId).first();
-      return s && s.group_id === board.group_id;
+      // student_groups에서 학생-그룹 매핑 확인
+      const membership: any = await db.prepare(
+        'SELECT 1 FROM student_groups sg JOIN students s ON sg.student_id = s.id WHERE sg.student_id = ? AND sg.group_id = ? AND s.is_active = 1'
+      ).bind(userId, board.group_id).first();
+      return !!membership;
     } else {
       const g: any = await db.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
       return g && g.mentor_id === userId;
@@ -1140,7 +1148,14 @@ async function canAccessBoard(db: any, boardId: number, userType: string, userId
   } else if (board.board_type === 'academy') {
     let academy = '';
     if (userType === 'student') {
-      const row: any = await db.prepare('SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1').bind(userId).first();
+      const row: any = await db.prepare(`
+        SELECT m.academy_name FROM students s
+        JOIN student_groups sg ON s.id = sg.student_id
+        JOIN groups g ON sg.group_id = g.id
+        JOIN mentors m ON g.mentor_id = m.id
+        WHERE s.id = ? AND s.is_active = 1
+        LIMIT 1
+      `).bind(userId).first();
       academy = row?.academy_name || '';
     } else {
       const row: any = await db.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(userId).first();
@@ -1500,26 +1515,21 @@ app.get('/api/auth/external-login', async (c) => {
     } else if (kind === 2) {
       // ===== 학생 =====
       let student: any = await c.env.DB.prepare(
-        'SELECT s.*, g.name as group_name, g.invite_code FROM students s LEFT JOIN groups g ON s.group_id = g.id WHERE s.external_user_id = ? AND s.is_active = 1'
+        'SELECT * FROM students WHERE external_user_id = ? AND is_active = 1'
       ).bind(remoteUserId).first();
 
       if (!student) {
-        // 학생이 아직 로컬에 없으면 자동 생성 (기본 그룹에 배치)
-        // 원격 DB에서 이 학생이 속한 반의 멘토를 찾아 해당 그룹에 배치
+        // 학생이 아직 로컬에 없으면 자동 생성 (group_id 없이)
         const stPwHash = await hashPassword(`ext_${remoteUserId}_auto`);
         const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
 
-        // 첫 번째 그룹에 임시 배치 (나중에 멘토 로그인 시 올바른 그룹으로 재배치됨)
-        const firstGroup: any = await c.env.DB.prepare('SELECT id FROM groups LIMIT 1').first();
-        const groupId = firstGroup?.id || 1;
-
         const result = await c.env.DB.prepare(
-          'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(groupId, name, stPwHash, '', 0, emoji, remoteUserId).run();
+          'INSERT INTO students (name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(name, stPwHash, '', 0, emoji, remoteUserId).run();
 
         student = await c.env.DB.prepare(
-          'SELECT s.*, g.name as group_name, g.invite_code FROM students s LEFT JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
+          'SELECT * FROM students WHERE id = ?'
         ).bind(result.meta.last_row_id).first();
       } else {
         // 이름 동기화
@@ -1531,8 +1541,18 @@ app.get('/api/auth/external-login', async (c) => {
 
       await c.env.DB.prepare('UPDATE students SET last_login_at = ? WHERE id = ?').bind(getKSTString(), student.id).run();
 
-      const group: any = student.group_name ? {
-        id: student.group_id, name: student.group_name,
+      // student_groups에서 모든 그룹 조회
+      const groupsResult = await c.env.DB.prepare(`
+        SELECT g.id, g.name FROM groups g
+        JOIN student_groups sg ON g.id = sg.group_id
+        WHERE sg.student_id = ? AND g.is_active = 1
+      `).bind(student.id).all();
+      const groups = groupsResult.results || [];
+
+      // 하위호환: 첫 번째 그룹을 기본 그룹으로
+      const firstGroup: any = groups[0];
+      const group: any = firstGroup ? {
+        id: firstGroup.id, name: firstGroup.name,
         mentorName: '정율사관학원', academyName: '정율사관학원',
       } : null;
 
@@ -1542,8 +1562,9 @@ app.get('/api/auth/external-login', async (c) => {
         token,
         role: 'student',
         externalUserId: remoteUserId,
-        user: { id: student.id, name: student.name, schoolName: student.school_name, grade: student.grade, profileEmoji: student.profile_emoji, xp: student.xp || 0, level: student.level || 1, groupId: student.group_id },
+        user: { id: student.id, name: student.name, schoolName: student.school_name, grade: student.grade, profileEmoji: student.profile_emoji, xp: student.xp || 0, level: student.level || 1 },
         group,
+        groups,
       });
 
     } else if (kind === 1) {
@@ -1634,10 +1655,20 @@ app.post('/api/auth/student/login', async (c) => {
     const valid = await verifyPassword(password, student.password_hash);
     if (!valid) return c.json({ error: '이름 또는 비밀번호가 틀렸습니다' }, 401);
 
-    // 그룹 정보 가져오기
-    const group: any = await c.env.DB.prepare(
-      'SELECT g.*, m.name as mentor_name, m.academy_name FROM groups g JOIN mentors m ON g.mentor_id = m.id WHERE g.id = ?'
-    ).bind(student.group_id).first();
+    // student_groups에서 모든 그룹 조회
+    const groupsResult = await c.env.DB.prepare(`
+      SELECT g.id, g.name, m.name as mentor_name, m.academy_name
+      FROM groups g
+      JOIN student_groups sg ON g.id = sg.group_id
+      JOIN mentors m ON g.mentor_id = m.id
+      WHERE sg.student_id = ? AND g.is_active = 1
+    `).bind(student.id).all();
+    const groups = (groupsResult.results || []).map((g: any) => ({
+      id: g.id,
+      name: g.name,
+      mentorName: g.mentor_name,
+      academyName: g.academy_name,
+    }));
 
     // 마지막 로그인 시간 업데이트
     await c.env.DB.prepare(
@@ -1645,6 +1676,9 @@ app.post('/api/auth/student/login', async (c) => {
     ).bind(getKSTString(), student.id).run();
 
     const token = generateToken();
+
+    // 하위호환: 첫 번째 그룹을 기본 그룹으로
+    const firstGroup = groups[0] || null;
 
     return c.json({
       success: true,
@@ -1658,15 +1692,10 @@ app.post('/api/auth/student/login', async (c) => {
         profileEmoji: student.profile_emoji,
         xp: student.xp,
         level: student.level,
-        groupId: student.group_id,
         nickname: student.nickname || null,
       },
-      group: group ? {
-        id: group.id,
-        name: group.name,
-        mentorName: group.mentor_name,
-        academyName: group.academy_name,
-      } : null
+      group: firstGroup,
+      groups,
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -1735,8 +1764,8 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
   try {
     const mentorId = c.req.param('mentorId');
     const groups = await c.env.DB.prepare(`
-      SELECT g.*, 
-        (SELECT COUNT(*) FROM students s WHERE s.group_id = g.id AND s.is_active = 1) as student_count
+      SELECT g.*,
+        (SELECT COUNT(*) FROM student_groups sg JOIN students s ON sg.student_id = s.id WHERE sg.group_id = g.id AND s.is_active = 1) as student_count
       FROM groups g WHERE g.mentor_id = ? AND g.is_active = 1 ORDER BY student_count DESC, g.created_at DESC
     `).bind(mentorId).all();
 
@@ -1746,7 +1775,7 @@ app.get('/api/mentor/:mentorId/groups', async (c) => {
   }
 });
 
-// 멘토 학생 동기화 (로그인 후 비동기 호출)
+// 멘토 학생 동기화 (로그인 후 비동기 호출) - N:M 관계 지원
 app.post('/api/mentor/:mentorId/sync-students', async (c) => {
   try {
     const mentorId = c.req.param('mentorId');
@@ -1774,31 +1803,49 @@ app.post('/api/mentor/:mentorId/sync-students', async (c) => {
       if (g.external_class_id) classToGroupMap.set(Number(g.external_class_id), g.id);
     }
 
-    // ★ 핵심: 한 학생이 여러 그룹에 속할 수 있으므로 (extUserId, groupId) 쌍으로 관리
-    const allEntries: { extUserId: number, groupId: number, name: string }[] = [];
+    // ★ N:M 관계: 학생별로 그룹 목록 수집
+    const studentEntries = new Map<number, { name: string, groupIds: Set<number> }>();
     const allGroupIds = new Set<number>();
     for (const cls of studentsData.classes) {
       const groupId = classToGroupMap.get(Number(cls.class_id));
       if (!groupId) continue;
       allGroupIds.add(groupId);
       for (const st of cls.students) {
-        allEntries.push({ extUserId: Number(st.user_id), groupId, name: st.name });
+        const extUserId = Number(st.user_id);
+        if (!studentEntries.has(extUserId)) {
+          studentEntries.set(extUserId, { name: st.name, groupIds: new Set() });
+        }
+        studentEntries.get(extUserId)!.groupIds.add(groupId);
       }
     }
 
-    if (allEntries.length === 0) return c.json({ success: true, synced: 0 });
+    if (studentEntries.size === 0) return c.json({ success: true, synced: 0 });
 
-    // 해당 멘토의 모든 활성 그룹에서 기존 학생을 (external_user_id, group_id) 조합으로 조회
-    const existingMap = new Map<string, any>(); // key: "extUserId_groupId"
+    // 기존 학생 조회 (external_user_id 기준, 단일 레코드)
+    const extUserIds = Array.from(studentEntries.keys());
+    const existingStudentsMap = new Map<number, any>(); // extUserId -> student record
+    for (let i = 0; i < extUserIds.length; i += 80) {
+      const chunk = extUserIds.slice(i, i + 80);
+      const placeholders = chunk.map(() => '?').join(',');
+      const existing: any = await c.env.DB.prepare(
+        `SELECT id, external_user_id, name FROM students WHERE external_user_id IN (${placeholders}) AND is_active = 1`
+      ).bind(...chunk).all();
+      for (const s of (existing.results || [])) {
+        existingStudentsMap.set(Number(s.external_user_id), s);
+      }
+    }
+
+    // 기존 student_groups 매핑 조회
     const groupIdArr = Array.from(allGroupIds);
+    const existingMappings = new Set<string>(); // "studentId_groupId"
     for (let i = 0; i < groupIdArr.length; i += 80) {
       const chunk = groupIdArr.slice(i, i + 80);
       const placeholders = chunk.map(() => '?').join(',');
-      const existingStudents: any = await c.env.DB.prepare(
-        `SELECT id, external_user_id, group_id, name FROM students WHERE group_id IN (${placeholders}) AND external_user_id IS NOT NULL`
+      const mappings: any = await c.env.DB.prepare(
+        `SELECT student_id, group_id FROM student_groups WHERE group_id IN (${placeholders})`
       ).bind(...chunk).all();
-      for (const s of (existingStudents.results || [])) {
-        existingMap.set(`${s.external_user_id}_${s.group_id}`, s);
+      for (const m of (mappings.results || [])) {
+        existingMappings.add(`${m.student_id}_${m.group_id}`);
       }
     }
 
@@ -1806,44 +1853,99 @@ app.post('/api/mentor/:mentorId/sync-students', async (c) => {
     const batchStmts: any[] = [];
     const defaultPwHash = await hashPassword('ext_student_auto');
     const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
+    const newStudentExtIds: number[] = []; // 새로 생성할 학생의 extUserId
 
-    for (const entry of allEntries) {
-      const key = `${entry.extUserId}_${entry.groupId}`;
-      const existing = existingMap.get(key);
-      if (!existing) {
-        // 해당 그룹에 이 학생이 없음 → INSERT (다른 그룹에 같은 학생이 있어도 별도 레코드)
+    for (const [extUserId, entry] of studentEntries) {
+      const existingStudent = existingStudentsMap.get(extUserId);
+
+      if (!existingStudent) {
+        // 학생이 없음 → students에 1개만 INSERT (group_id는 첫 번째 그룹)
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+        const firstGroupId = Array.from(entry.groupIds)[0];
         batchStmts.push(
           c.env.DB.prepare(
             'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(entry.groupId, entry.name, defaultPwHash, '', 0, emoji, entry.extUserId)
+          ).bind(firstGroupId, entry.name, defaultPwHash, '', 0, emoji, extUserId)
         );
-      } else if (existing.name !== entry.name) {
+        newStudentExtIds.push(extUserId);
+      } else {
         // 이름 변경 시 업데이트
-        batchStmts.push(
-          c.env.DB.prepare(
-            'UPDATE students SET name = ? WHERE id = ?'
-          ).bind(entry.name, existing.id)
-        );
+        if (existingStudent.name !== entry.name) {
+          batchStmts.push(
+            c.env.DB.prepare('UPDATE students SET name = ? WHERE id = ?').bind(entry.name, existingStudent.id)
+          );
+        }
+        // student_groups에 매핑 추가 (없는 경우만)
+        for (const groupId of entry.groupIds) {
+          const mappingKey = `${existingStudent.id}_${groupId}`;
+          if (!existingMappings.has(mappingKey)) {
+            batchStmts.push(
+              c.env.DB.prepare('INSERT OR IGNORE INTO student_groups (student_id, group_id) VALUES (?, ?)').bind(existingStudent.id, groupId)
+            );
+          }
+        }
       }
     }
 
-    // ★ 외부 API에 없는 학생 비활성화 (이전 잘못된 배정 정리)
-    const remoteKeys = new Set(allEntries.map(e => `${e.extUserId}_${e.groupId}`));
-    for (const [key, existing] of existingMap) {
-      if (!remoteKeys.has(key)) {
-        batchStmts.push(
-          c.env.DB.prepare('UPDATE students SET is_active = 0 WHERE id = ?').bind(existing.id)
-        );
-      }
-    }
-
-    // D1 batch 최대 ~100개, 청크로 나눠서 실행
+    // D1 batch 실행 (학생 INSERT 먼저)
     let synced = 0;
     for (let i = 0; i < batchStmts.length; i += 50) {
       const chunk = batchStmts.slice(i, i + 50);
       await c.env.DB.batch(chunk);
       synced += chunk.length;
+    }
+
+    // 새로 생성된 학생들의 student_groups 매핑 추가
+    if (newStudentExtIds.length > 0) {
+      const newStudentMappings: any[] = [];
+      for (const extUserId of newStudentExtIds) {
+        const student: any = await c.env.DB.prepare(
+          'SELECT id FROM students WHERE external_user_id = ? AND is_active = 1'
+        ).bind(extUserId).first();
+        if (student) {
+          const entry = studentEntries.get(extUserId)!;
+          for (const groupId of entry.groupIds) {
+            newStudentMappings.push(
+              c.env.DB.prepare('INSERT OR IGNORE INTO student_groups (student_id, group_id) VALUES (?, ?)').bind(student.id, groupId)
+            );
+          }
+        }
+      }
+      for (let i = 0; i < newStudentMappings.length; i += 50) {
+        const chunk = newStudentMappings.slice(i, i + 50);
+        await c.env.DB.batch(chunk);
+        synced += chunk.length;
+      }
+    }
+
+    // ★ 원격에 없는 매핑은 student_groups에서 삭제 (학생 자체는 유지)
+    const remoteStudentIds = new Set<number>();
+    for (const [extUserId, entry] of studentEntries) {
+      const student = existingStudentsMap.get(extUserId);
+      if (student) remoteStudentIds.add(student.id);
+    }
+    // 해당 그룹들에서 원격에 없는 학생 매핑 삭제
+    const remoteMappings = new Set<string>();
+    for (const [extUserId, entry] of studentEntries) {
+      const student = existingStudentsMap.get(extUserId);
+      if (student) {
+        for (const groupId of entry.groupIds) {
+          remoteMappings.add(`${student.id}_${groupId}`);
+        }
+      }
+    }
+    const deleteStmts: any[] = [];
+    for (const mapping of existingMappings) {
+      if (!remoteMappings.has(mapping)) {
+        const [studentId, groupId] = mapping.split('_').map(Number);
+        deleteStmts.push(
+          c.env.DB.prepare('DELETE FROM student_groups WHERE student_id = ? AND group_id = ?').bind(studentId, groupId)
+        );
+      }
+    }
+    for (let i = 0; i < deleteStmts.length; i += 50) {
+      const chunk = deleteStmts.slice(i, i + 50);
+      await c.env.DB.batch(chunk);
     }
 
     return c.json({ success: true, synced });
@@ -1853,13 +1955,18 @@ app.post('/api/mentor/:mentorId/sync-students', async (c) => {
   }
 });
 
-// 그룹의 학생 목록
+// 그룹의 학생 목록 (N:M 관계 - student_groups 사용)
 app.get('/api/mentor/groups/:groupId/students', async (c) => {
   try {
     const groupId = c.req.param('groupId');
-    const students = await c.env.DB.prepare(
-      'SELECT id, name, school_name, grade, profile_emoji, xp, level, last_login_at, created_at, external_user_id FROM students WHERE group_id = ? AND is_active = 1 ORDER BY name'
-    ).bind(groupId).all();
+    const students = await c.env.DB.prepare(`
+      SELECT s.id, s.name, s.school_name, s.grade, s.profile_emoji, s.xp, s.level,
+             s.last_login_at, s.created_at, s.external_user_id
+      FROM students s
+      JOIN student_groups sg ON s.id = sg.student_id
+      WHERE sg.group_id = ? AND s.is_active = 1
+      ORDER BY s.name
+    `).bind(groupId).all();
 
     return c.json({ students: students.results });
   } catch (e: any) {
@@ -3163,8 +3270,20 @@ app.get('/api/student/:studentId/profile', async (c) => {
   try {
     const studentId = c.req.param('studentId');
     const student: any = await c.env.DB.prepare(
-      'SELECT s.*, g.name as group_name FROM students s JOIN groups g ON s.group_id = g.id WHERE s.id = ?'
+      'SELECT * FROM students WHERE id = ?'
     ).bind(studentId).first();
+
+    // student_groups에서 그룹명 조회
+    let groupName = null;
+    if (student) {
+      const groupRow: any = await c.env.DB.prepare(`
+        SELECT g.name FROM groups g
+        JOIN student_groups sg ON g.id = sg.group_id
+        WHERE sg.student_id = ? AND g.is_active = 1
+        LIMIT 1
+      `).bind(studentId).first();
+      groupName = groupRow?.name || null;
+    }
 
     if (!student) return c.json({ error: '학생을 찾을 수 없습니다' }, 404);
 
@@ -3187,7 +3306,7 @@ app.get('/api/student/:studentId/profile', async (c) => {
       profileEmoji: student.profile_emoji,
       xp: student.xp,
       level: student.level,
-      groupName: student.group_name,
+      groupName: groupName,
       stats: {
         exams: stats?.exam_cnt || 0,
         assignments: stats?.assign_cnt || 0,
@@ -4398,6 +4517,10 @@ app.get('/api/migrate', async (c) => {
       `CREATE TABLE IF NOT EXISTS question_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, mentor_id INTEGER NOT NULL, subjects TEXT DEFAULT '전체', date_from TEXT, date_to TEXT, question_count INTEGER DEFAULT 0, result_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now','+9 hours')))`,
       `CREATE INDEX IF NOT EXISTS idx_qa_student ON question_analysis(student_id, created_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_qa_mentor ON question_analysis(mentor_id)`,
+      // ===== 학생-그룹 N:M 관계 테이블 =====
+      `CREATE TABLE IF NOT EXISTS student_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, group_id INTEGER NOT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE, UNIQUE (student_id, group_id))`,
+      `CREATE INDEX IF NOT EXISTS idx_sg_student ON student_groups(student_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_sg_group ON student_groups(group_id)`,
     ];
     const errors: string[] = [];
     for (const sql of stmts) {
@@ -4466,6 +4589,15 @@ app.get('/api/migrate', async (c) => {
       }
     } catch(_) { /* director account may already exist */ }
 
+    // ===== 기존 students.group_id 데이터를 student_groups로 이관 =====
+    try {
+      const migrated = await c.env.DB.prepare(`
+        INSERT OR IGNORE INTO student_groups (student_id, group_id)
+        SELECT id, group_id FROM students WHERE group_id IS NOT NULL AND is_active = 1
+      `).run();
+      console.log('Migrated student_groups:', migrated.meta?.changes || 0);
+    } catch(_) { /* migration may have already been applied */ }
+
     // 실제 테이블 수 확인
     const tblResult: any = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").all();
     const tableNames = tblResult.results?.map((r: any) => r.name) || [];
@@ -4490,12 +4622,17 @@ app.get('/api/community/boards', async (c) => {
     let mentorId = 0;
 
     if (userType === 'student') {
-      const student: any = await c.env.DB.prepare(
-        'SELECT s.group_id, m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
-      ).bind(userId).first();
-      if (!student) return c.json({ success: false, error: '학생을 찾을 수 없습니다' }, 404);
-      academyName = student.academy_name || '';
-      groupId = student.group_id;
+      // student_groups에서 academy_name 조회
+      const studentInfo: any = await c.env.DB.prepare(`
+        SELECT m.academy_name FROM students s
+        JOIN student_groups sg ON s.id = sg.student_id
+        JOIN groups g ON sg.group_id = g.id
+        JOIN mentors m ON g.mentor_id = m.id
+        WHERE s.id = ? AND s.is_active = 1
+        LIMIT 1
+      `).bind(userId).first();
+      if (!studentInfo) return c.json({ success: false, error: '학생을 찾을 수 없습니다' }, 404);
+      academyName = studentInfo.academy_name || '';
     } else if (userType === 'mentor') {
       const mentor: any = await c.env.DB.prepare('SELECT id, academy_name FROM mentors WHERE id = ?').bind(userId).first();
       if (!mentor) return c.json({ success: false, error: '멘토를 찾을 수 없습니다' }, 404);
@@ -4507,15 +4644,16 @@ app.get('/api/community/boards', async (c) => {
 
     let boards: any;
     if (userType === 'student') {
+      // student_groups를 통해 학생이 속한 모든 그룹의 게시판 조회
       boards = await c.env.DB.prepare(
         `SELECT b.*, COALESCE(pc.cnt, 0) as postCount
          FROM community_boards b
          LEFT JOIN (SELECT board_id, COUNT(*) as cnt FROM community_posts WHERE is_deleted = 0 GROUP BY board_id) pc ON b.id = pc.board_id
          WHERE b.is_active = 1 AND (
-           (b.board_type = 'group' AND b.group_id = ?)
+           (b.board_type = 'group' AND b.group_id IN (SELECT group_id FROM student_groups WHERE student_id = ?))
            OR (b.board_type = 'academy' AND b.academy_name = ?)
          )`
-      ).bind(groupId, academyName).all();
+      ).bind(userId, academyName).all();
     } else {
       boards = await c.env.DB.prepare(
         `SELECT b.*, COALESCE(pc.cnt, 0) as postCount
@@ -4561,8 +4699,11 @@ app.get('/api/community/boards/:boardId/posts', async (c) => {
     // 접근 권한 확인
     if (board.board_type === 'group') {
       if (userType === 'student') {
-        const student: any = await c.env.DB.prepare('SELECT group_id FROM students WHERE id = ? AND is_active = 1').bind(userId).first();
-        if (!student || student.group_id !== board.group_id) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
+        // student_groups에서 학생-그룹 매핑 확인
+        const membership: any = await c.env.DB.prepare(
+          'SELECT 1 FROM student_groups sg JOIN students s ON sg.student_id = s.id WHERE sg.student_id = ? AND sg.group_id = ? AND s.is_active = 1'
+        ).bind(userId, board.group_id).first();
+        if (!membership) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
       } else {
         const group: any = await c.env.DB.prepare('SELECT mentor_id FROM groups WHERE id = ?').bind(board.group_id).first();
         if (!group || group.mentor_id !== userId) return c.json({ success: false, error: '이 게시판에 접근할 수 없습니다' }, 403);
@@ -4570,9 +4711,14 @@ app.get('/api/community/boards/:boardId/posts', async (c) => {
     } else if (board.board_type === 'academy') {
       let userAcademy = '';
       if (userType === 'student') {
-        const row: any = await c.env.DB.prepare(
-          'SELECT m.academy_name FROM students s JOIN groups g ON s.group_id = g.id JOIN mentors m ON g.mentor_id = m.id WHERE s.id = ? AND s.is_active = 1'
-        ).bind(userId).first();
+        const row: any = await c.env.DB.prepare(`
+          SELECT m.academy_name FROM students s
+          JOIN student_groups sg ON s.id = sg.student_id
+          JOIN groups g ON sg.group_id = g.id
+          JOIN mentors m ON g.mentor_id = m.id
+          WHERE s.id = ? AND s.is_active = 1
+          LIMIT 1
+        `).bind(userId).first();
         userAcademy = row?.academy_name || '';
       } else {
         const row: any = await c.env.DB.prepare('SELECT academy_name FROM mentors WHERE id = ?').bind(userId).first();
