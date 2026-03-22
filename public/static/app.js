@@ -16567,7 +16567,7 @@ function _renderTTConfirmSchool() {
   return `
     <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
       <div class="screen-header" style="padding:0 0 12px 0">
-        <button class="btn-back" onclick="state._ttOnboardingStep='photo';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <button class="btn-back" onclick="ttConfirmBack()"><i class="fas fa-arrow-left"></i></button>
         <h1 style="font-size:18px;font-weight:700">학교 시간표 확인</h1>
         <div style="width:32px"></div>
       </div>
@@ -16618,7 +16618,7 @@ function _renderTTConfirmAcademy() {
   return `
     <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
       <div class="screen-header" style="padding:0 0 12px 0">
-        <button class="btn-back" onclick="state._ttOnboardingStep='photo';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <button class="btn-back" onclick="ttConfirmBack()"><i class="fas fa-arrow-left"></i></button>
         <h1 style="font-size:18px;font-weight:700">학원 일정 확인</h1>
         <div style="width:32px"></div>
       </div>
@@ -16673,6 +16673,38 @@ function _renderTTDone() {
         ${doneLabel} <i class="fas fa-arrow-right" style="margin-left:8px"></i>
       </button>
     </div>`;
+}
+
+/** 시간표 분석 확인 화면에서 뒤로가기 시 확인 다이얼로그 */
+function ttConfirmBack() {
+  const mode = state._ttMode || 'school';
+  const hasAnalyzedData = mode === 'school'
+    ? (state._ttAnalyzedSlots && state._ttAnalyzedSlots.length > 0)
+    : (state._ttAcademySlots && state._ttAcademySlots.length > 0);
+
+  if (!hasAnalyzedData) {
+    // 분석된 데이터가 없으면 바로 뒤로가기
+    state._ttOnboardingStep = 'photo';
+    renderScreen(true);
+    return;
+  }
+
+  // 기존 시간표가 비어있는지 확인 (학교 시간표 기준)
+  const hasExistingTimetable = state.timetable?.school?.some(row =>
+    row.some(subj => subj && subj.trim() !== '')
+  );
+
+  // 분석된 데이터가 있으면 확인 다이얼로그 표시
+  const msg = hasExistingTimetable
+    ? '분석된 시간표를 저장하지 않고 나가시겠습니까?'
+    : '분석된 시간표가 저장되지 않습니다. 저장하지 않고 나가시겠습니까?\n\n(기존 시간표가 없으니 저장을 권장합니다)';
+
+  if (confirm(msg)) {
+    state._ttOnboardingStep = 'photo';
+    state._ttAnalyzedSlots = null;
+    state._ttAcademySlots = null;
+    renderScreen(true);
+  }
 }
 
 
