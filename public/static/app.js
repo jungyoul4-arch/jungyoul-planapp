@@ -15913,8 +15913,56 @@ function goScreen(screen) {
   if (tabletContent) tabletContent.scrollTop = 0;
 }
 
-// 브라우저 뒤로가기 / 제스처 뒤로가기 처리
+// 브라우저 뒤로가기 / 제스처 뒤로가기 / 안드로이드 뒤로가기 처리
 window.addEventListener('popstate', (e) => {
+  // 1. 시간표 분석 확인 화면 체크
+  if (state.currentScreen === 'timetable-onboarding' && state._ttOnboardingStep === 'confirm') {
+    const hasAnalyzedData = (state._ttMode === 'school')
+      ? (state._ttAnalyzedSlots && state._ttAnalyzedSlots.length > 0)
+      : (state._ttAcademySlots && state._ttAcademySlots.length > 0);
+    if (hasAnalyzedData) {
+      // 히스토리 복원 (뒤로가기 취소)
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('분석된 시간표를 저장하지 않고 나가시겠습니까?')) {
+        state._ttOnboardingStep = 'photo';
+        state._ttAnalyzedSlots = null;
+        state._ttAcademySlots = null;
+        renderScreen(true);
+      }
+      return;
+    }
+  }
+
+  // 2. 아카이브 모듈 (기록하기) 확인 화면 체크
+  if (_archiveModuleActive && window._RM && window._RM.state) {
+    const rmState = window._RM.state;
+    const rmScreen = rmState.currentScreen;
+
+    // 사진 업로드 화면에서 사진이 있는 경우
+    if (rmScreen === 'photo-upload' && rmState._classPhotos && rmState._classPhotos.length > 0) {
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('업로드한 사진이 저장되지 않습니다. 나가시겠습니까?')) {
+        rmState._classPhotos = [];
+        rmState._classPhotoTags = [];
+        rmState._studentComment = '';
+        window._RM.nav('period-select');
+      }
+      return;
+    }
+
+    // AI 분석 결과 화면에서 결과가 있는 경우
+    if (rmScreen === 'ai-result' && rmState._aiCreditLog) {
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('AI 분석 결과가 저장되지 않습니다. 나가시겠습니까?')) {
+        rmState._aiCreditLog = null;
+        rmState._aiCreditLogEditing = false;
+        window._RM.nav('photo-upload');
+      }
+      return;
+    }
+  }
+
+  // 3. 기본 뒤로가기 처리
   if (_screenHistory.length > 1) {
     _screenHistory.pop(); // 현재 화면 제거
     const prevScreen = _screenHistory[_screenHistory.length - 1] || 'main';
