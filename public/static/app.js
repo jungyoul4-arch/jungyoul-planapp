@@ -1277,10 +1277,10 @@ function initAuthEvents(container) {
 
       state.currentScreen = 'main';
       state.studentTab = 'home';
-      // 히스토리 초기화 (뒤로가기 지원)
+      // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
       _screenHistory.length = 0;
       _screenHistory.push('main');
-      try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+      try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
       // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
       DB.loadAll().then(() => { state._loginLoading = false; refreshDataWidgets(); renderScreen(); });
@@ -1685,10 +1685,10 @@ async function externalLogin(userId, deviceMode, opMode) {
     state._loginError = '';
     state.currentScreen = 'main';
     state.studentTab = 'home';
-    // 히스토리 초기화 (뒤로가기 지원)
+    // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
     _screenHistory.length = 0;
     _screenHistory.push('main');
-    try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+    try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
     // 5. 역할별 분기
     if (data.role === 'student') {
@@ -1762,10 +1762,10 @@ function autoLogin() {
     }
     state.currentScreen = 'main';
     state.studentTab = 'home';
-    // 히스토리 초기화 (뒤로가기 지원)
+    // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
     _screenHistory.length = 0;
     _screenHistory.push('main');
-    try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+    try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
     // 서버에 프로필 검증 (비동기) - 실패 시 로그인 화면으로
     if (auth.role === 'student' && auth.user.id) {
@@ -16017,15 +16017,35 @@ window.addEventListener('popstate', (e) => {
       }
 
       renderScreen();
+    } else {
+      // 홈에서 뒤로가기 → 두 번 눌러야 종료
+      const now = Date.now();
+      if (now - _lastBackPressTime < 2000) {
+        // 2초 내 두 번째 뒤로가기 → 종료 허용 (아무것도 안 함)
+        return;
+      }
+      // 첫 번째 뒤로가기 → 히스토리 복원하고 안내
+      _lastBackPressTime = now;
+      history.pushState({ screen: 'main', tab: 'home' }, '', '');
+      // 토스트 메시지 표시
+      const toast = document.createElement('div');
+      toast.className = 'back-exit-toast';
+      toast.textContent = "'뒤로' 한 번 더 누르면 종료됩니다";
+      toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:white;padding:12px 24px;border-radius:24px;font-size:14px;z-index:99999;animation:fadeInOut 2s ease-in-out forwards';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
     }
-    // 홈에서 뒤로가기 → 아무것도 안 함 (WebView/브라우저가 종료 처리)
   }
 });
 
-// 초기 히스토리 상태 설정
+// 초기 히스토리 상태 설정 (2개 항목으로 뒤로가기 가로채기 가능하게)
 try {
-  history.replaceState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+  history.replaceState({ screen: 'base' }, '', '');  // 베이스 항목
+  history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');  // 앱 상태
 } catch(e) { /* ignore */ }
+
+// 홈에서 뒤로가기 두 번 눌러야 종료 (마지막 뒤로가기 시간 추적)
+let _lastBackPressTime = 0;
 
 // 수업 기록 폼 유효성 검사 — 핵심 키워드가 있어야 버튼 활성화
 function validateClassRecordForm() {
@@ -16568,7 +16588,7 @@ function _renderTTIntro() {
       <button class="btn-primary btn-glow" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;state._ttMode='school';renderScreen(true);" style="width:100%;margin-bottom:12px">
         <i class="fas fa-camera" style="margin-right:8px"></i> 시간표 촬영하기
       </button>
-      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
+      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'base'},'','');history.pushState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
         나중에 할게요
       </button>
     </div>`;
@@ -16739,7 +16759,7 @@ function _renderTTDone() {
   const returnTo = state._ttReturnTo;
   const doneAction = returnTo === 'timetable-manage'
     ? "state._ttReturnTo=null;syncTodayRecords();state.currentScreen='timetable-manage';renderScreen(true);"
-    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
+    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'base'},'','');history.pushState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
   const doneLabel = returnTo === 'timetable-manage' ? '시간표 관리로 돌아가기' : '시작하기';
   return `
     <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
