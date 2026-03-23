@@ -1277,6 +1277,10 @@ function initAuthEvents(container) {
 
       state.currentScreen = 'main';
       state.studentTab = 'home';
+      // 히스토리 초기화 (뒤로가기 지원)
+      _screenHistory.length = 0;
+      _screenHistory.push('main');
+      try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
       // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
       DB.loadAll().then(() => { state._loginLoading = false; refreshDataWidgets(); renderScreen(); });
@@ -1681,6 +1685,10 @@ async function externalLogin(userId, deviceMode, opMode) {
     state._loginError = '';
     state.currentScreen = 'main';
     state.studentTab = 'home';
+    // 히스토리 초기화 (뒤로가기 지원)
+    _screenHistory.length = 0;
+    _screenHistory.push('main');
+    try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
     // 5. 역할별 분기
     if (data.role === 'student') {
@@ -1754,6 +1762,10 @@ function autoLogin() {
     }
     state.currentScreen = 'main';
     state.studentTab = 'home';
+    // 히스토리 초기화 (뒤로가기 지원)
+    _screenHistory.length = 0;
+    _screenHistory.push('main');
+    try { history.replaceState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
 
     // 서버에 프로필 검증 (비동기) - 실패 시 로그인 화면으로
     if (auth.role === 'student' && auth.user.id) {
@@ -15985,6 +15997,28 @@ window.addEventListener('popstate', (e) => {
     if (tabletContent) tabletContent.scrollTop = 0;
     const appContent = document.getElementById('app-content');
     if (appContent) appContent.scrollTop = 0;
+  } else {
+    // 4. 히스토리가 없을 때 (홈 화면이 아니면 홈으로 이동)
+    const isOnHome = state.currentScreen === 'main' && state.studentTab === 'home';
+
+    if (!isOnHome) {
+      // 홈이 아니면 → 뒤로가기 취소하고 홈으로 이동
+      history.pushState({ screen: 'main', tab: 'home' }, '', '');
+      _screenHistory.length = 0;
+      _screenHistory.push('main');
+      state.currentScreen = 'main';
+      state.studentTab = 'home';
+
+      // 아카이브 모듈이 활성화되어 있으면 비활성화
+      if (_archiveModuleActive) {
+        _archiveModuleActive = false;
+        const container = document.getElementById('records-container-tablet');
+        if (container) container.style.display = 'none';
+      }
+
+      renderScreen();
+    }
+    // 홈에서 뒤로가기 → 아무것도 안 함 (WebView/브라우저가 종료 처리)
   }
 });
 
@@ -16534,7 +16568,7 @@ function _renderTTIntro() {
       <button class="btn-primary btn-glow" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;state._ttMode='school';renderScreen(true);" style="width:100%;margin-bottom:12px">
         <i class="fas fa-camera" style="margin-right:8px"></i> 시간표 촬영하기
       </button>
-      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
+      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
         나중에 할게요
       </button>
     </div>`;
@@ -16705,7 +16739,7 @@ function _renderTTDone() {
   const returnTo = state._ttReturnTo;
   const doneAction = returnTo === 'timetable-manage'
     ? "state._ttReturnTo=null;syncTodayRecords();state.currentScreen='timetable-manage';renderScreen(true);"
-    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
+    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
   const doneLabel = returnTo === 'timetable-manage' ? '시간표 관리로 돌아가기' : '시작하기';
   return `
     <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
