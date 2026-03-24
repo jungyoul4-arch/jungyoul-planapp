@@ -470,7 +470,7 @@ function _renderScreenImpl(forced) {
 
   // 같은 화면이면 DOM 전체 교체 스킵 (깜빡임 방지)
   const _m = typeof _mentor !== 'undefined' ? _mentor : {};
-  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}|${state._assignmentUsePlan}`;
+  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}|${state._assignmentUsePlan}|${_m._qLoading?1:(_m._qData?2:0)}|${_m._smLoading?1:(_m._smMatrix?2:0)}|${_m._phLoading?1:(_m._phData?2:0)}|${_m._smSelectedSubject||''}|${_m._smProgressLoading?1:(_m._smProgress?2:0)}|${_m._smAiLoading?1:0}|${_m._qExpandedId||0}|${_m._qFilterSubject||''}|${_m._qFilterStatus||''}|${_m._qFilterStudent||''}`;
   const skipFullRender = !forced && (_lastRenderedKey === renderKey) && _lastRenderedKey !== '';
   if (!skipFullRender) {
     _lastRenderedKey = renderKey;
@@ -17116,6 +17116,7 @@ function _initDelegatedEvents() {
     if (typeof _mentor !== 'undefined') {
       _mentor.selectedGroupId = parseInt(btn.dataset.mgroup);
       _mentor._relayLoaded = false;
+      _mentor._qData = null; _mentor._smMatrix = null; _mentor._smProgress = null; _mentor._phData = null;
       if (typeof _checkRelayEligibility === 'function') await _checkRelayEligibility();
       if (typeof mentorLoadGroupSummary === 'function') mentorLoadGroupSummary();
     }

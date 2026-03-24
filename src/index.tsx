@@ -23,6 +23,7 @@ import mentorCroquet from './routes/mentor-croquet'
 import mentorFeedback from './routes/mentor-feedback'
 import mentorQuestions from './routes/mentor-questions'
 import mentorRelay from './routes/mentor-relay'
+import mentorDashboard from './routes/mentor-dashboard'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -68,6 +69,7 @@ app.route('/', mentorCroquet)
 app.route('/', mentorFeedback)
 app.route('/', mentorQuestions)
 app.route('/', mentorRelay)
+app.route('/', mentorDashboard)
 
 
 // ==================== MY CREDIT LOG 시스템 프롬프트 ====================
