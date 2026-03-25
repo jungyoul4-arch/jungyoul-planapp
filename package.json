@@ -9,7 +9,6 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
-    "@rollup/rollup-linux-arm64-gnu": "^4.59.0",
     "hono": "^4.11.9"
   },
   "devDependencies": {
