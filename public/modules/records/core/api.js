@@ -257,7 +257,7 @@ export const DB = {
   // === AI Credit Log 분석 ===
   async analyzePhotos(images, subject, period, date, studentComment) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 150000); // 150초 타임아웃 (OCR+분석 파이프라인)
+    const timer = setTimeout(() => controller.abort(), 600000); // 10분 타임아웃 (OCR+분석 파이프라인)
     try {
       const res = await fetch('/api/ai/credit-log', {
         method: 'POST',
@@ -273,7 +273,7 @@ export const DB = {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `AI 서버 오류 (${res.status})`);
     } catch (e) {
-      if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (150초)');
+      if (e.name === 'AbortError') throw new Error('AI 분석 시간 초과 (10분)');
       console.error('analyzePhotos:', e);
       throw e;
     } finally {
@@ -386,17 +386,25 @@ export const DB = {
 
   // 창체 활동 AI 분석
   async analyzeActivity(photos, activityType, comment) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 600000); // 10분 타임아웃
     try {
       const res = await fetch(`${AI_API_BASE}/api/ai/activity-analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos, activityType, comment: comment || '', studentId: studentId() })
+        body: JSON.stringify({ photos, activityType, comment: comment || '', studentId: studentId() }),
+        signal: controller.signal
       });
       if (res.ok) {
         const data = await res.json();
         return data.success ? data : null;
       }
-    } catch (e) { console.error('analyzeActivity:', e); }
+    } catch (e) {
+      if (e.name === 'AbortError') { console.error('analyzeActivity: 시간 초과 (10분)'); return null; }
+      console.error('analyzeActivity:', e);
+    } finally {
+      clearTimeout(timer);
+    }
     return null;
   },
 
@@ -788,7 +796,7 @@ export const DB = {
   // === 아하 리포트 ===
   async analyzeAhaReport(photos, subject, source, date) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90000);
+    const timer = setTimeout(() => controller.abort(), 600000); // 10분 타임아웃
     try {
       const res = await fetch(`${AI_API_BASE}/api/aha-report/analyze-v2`, {
         method: 'POST',
@@ -801,7 +809,7 @@ export const DB = {
         return data;
       }
     } catch (e) {
-      if (e.name === 'AbortError') throw new Error('아하 리포트 분석 시간 초과');
+      if (e.name === 'AbortError') throw new Error('아하 리포트 분석 시간 초과 (10분)');
       console.error('analyzeAhaReport:', e);
       throw e;
     } finally {

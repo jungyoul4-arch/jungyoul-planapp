@@ -4495,7 +4495,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
           temperature: 0.1,
           response_format: { type: 'json_object' }
         })
-      }, 55000)
+      }, 600000) // 10분 타임아웃
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
         console.error('OpenAI Vision error:', errText)
@@ -4862,7 +4862,7 @@ app.post('/api/ai/activity-analyze', async (c) => {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: openaiContent }], temperature: 0.2, response_format: { type: 'json_object' } })
-      }, 55000)
+      }, 600000) // 10분 타임아웃
       if (!openaiRes.ok) {
         // Step 3: Claude Vision 폴백
         const anthropicKey = c.env.ANTHROPIC_API_KEY
@@ -4877,7 +4877,7 @@ app.post('/api/ai/activity-analyze', async (c) => {
             method: 'POST',
             headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
             body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
-          }, 55000)
+          }, 600000) // 10분 타임아웃
           if (claudeRes.ok) {
             const claudeData: any = await claudeRes.json()
             rawText = claudeData.content?.[0]?.text || '{}'
@@ -5032,7 +5032,7 @@ OCR 규칙:
           temperature: 0.2,
           response_format: { type: 'json_object' }
         })
-      }, 55000)
+      }, 600000) // 10분 타임아웃
 
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
@@ -5063,7 +5063,7 @@ OCR 규칙:
               temperature: 0.2,
               messages: [{ role: 'user', content: claudeContent }],
             })
-          }, 55000)
+          }, 600000) // 10분 타임아웃
 
           if (claudeRes.ok) {
             const claudeData: any = await claudeRes.json()
@@ -5235,7 +5235,7 @@ PPA (성찰):
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         })
-      }, 55000)
+      }, 600000) // 10분 타임아웃
 
       if (claudeRes.ok) {
         const data: any = await claudeRes.json()
@@ -5264,7 +5264,7 @@ PPA (성찰):
               contents: [{ parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }],
               generationConfig: { temperature: 0.5, responseMimeType: 'application/json' }
             })
-          }, 55000
+          }, 600000 // 10분 타임아웃
         )
         if (geminiRes.ok) {
           const data: any = await geminiRes.json()
@@ -5439,7 +5439,7 @@ OCR 규칙:
           temperature: 0.2,
           response_format: { type: 'json_object' }
         })
-      }, 55000)
+      }, 600000) // 10분 타임아웃
 
       if (!openaiRes.ok) {
         const errText = await openaiRes.text()
@@ -5458,7 +5458,7 @@ OCR 규칙:
             method: 'POST',
             headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
             body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
-          }, 55000)
+          }, 600000) // 10분 타임아웃
           if (claudeRes.ok) {
             const claudeData: any = await claudeRes.json()
             rawText = claudeData.content?.[0]?.text || '{}'

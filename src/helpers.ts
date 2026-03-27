@@ -120,7 +120,7 @@ export async function callGeminiOcrSingle(geminiKey: string, image: { mime_type:
         generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
       })
     },
-    75000 // OCR 타임아웃 45초 → 75초 증가
+    600000 // 10분 타임아웃
   )
 
   if (!res.ok) throw new Error(`OCR 실패 (사진${index + 1}): ${res.status}`)
@@ -144,7 +144,7 @@ export async function callSonnetAnalysis(anthropicKey: string, systemPrompt: str
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     })
-  }, 120000) // Sonnet 분석 타임아웃 60초(기본) → 120초 증가
+  }, 600000) // 10분 타임아웃
 
   if (!res.ok) {
     const err = await res.text()
@@ -212,7 +212,7 @@ export async function callGeminiMultiImage(opts: {
             generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
           })
         },
-        75000 // 단일 OCR 타임아웃 60초(기본) → 75초 명시
+        600000 // 10분 타임아웃
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
@@ -270,7 +270,7 @@ export async function callGeminiMultiImage(opts: {
             }
           })
         },
-        90000
+        600000 // 10분 타임아웃
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
@@ -302,7 +302,7 @@ export async function callGeminiMultiImage(opts: {
             }
           })
         },
-        90000
+        600000 // 10분 타임아웃
       )
       if (geminiRes.ok) {
         const data: any = await geminiRes.json()
