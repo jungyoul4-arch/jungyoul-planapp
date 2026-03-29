@@ -352,7 +352,7 @@ function _renderDetailCreditLog(log, dbId) {
       ${log.highlights ? `<div class="cl-section cl-highlight-section"><span class="cl-section-label">★ 선생님 강조 포인트</span><div class="cl-section-value cl-handwriting">${safeMathHtml(log.highlights, { keywords })}</div></div>` : ''}
       ${seteukHtml ? `<div class="cl-section cl-questions-section"><span class="cl-section-label">💡 세특 소재 질문</span>${seteukHtml}</div>` : ''}
       ${examItems.length > 0 ? `<div class="cl-section cl-exam-section"><span class="cl-section-label">${examLabel}</span><div class="cl-exam-list">${examItems.map((item, i) => '<div class="cl-exam-item"><span class="cl-exam-num">' + (i + 1) + '</span><span class="cl-exam-text">' + safeMathHtml(item) + '</span></div>').join('')}</div></div>` : ''}
-      ${keywords.length > 0 ? `<div class="cl-section"><span class="cl-section-label">🔑 핵심 키워드</span><div class="cl-keywords">${keywords.map(k => '<span class="cl-keyword-chip">' + k + '</span>').join('')}</div></div>` : ''}
+      ${keywords.length > 0 ? `<div class="cl-section"><span class="cl-section-label">🔑 핵심 키워드</span><div class="cl-keywords">${keywords.map(k => '<span class="cl-keyword-chip">' + renderMath(k) + '</span>').join('')}</div></div>` : ''}
       ${assignmentHtml}
       ${log.summary ? `<div class="cl-section cl-summary-section"><span class="cl-section-label">📋 수업 맥락 요약</span><div class="cl-section-value cl-handwriting">${safeMathHtml(log.summary)}</div></div>` : ''}
       ${log.teacher_insight ? `<div class="cl-section cl-insight-section"><span class="cl-section-label">📝 세특 관찰 코멘트</span><div class="cl-insight-box">${safeMathHtml(log.teacher_insight)}</div></div>` : ''}
@@ -493,7 +493,7 @@ export function renderClassRecordDetail() {
         <div class="field-group" style="margin-bottom:14px">
           <label class="field-label" style="font-size:11px;color:var(--text-muted)">📝 핵심 키워드</label>
           <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 0">
-            ${keywords.map(k => `<span style="font-size:13px;padding:4px 12px;border-radius:16px;background:${color}12;color:${color};border:1px solid ${color}30;font-weight:500">${k}</span>`).join('')}
+            ${keywords.map(k => `<span style="font-size:13px;padding:4px 12px;border-radius:16px;background:${color}12;color:${color};border:1px solid ${color}30;font-weight:500">${renderMath(k)}</span>`).join('')}
           </div>
         </div>` : ''}
 
@@ -550,7 +550,7 @@ export function renderClassRecordDetail() {
         <div class="field-group" style="margin-bottom:14px">
           <label class="field-label" style="font-size:11px;color:var(--text-muted)">⭐ 선생님 강조</label>
           <div style="font-size:14px;color:var(--accent);padding:10px 14px;background:rgba(255,107,107,0.08);border-radius:10px;border:1px solid rgba(255,107,107,0.15);font-weight:500">
-            <i class="fas fa-exclamation-circle" style="margin-right:6px"></i>${record.teacher_note}
+            <i class="fas fa-exclamation-circle" style="margin-right:6px"></i>${safeMathHtml(record.teacher_note)}
           </div>
         </div>` : ''}
 

@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
-import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP, skeletonCards, showToast } from '../core/utils.js';
+import { kstToday, getSubjectColor, SUBJECT_COLOR_MAP, skeletonCards, showToast, renderMath } from '../core/utils.js';
 
 export function registerHandlers(RM) {
   RM.setGalleryFilter = (sub) => {
@@ -404,7 +404,7 @@ function _renderCard(r, cardIdx) {
         <div class="rg-card-date"><i class="far fa-calendar-alt"></i> ${dateStr}</div>
         ${keywords.length > 0 ? `
           <div class="rg-card-tags">
-            ${keywords.slice(0, 3).map(k => '<span class="rg-card-tag" style="background:' + color + '0A;color:' + color + ';border:1px solid ' + color + '20">' + k + '</span>').join('')}
+            ${keywords.slice(0, 3).map(k => '<span class="rg-card-tag" style="background:' + color + '0A;color:' + color + ';border:1px solid ' + color + '20">' + renderMath(k) + '</span>').join('')}
             ${keywords.length > 3 ? '<span class="rg-card-tag-more">+' + (keywords.length - 3) + '</span>' : ''}
           </div>
         ` : ''}
