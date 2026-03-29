@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
-import { kstToday, getSubjectColor, tryParseJSON, markKeywords, safeMathHtml, getAssignmentDisplayText, skeletonDetail, showToast } from '../core/utils.js';
+import { kstToday, getSubjectColor, tryParseJSON, markKeywords, renderMath, safeMathHtml, getAssignmentDisplayText, skeletonDetail, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { render, navigate } from '../core/router.js';
 
