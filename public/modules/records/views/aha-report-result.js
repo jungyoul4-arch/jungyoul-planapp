@@ -8,7 +8,7 @@ import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
 import { navigate } from '../core/router.js';
 import { events, EVENTS } from '../core/events.js';
-import { kstToday, renderMath } from '../core/utils.js';
+import { kstToday, renderMath, safeMathHtml } from '../core/utils.js';
 import { showXpPopup } from '../components/xp-popup.js';
 import { generateAhaReportPDF } from '../components/pdf-generator.js';
 
@@ -358,7 +358,7 @@ export function renderAhaResult() {
             </div>
             ${editing
               ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateAhaField('sa',this.value)">${r.sa || ''}</textarea>`
-              : `<div class="aha-section-content">${renderMath(nl2br(r.sa)) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
+              : `<div class="aha-section-content">${safeMathHtml(r.sa) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
           </div>
 
           <!-- PA: 탐구질문 -->
@@ -374,7 +374,7 @@ export function renderAhaResult() {
                   ${editing
                     ? `<input class="cl-edit-input" value="${(q || '').replace(/"/g, '&quot;')}" oninput="_RM.updateAhaPaItem(${i},this.value)" style="flex:1">
                        <button class="aha-pa-remove" onclick="_RM.removeAhaPaItem(${i})">&times;</button>`
-                    : `<span class="aha-pa-text">${renderMath(q || '')}</span>`}
+                    : `<span class="aha-pa-text">${safeMathHtml(q || '')}</span>`}
                 </div>
               `).join('')}
               ${editing ? `
@@ -393,7 +393,7 @@ export function renderAhaResult() {
             </div>
             ${editing
               ? `<textarea class="cl-edit-textarea" rows="4" oninput="_RM.updateAhaField('da',this.value)">${r.da || ''}</textarea>`
-              : `<div class="aha-section-content">${renderMath(nl2br(r.da)) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
+              : `<div class="aha-section-content">${safeMathHtml(r.da) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
           </div>
 
           <!-- POA: 아하포인트 -->
@@ -404,7 +404,7 @@ export function renderAhaResult() {
             </div>
             ${editing
               ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateAhaField('poa',this.value)">${r.poa || ''}</textarea>`
-              : `<div class="aha-section-content">${renderMath(nl2br(r.poa)) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
+              : `<div class="aha-section-content">${safeMathHtml(r.poa) || '<span class="text-muted">(내용 없음)</span>'}</div>`}
           </div>
 
           <!-- PPA: 성찰 -->
@@ -422,8 +422,8 @@ export function renderAhaResult() {
               </div>
             ` : `
               <div class="aha-ppa-content">
-                ${ppa.change ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">🔄</span><div><strong>전후 생각 변화</strong><p>${renderMath(nl2br(ppa.change))}</p></div></div>` : ''}
-                ${ppa.lacking ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">📌</span><div><strong>부족했던 것</strong><p>${renderMath(nl2br(ppa.lacking))}</p></div></div>` : ''}
+                ${ppa.change ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">🔄</span><div><strong>전후 생각 변화</strong><p>${safeMathHtml(ppa.change)}</p></div></div>` : ''}
+                ${ppa.lacking ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">📌</span><div><strong>부족했던 것</strong><p>${safeMathHtml(ppa.lacking)}</p></div></div>` : ''}
                 ${!ppa.change && !ppa.lacking ? '<span class="text-muted">(내용 없음)</span>' : ''}
               </div>
             `}
@@ -438,7 +438,7 @@ export function renderAhaResult() {
                 <span class="aha-feedback-icon">🎯</span>
                 <span class="aha-feedback-title">아하 리포트 피드백</span>
               </div>
-              <div class="aha-feedback-body">${renderMath(nl2br(stripMarkdown(feedback)))}</div>
+              <div class="aha-feedback-body">${safeMathHtml(stripMarkdown(feedback))}</div>
             </div>
           ` : feedbackLoading ? `
             <div class="aha-feedback-loading">
