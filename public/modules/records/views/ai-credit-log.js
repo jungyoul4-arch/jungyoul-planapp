@@ -8,7 +8,7 @@ import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
 import { navigate } from '../core/router.js';
 import { events, EVENTS } from '../core/events.js';
-import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, generatePlanSteps, isSimpleAssignment, SUBJECT_COLOR_MAP, showToast } from '../core/utils.js';
+import { kstToday, kstDateOffset, getSubjectColor, markKeywords, renderMath, safeMathHtml, generatePlanSteps, isSimpleAssignment, SUBJECT_COLOR_MAP, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { showXpPopup } from '../components/xp-popup.js';
 
@@ -408,9 +408,9 @@ function _renderSeteukQuestions(log, editing) {
           ${q.resolved ? '<i class="fas fa-check" style="color:white;font-size:11px"></i>' : ''}
         </button>
         <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${renderMath(q.q)}</div>
-          ${q.reason ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:4px;font-size:10px"></i><strong>왜?</strong> ${q.reason}</div>` : ''}
-          ${q.guide ? `<div style="font-size:12px;color:var(--primary-light);margin-top:4px;line-height:1.5;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px"><i class="fas fa-compass" style="margin-right:4px;font-size:10px"></i><strong>탐구 방향:</strong> ${q.guide}</div>` : ''}
+          <div style="font-size:14px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${safeMathHtml(q.q)}</div>
+          ${q.reason ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:4px;font-size:10px"></i><strong>왜?</strong> ${safeMathHtml(q.reason)}</div>` : ''}
+          ${q.guide ? `<div style="font-size:12px;color:var(--primary-light);margin-top:4px;line-height:1.5;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px"><i class="fas fa-compass" style="margin-right:4px;font-size:10px"></i><strong>탐구 방향:</strong> ${safeMathHtml(q.guide)}</div>` : ''}
         </div>
         <span class="cl-question-num" style="flex-shrink:0">Q${i + 1}</span>
       </div>
@@ -434,13 +434,13 @@ function _renderQuiz(log) {
               <div style="display:flex;align-items:flex-start;gap:10px">
                 <span class="cl-exam-num">${i + 1}</span>
                 <div style="flex:1;min-width:0">
-                  <div style="font-size:14px;font-weight:500;color:var(--text-primary);line-height:1.5">${renderMath(q.question)}</div>
+                  <div style="font-size:14px;font-weight:500;color:var(--text-primary);line-height:1.5">${safeMathHtml(q.question)}</div>
                   <button onclick="_RM.toggleRecallAnswer(${i})" style="margin-top:8px;padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text-secondary);font-size:12px;cursor:pointer;transition:all 0.2s">
                     <i class="fas fa-eye" style="margin-right:4px"></i>정답·해설 보기
                   </button>
                   <div id="recall-answer-${i}" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(99,102,241,0.06);border-radius:8px;border-left:3px solid var(--primary-light)">
-                    ${q.answer ? `<div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:4px"><i class="fas fa-check-circle" style="margin-right:4px"></i>정답: ${renderMath(q.answer)}</div>` : ''}
-                    ${q.explanation ? `<div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${renderMath(q.explanation)}</div>` : ''}
+                    ${q.answer ? `<div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:4px"><i class="fas fa-check-circle" style="margin-right:4px"></i>정답: ${safeMathHtml(q.answer)}</div>` : ''}
+                    ${q.explanation ? `<div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${safeMathHtml(q.explanation)}</div>` : ''}
                   </div>
                 </div>
               </div>
@@ -458,7 +458,7 @@ function _renderQuiz(log) {
         ${legacy.map((item, i) => `
           <div class="cl-exam-item">
             <span class="cl-exam-num">${i + 1}</span>
-            <span class="cl-exam-text">${renderMath(item)}</span>
+            <span class="cl-exam-text">${safeMathHtml(item)}</span>
           </div>
         `).join('')}
       </div>
@@ -519,7 +519,7 @@ function _renderSummarySection(log, editing) {
       <span class="cl-section-label">📋 수업 맥락 요약</span>
       ${editing
         ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateCreditLogField('summary',this.value)">${log.summary || ''}</textarea>`
-        : `<div class="cl-section-value cl-handwriting">${renderMath((log.summary || '—').replace(/\n/g, '<br>'))}</div>`}
+        : `<div class="cl-section-value cl-handwriting">${safeMathHtml(log.summary || '—')}</div>`}
     </div>`;
 }
 
@@ -530,7 +530,7 @@ function _renderTeacherInsight(log, editing) {
       <span class="cl-section-label">📝 세특 관찰 코멘트</span>
       ${editing
         ? `<textarea class="cl-edit-textarea" rows="5" oninput="_RM.updateCreditLogField('teacher_insight',this.value)">${log.teacher_insight || ''}</textarea>`
-        : `<div class="cl-insight-box">${renderMath((log.teacher_insight || '—').replace(/\n/g, '<br>'))}</div>`}
+        : `<div class="cl-insight-box">${safeMathHtml(log.teacher_insight || '—')}</div>`}
     </div>`;
 }
 
@@ -587,7 +587,7 @@ export function renderAiResult() {
             <span class="cl-section-label">⭐ 선생님 강조 포인트</span>
             ${editing
               ? `<textarea class="cl-edit-textarea" rows="3" oninput="_RM.updateCreditLogField('highlights',this.value)">${log.highlights || ''}</textarea>`
-              : `<div class="cl-section-value cl-handwriting">${renderMath(markKeywords((log.highlights || '—').replace(/\n/g, '<br>'), kw))}</div>`}
+              : `<div class="cl-section-value cl-handwriting">${safeMathHtml(log.highlights || '—', { keywords: kw })}</div>`}
           </div>
 
           <!-- 3. 🔑 핵심 키워드 -->
