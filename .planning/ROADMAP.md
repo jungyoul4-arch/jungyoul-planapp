@@ -37,7 +37,10 @@ Plans:
   1. In views that call renderMath(), the processing order is escapeHtml -> renderMath -> nl2br -> markKeywords, verified by code inspection and testing with adversarial input like `<img src=x onerror=alert(1)>`
   2. Text containing `$20` or `$50 to $100` does NOT trigger math rendering -- only proper LaTeX delimiters are matched
   3. AI-generated text with non-standard LaTeX commands (e.g., `\ce{}`, `\cancel{}`) renders with best-effort output instead of throwing errors
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 02-01-PLAN.md — Harden renderMath regex, add strict:false, create safeMathHtml helper, fix call ordering in ai-credit-log.js and aha-report-result.js
 
 ### Phase 3: Coverage & Mobile Polish
 **Goal**: Every view displaying AI-generated text renders math, and long equations display correctly on mobile devices
@@ -57,5 +60,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. CDN Loading Fix | 0/1 | Not started | - |
-| 2. Security & Call Order | 0/0 | Not started | - |
+| 2. Security & Call Order | 0/1 | Not started | - |
 | 3. Coverage & Mobile Polish | 0/0 | Not started | - |
