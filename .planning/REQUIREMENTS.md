@@ -15,9 +15,9 @@ Requirements for math rendering fix. Each maps to roadmap phases.
 
 ### Security & Call Order
 
-- [ ] **SEC-01**: `renderMath()` 호출이 `nl2br`, `markKeywords` 변환보다 먼저 실행되어 HTML 태그가 LaTeX 파싱을 깨뜨리지 않음
-- [ ] **SEC-02**: KaTeX 옵션에 `strict: false`가 설정되어 비표준 LaTeX 명령어에도 렌더링이 시도됨
-- [ ] **SEC-03**: 달러 기호 regex에 경계 체크가 추가되어 `$20`과 같은 비수식 텍스트가 수식으로 오인되지 않음
+- [x] **SEC-01**: `renderMath()` 호출이 `nl2br`, `markKeywords` 변환보다 먼저 실행되어 HTML 태그가 LaTeX 파싱을 깨뜨리지 않음
+- [x] **SEC-02**: KaTeX 옵션에 `strict: false`가 설정되어 비표준 LaTeX 명령어에도 렌더링이 시도됨
+- [x] **SEC-03**: 달러 기호 regex에 경계 체크가 추가되어 `$20`과 같은 비수식 텍스트가 수식으로 오인되지 않음
 
 ### Coverage
 
@@ -53,9 +53,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CDN-01 | Phase 1 | Pending |
 | CDN-02 | Phase 1 | Pending |
 | CDN-03 | Phase 1 | Pending |
-| SEC-01 | Phase 2 | Pending |
-| SEC-02 | Phase 2 | Pending |
-| SEC-03 | Phase 2 | Pending |
+| SEC-01 | Phase 2 | Complete |
+| SEC-02 | Phase 2 | Complete |
+| SEC-03 | Phase 2 | Complete |
 | COV-01 | Phase 3 | Pending |
 | COV-02 | Phase 3 | Pending |
 | COV-03 | Phase 3 | Pending |

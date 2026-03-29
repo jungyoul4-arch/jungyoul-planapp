@@ -40,7 +40,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 02-01-PLAN.md — Harden renderMath regex, add strict:false, create safeMathHtml helper, fix call ordering in ai-credit-log.js and aha-report-result.js
+- [x] 02-01-PLAN.md — Harden renderMath regex, add strict:false, create safeMathHtml helper, fix call ordering in ai-credit-log.js and aha-report-result.js
 
 ### Phase 3: Coverage & Mobile Polish
 **Goal**: Every view displaying AI-generated text renders math, and long equations display correctly on mobile devices

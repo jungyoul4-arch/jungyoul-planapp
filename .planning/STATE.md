@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.16.44
 milestone_name: milestone
-status: planning
-stopped_at: Roadmap and state initialized
-last_updated: "2026-03-29T13:04:54.178Z"
+status: verifying
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-29T13:21:41.950Z"
 last_activity: 2026-03-29
 progress:
   total_phases: 3
-  completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
+  completed_phases: 2
+  total_plans: 2
+  completed_plans: 2
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-29)
 
 **Core value:** Math formulas render like a textbook in student study records
-**Current focus:** Phase 1 - CDN Loading Fix
+**Current focus:** Phase 02 — security-call-order
 
 ## Current Position
 
-Phase: 2 of 3 (security & call order)
-Plan: Not started
-Status: Ready to plan
+Phase: 02 (security-call-order) — EXECUTING
+Plan: 1 of 1
+Status: Phase complete — ready for verification
 Last activity: 2026-03-29
 
 Progress: [░░░░░░░░░░] 0%
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 02 P01 | 3min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,8 @@ Recent decisions affecting current work:
 
 - [Init]: KaTeX via CDN (not bundled) -- already integrated, keeps bundle small
 - [Init]: Upgrade KaTeX 0.16.9 -> 0.16.44 -- free bug fixes, one-line CDN URL change
+- [Phase 02]: safeMathHtml as single entry point for AI text rendering to prevent future call-ordering bugs
+- [Phase 02]: Lookbehind/lookahead regex boundaries to reject currency false positives like $20
 
 ### Pending Todos
 
@@ -73,6 +76,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-29
-Stopped at: Roadmap and state initialized
+Last session: 2026-03-29T13:21:41.947Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
