@@ -50,7 +50,10 @@ Plans:
   1. Navigating to class-detail, class-history, and any other views that display AI-generated text shows math rendered (not raw LaTeX)
   2. A long physics equation like `$$\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}$$` on a mobile screen does not cause horizontal page scroll -- it either wraps or shows a contained scrollbar within the math block
   3. Selecting and copying a rendered equation puts the LaTeX source text in the clipboard
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 03-01-PLAN.md — Expand safeMathHtml to class-detail, aha-report-list, question-record, exam-detail views; add KaTeX mobile overflow CSS; add copy-tex CDN extension
 
 ## Progress
 
@@ -61,4 +64,4 @@ Phases execute in numeric order: 1 -> 2 -> 3
 |-------|----------------|--------|-----------|
 | 1. CDN Loading Fix | 0/1 | Not started | - |
 | 2. Security & Call Order | 0/1 | Not started | - |
-| 3. Coverage & Mobile Polish | 0/0 | Not started | - |
+| 3. Coverage & Mobile Polish | 0/1 | Not started | - |
