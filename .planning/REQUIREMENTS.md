@@ -21,9 +21,9 @@ Requirements for math rendering fix. Each maps to roadmap phases.
 
 ### Coverage
 
-- [ ] **COV-01**: 앱 전체에서 AI 생성 텍스트를 표시하는 모든 뷰에서 `renderMath()`가 호출됨 (ai-credit-log, aha-report, class-detail, class-history 등)
-- [ ] **COV-02**: 모바일/태블릿에서 긴 수식이 화면을 넘지 않고, 가로 스크롤 또는 줄바꿈으로 처리됨
-- [ ] **COV-03**: 렌더링된 수식을 선택/복사하면 LaTeX 소스 텍스트가 클립보드에 복사됨
+- [x] **COV-01**: 앱 전체에서 AI 생성 텍스트를 표시하는 모든 뷰에서 `renderMath()`가 호출됨 (ai-credit-log, aha-report, class-detail, class-history 등)
+- [x] **COV-02**: 모바일/태블릿에서 긴 수식이 화면을 넘지 않고, 가로 스크롤 또는 줄바꿈으로 처리됨
+- [x] **COV-03**: 렌더링된 수식을 선택/복사하면 LaTeX 소스 텍스트가 클립보드에 복사됨
 
 ## v2 Requirements
 
@@ -56,9 +56,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-01 | Phase 2 | Complete |
 | SEC-02 | Phase 2 | Complete |
 | SEC-03 | Phase 2 | Complete |
-| COV-01 | Phase 3 | Pending |
-| COV-02 | Phase 3 | Pending |
-| COV-03 | Phase 3 | Pending |
+| COV-01 | Phase 3 | Complete |
+| COV-02 | Phase 3 | Complete |
+| COV-03 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 9 total

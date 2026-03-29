@@ -12,7 +12,7 @@ Fix broken math rendering in the HS CreditPlanner production app. KaTeX is alrea
 
 - [ ] **Phase 1: CDN Loading Fix** - Get KaTeX loading and rendering in production builds
 - [ ] **Phase 2: Security & Call Order** - Fix utility call ordering and regex to prevent XSS and false positives
-- [ ] **Phase 3: Coverage & Mobile Polish** - Expand renderMath() to all AI-generated content views and fix mobile overflow
+- [x] **Phase 3: Coverage & Mobile Polish** - Expand renderMath() to all AI-generated content views and fix mobile overflow (completed 2026-03-29)
 
 ## Phase Details
 
@@ -50,10 +50,10 @@ Plans:
   1. Navigating to class-detail, class-history, and any other views that display AI-generated text shows math rendered (not raw LaTeX)
   2. A long physics equation like `$$\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}$$` on a mobile screen does not cause horizontal page scroll -- it either wraps or shows a contained scrollbar within the math block
   3. Selecting and copying a rendered equation puts the LaTeX source text in the clipboard
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
-- [ ] 03-01-PLAN.md — Expand safeMathHtml to class-detail, aha-report-list, question-record, exam-detail views; add KaTeX mobile overflow CSS; add copy-tex CDN extension
+- [x] 03-01-PLAN.md — Expand safeMathHtml to class-detail, aha-report-list, question-record, exam-detail views; add KaTeX mobile overflow CSS; add copy-tex CDN extension
 
 ## Progress
 
@@ -64,4 +64,4 @@ Phases execute in numeric order: 1 -> 2 -> 3
 |-------|----------------|--------|-----------|
 | 1. CDN Loading Fix | 0/1 | Not started | - |
 | 2. Security & Call Order | 0/1 | Not started | - |
-| 3. Coverage & Mobile Polish | 0/1 | Not started | - |
+| 3. Coverage & Mobile Polish | 1/1 | Complete   | 2026-03-29 |

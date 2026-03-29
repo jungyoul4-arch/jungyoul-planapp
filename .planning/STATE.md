@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.16.44
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-03-29T13:25:13.022Z"
+stopped_at: "03-01 checkpoint: awaiting browser verification"
+last_updated: "2026-03-29T13:52:07.191Z"
 last_activity: 2026-03-29
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 3
+  total_plans: 3
+  completed_plans: 3
   percent: 0
 ---
 
@@ -65,6 +65,7 @@ Recent decisions affecting current work:
 - [Init]: Upgrade KaTeX 0.16.9 -> 0.16.44 -- free bug fixes, one-line CDN URL change
 - [Phase 02]: safeMathHtml as single entry point for AI text rendering to prevent future call-ordering bugs
 - [Phase 02]: Lookbehind/lookahead regex boundaries to reject currency false positives like $20
+- [Phase 03]: renderMath (not safeMathHtml) for pre-formatted HTML in exam-detail aiPlan
 
 ### Pending Todos
 
@@ -76,6 +77,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-29T13:21:41.947Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-29T13:52:02.834Z
+Stopped at: 03-01 checkpoint: awaiting browser verification
 Resume file: None
