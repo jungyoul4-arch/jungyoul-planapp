@@ -24,7 +24,10 @@ Fix broken math rendering in the HS CreditPlanner production app. KaTeX is alrea
   1. Opening the production app shows KaTeX CSS and JS loaded in browser DevTools Network tab (no 404s, no missing resources)
   2. Navigating to ai-credit-log or aha-report-result views renders inline `$...$` and block `$$...$$` math as formatted equations, not raw text
   3. If CDN fails to load (simulated by blocking jsdelivr), the app still functions normally with math shown as plain text and a console warning logged
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 01-01-PLAN.md — Upgrade KaTeX CDN to v0.16.44, add onerror handlers, add renderMath() fallback warning, verify build
 
 ### Phase 2: Security & Call Order
 **Goal**: Math rendering is secure and correct -- no XSS vectors from call ordering, no false positives on dollar amounts
@@ -53,6 +56,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. CDN Loading Fix | 0/0 | Not started | - |
+| 1. CDN Loading Fix | 0/1 | Not started | - |
 | 2. Security & Call Order | 0/0 | Not started | - |
 | 3. Coverage & Mobile Polish | 0/0 | Not started | - |
