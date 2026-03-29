@@ -50,6 +50,7 @@ export function generateCreditLogPDF(creditLog, subject, date, studentName) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>나의 수업 탐구 기록 · ${subject} ${date}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.44/dist/katex.min.css">
 <style>
 :root {
   --ink:    #1c1c1e;
@@ -298,7 +299,7 @@ body {
       </dl>
       <div class="ctx-body">
         <h2>${_esc(creditLog.topic || '')}</h2>
-        <p>${_esc(creditLog.summary).replace(/\n/g, '<br>')}</p>
+        <p>${_mathEsc(creditLog.summary).replace(/\n/g, '<br>')}</p>
       </div>
     </div>
   </section>` : ''}
@@ -310,7 +311,7 @@ body {
       ${examConn.slice(0, 4).map((item, i) => `
       <li>
         <span class="exam-n">${String(i + 1).padStart(2, '0')}</span>
-        <div class="exam-txt">${_esc(item)}</div>
+        <div class="exam-txt">${_mathEsc(item)}</div>
       </li>`).join('')}
     </ul>
   </section>` : ''}
@@ -319,7 +320,7 @@ body {
   <section class="sec">
     <div class="sec-label">선생님 강조 포인트</div>
     <ul class="emph-list">
-      ${highlightItems.slice(0, 5).map(item => `<li>${_esc(item)}</li>`).join('')}
+      ${highlightItems.slice(0, 5).map(item => `<li>${_mathEsc(item)}</li>`).join('')}
     </ul>
   </section>` : ''}
 
@@ -329,7 +330,7 @@ body {
     <div class="logic-cols">
       ${deepDiveItems.slice(0, 3).map(item => `
       <div class="logic-item">
-        <p>${_esc(item).replace(/\n/g, '<br>')}</p>
+        <p>${_mathEsc(item).replace(/\n/g, '<br>')}</p>
       </div>`).join('')}
     </div>
   </section>` : ''}
@@ -340,16 +341,16 @@ body {
     ${seteukQs.length > 0
       ? seteukQs.map((q, i) => `
       <div class="q-block">
-        <div class="q-my">${_esc(q.q || '')}</div>
-        ${q.reason ? `<div style="font-size:22px;color:var(--mid);margin:8px 0 8px 24px;line-height:1.7"><strong style="color:var(--gold)">왜?</strong> ${_esc(q.reason)}</div>` : ''}
-        ${q.guide ? `<div class="q-up"><span class="q-up-label">탐구 방향</span>${_esc(q.guide)}</div>` : ''}
+        <div class="q-my">${_mathEsc(q.q || '')}</div>
+        ${q.reason ? `<div style="font-size:22px;color:var(--mid);margin:8px 0 8px 24px;line-height:1.7"><strong style="color:var(--gold)">왜?</strong> ${_mathEsc(q.reason)}</div>` : ''}
+        ${q.guide ? `<div class="q-up"><span class="q-up-label">탐구 방향</span>${_mathEsc(q.guide)}</div>` : ''}
       </div>`).join('')
       : questions.map(q => `
       <div class="q-block">
-        <div class="q-my">${_esc(q.original || '')}</div>
+        <div class="q-my">${_mathEsc(q.original || '')}</div>
         <div class="q-up">
           <span class="q-up-label">선생님께 이렇게</span>
-          ${_esc(q.improved || '')}
+          ${_mathEsc(q.improved || '')}
         </div>
       </div>`).join('')}
   </section>` : ''}
@@ -362,9 +363,9 @@ body {
       <li>
         <span class="exam-n">${String(i + 1).padStart(2, '0')}</span>
         <div class="exam-txt">
-          <div style="font-weight:500;color:var(--ink)">${_esc(q.question || '')}</div>
-          ${q.answer ? `<div style="margin-top:10px;font-size:22px"><strong style="color:var(--teal)">정답:</strong> ${_esc(q.answer)}</div>` : ''}
-          ${q.explanation ? `<div style="margin-top:6px;font-size:22px;color:var(--faint)">${_esc(q.explanation)}</div>` : ''}
+          <div style="font-weight:500;color:var(--ink)">${_mathEsc(q.question || '')}</div>
+          ${q.answer ? `<div style="margin-top:10px;font-size:22px"><strong style="color:var(--teal)">정답:</strong> ${_mathEsc(q.answer)}</div>` : ''}
+          ${q.explanation ? `<div style="margin-top:6px;font-size:22px;color:var(--faint)">${_mathEsc(q.explanation)}</div>` : ''}
         </div>
       </li>`).join('')}
     </ul>
@@ -375,21 +376,21 @@ body {
     <div class="sec-label">메타인지 자극 질문</div>
     ${activeRecall.slice(0, 3).map(item => `
     <div class="meta-block">
-      <div class="meta-q">${_esc(item.question)}</div>
-      <div class="meta-a">${_esc(item.answer)}</div>
+      <div class="meta-q">${_mathEsc(item.question)}</div>
+      <div class="meta-a">${_mathEsc(item.answer)}</div>
     </div>`).join('')}
   </section>` : ''}
 
   ${keywords.length > 0 ? `
   <div class="kw-strip">
     <span class="kw-label">핵심 키워드</span>
-    ${keywords.slice(0, 5).map(kw => `<span class="kw">${_esc(kw)}</span>`).join('')}
+    ${keywords.slice(0, 5).map(kw => `<span class="kw">${_mathEsc(kw)}</span>`).join('')}
   </div>` : ''}
 
   ${creditLog.teacher_insight ? `
   <section class="sec-full">
     <div class="sec-label">세특 관찰 코멘트</div>
-    <p class="seteuk">${_esc(creditLog.teacher_insight).replace(/\n/g, '<br>')}</p>
+    <p class="seteuk">${_mathEsc(creditLog.teacher_insight).replace(/\n/g, '<br>')}</p>
   </section>` : ''}
 
   ${hwText ? `
@@ -412,6 +413,23 @@ body {
 function _esc(str) {
   if (!str) return '';
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function _mathEsc(str) {
+  if (!str) return '';
+  const escaped = _esc(str);
+  if (typeof katex === 'undefined') return escaped;
+  // Block formulas: $$...$$
+  let result = escaped.replace(/\$\$([^$]+)\$\$/g, (match, formula) => {
+    try { return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false, strict: false }); }
+    catch { return match; }
+  });
+  // Inline formulas: $...$ (with boundary checks)
+  result = result.replace(/(?<!\w)\$([^$\n]+?)\$(?!\d)/g, (match, formula) => {
+    try { return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false, strict: false }); }
+    catch { return match; }
+  });
+  return result;
 }
 
 function _openPreviewWindow(html) {
@@ -439,6 +457,7 @@ export function generateAhaReportPDF(result, subject, date, feedback, studentNam
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>아하 리포트 · ${_esc(subject)} ${_esc(date)}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.44/dist/katex.min.css">
 <style>
 :root {
   --ink:    #1c1c1e;
@@ -622,7 +641,7 @@ body {
       <span class="sec-badge" style="background:#ffe0e0;color:#c0392b">SA</span>
       문제상황 · situation analysis
     </div>
-    <div class="sec-body">${_esc(result.sa).replace(/\\n/g, '<br>')}</div>
+    <div class="sec-body">${_mathEsc(result.sa).replace(/\\n/g, '<br>')}</div>
   </section>` : ''}
 
   ${pa.length > 0 ? `
@@ -635,7 +654,7 @@ body {
       ${pa.map((q, i) => `
       <li>
         <span class="q-n">Q${i + 1}</span>
-        <div class="q-txt">${_esc(q)}</div>
+        <div class="q-txt">${_mathEsc(q)}</div>
       </li>`).join('')}
     </ul>
   </section>` : ''}
@@ -646,7 +665,7 @@ body {
       <span class="sec-badge" style="background:#e0f2f1;color:#1a6060">DA</span>
       탐구과정 & 결론 · data analysis
     </div>
-    <div class="sec-body">${_esc(result.da).replace(/\\n/g, '<br>')}</div>
+    <div class="sec-body">${_mathEsc(result.da).replace(/\\n/g, '<br>')}</div>
   </section>` : ''}
 
   ${result.poa ? `
@@ -655,7 +674,7 @@ body {
       <span class="sec-badge" style="background:#fff8e1;color:#a07028">POA</span>
       아하포인트 · point of awareness
     </div>
-    <div class="sec-body">${_esc(result.poa).replace(/\\n/g, '<br>')}</div>
+    <div class="sec-body">${_mathEsc(result.poa).replace(/\\n/g, '<br>')}</div>
   </section>` : ''}
 
   ${ppa.change || ppa.lacking ? `
@@ -667,19 +686,19 @@ body {
     ${ppa.change ? `
     <div class="ppa-block">
       <div class="ppa-tag">전후 생각 변화</div>
-      <div class="ppa-body">${_esc(ppa.change).replace(/\\n/g, '<br>')}</div>
+      <div class="ppa-body">${_mathEsc(ppa.change).replace(/\\n/g, '<br>')}</div>
     </div>` : ''}
     ${ppa.lacking ? `
     <div class="ppa-block">
       <div class="ppa-tag">부족했던 것</div>
-      <div class="ppa-body">${_esc(ppa.lacking).replace(/\\n/g, '<br>')}</div>
+      <div class="ppa-body">${_mathEsc(ppa.lacking).replace(/\\n/g, '<br>')}</div>
     </div>` : ''}
   </section>` : ''}
 
   ${feedback ? `
   <section class="feedback-sec">
     <div class="sec-label">아하 리포트 피드백</div>
-    <div class="feedback-body">${_esc(stripMarkdown(feedback)).replace(/\n/g, '<br>')}</div>
+    <div class="feedback-body">${_mathEsc(stripMarkdown(feedback)).replace(/\n/g, '<br>')}</div>
   </section>` : ''}
 
 </main>
