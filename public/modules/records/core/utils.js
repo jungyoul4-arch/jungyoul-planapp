@@ -86,24 +86,63 @@ export function renderMath(text) {
   if (typeof katex === 'undefined') return text;
 
   // 블록 수식: $$...$$
-  text = text.replace(/\$\$([^$]+)\$\$/g, (match, formula) => {
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, formula) => {
     try {
       return katex.renderToString(formula.trim(), {
-        displayMode: true, throwOnError: false, output: 'html'
+        displayMode: true, throwOnError: false, strict: false, output: 'html'
       });
     } catch { return match; }
   });
 
-  // 인라인 수식: $...$
-  text = text.replace(/\$([^$\n]+)\$/g, (match, formula) => {
+  // 인라인 수식: $...$ (boundary-checked to reject $20 etc.)
+  text = text.replace(/(?<!\w)\$([^$\n]+?)\$(?!\d)/g, (match, formula) => {
     try {
       return katex.renderToString(formula.trim(), {
-        displayMode: false, throwOnError: false, output: 'html'
+        displayMode: false, throwOnError: false, strict: false, output: 'html'
       });
     } catch { return match; }
   });
 
   return text;
+}
+
+/**
+ * AI 생성 텍스트의 안전한 HTML 변환 (올바른 호출 순서 강제)
+ * 순서: escapeHtml -> renderMath -> nl2br -> markKeywords(선택)
+ * @param {string} text - raw AI text
+ * @param {{ keywords?: string[] }} opts - optional keywords for highlighting
+ * @returns {string} safe HTML string
+ */
+export function safeMathHtml(text, opts) {
+  if (!text || typeof text !== 'string') return text || '';
+  let result = escapeHtml(text);
+  result = renderMath(result);
+  result = result.replace(/\n/g, '<br>');
+  if (opts && opts.keywords && opts.keywords.length > 0) {
+    // markKeywords after renderMath: skip content inside KaTeX spans
+    result = markKeywordsOutsideKatex(result, opts.keywords);
+  }
+  return result;
+}
+
+/**
+ * markKeywords that skips content inside <span class="katex">...</span> blocks
+ */
+function markKeywordsOutsideKatex(html, keywords) {
+  if (!keywords || keywords.length === 0) return html;
+  const filtered = keywords.filter(k => k && k.length >= 2);
+  if (filtered.length === 0) return html;
+  const escaped = filtered.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const kwRegex = new RegExp(`(${escaped.join('|')})`, 'gi');
+  // Split by KaTeX spans to avoid modifying math output
+  const parts = html.split(/(<span class="katex[\s\S]*?<\/span>(?:<\/span>)*)/);
+  return parts.map((part, i) => {
+    // Even indices are non-KaTeX text, odd indices are KaTeX HTML
+    if (i % 2 === 0) {
+      return part.replace(kwRegex, '<span class="cl-mark">$1</span>');
+    }
+    return part;
+  }).join('');
 }
 
 /**
