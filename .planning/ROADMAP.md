@@ -27,7 +27,7 @@ Fix broken math rendering in the HS CreditPlanner production app. KaTeX is alrea
 **Plans:** 1 plan
 
 Plans:
-- [ ] 01-01-PLAN.md — Upgrade KaTeX CDN to v0.16.44, add onerror handlers, add renderMath() fallback warning, verify build
+- [x] 01-01-PLAN.md — Upgrade KaTeX CDN to v0.16.44, add onerror handlers, add renderMath() fallback warning, verify build
 
 ### Phase 2: Security & Call Order
 **Goal**: Math rendering is secure and correct -- no XSS vectors from call ordering, no false positives on dollar amounts
