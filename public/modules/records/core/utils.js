@@ -83,7 +83,13 @@ export function tryParseJSON(str, fallback) {
  */
 export function renderMath(text) {
   if (!text || typeof text !== 'string') return text || '';
-  if (typeof katex === 'undefined') return text;
+  if (typeof katex === 'undefined') {
+    if (!renderMath._warned) {
+      console.warn('[KaTeX] Library not loaded. Math formulas will display as plain text.');
+      renderMath._warned = true;
+    }
+    return text;
+  }
 
   // 블록 수식: $$...$$
   text = text.replace(/\$\$([^$]+)\$\$/g, (match, formula) => {
