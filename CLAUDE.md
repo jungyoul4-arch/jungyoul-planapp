@@ -336,3 +336,315 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 *마지막 업데이트: 2026-03-11*
 *이 파일은 프로젝트와 함께 계속 성장합니다.*
+
+<!-- GSD:project-start source:PROJECT.md -->
+## Project
+
+**고교학점제 맞춤형 학생 플래너 — 수식 렌더링 수정**
+
+고교학점제 학생을 위한 맞춤형 학습 플래너 앱. 수업 탐구 기록, 세특 질문, 퀴즈, 성장 분석 등을 AI로 분석하고 기록하는 웹앱(Cloudflare Pages + Hono + Vanilla JS SPA). 현재 물리/수학 등 과목에서 LaTeX 수식이 렌더링되지 않고 raw 텍스트로 노출되는 문제를 해결해야 한다.
+
+**Core Value:** 학생이 작성한 수업 기록에서 수식과 기호가 교과서처럼 깔끔하게 렌더링되어, 과학/수학 과목의 탐구 기록이 전문적이고 가독성 높게 표시되는 것.
+
+### Constraints
+
+- **Tech Stack**: Cloudflare Pages + Hono, Vanilla JS (React/Vue 없음)
+- **라이브러리**: KaTeX v0.16.9 사용 (이미 통합됨)
+- **호환성**: 모바일(Android/iOS) 및 태블릿에서 정상 작동해야 함
+<!-- GSD:project-end -->
+
+<!-- GSD:stack-start source:codebase/STACK.md -->
+## Technology Stack
+
+## Languages
+- TypeScript ESNext - Backend API handlers and type definitions (`src/index.tsx`, `src/helpers.ts`, `src/types.ts`)
+- JavaScript (Vanilla ES Modules) - Frontend SPA (`public/static/app.js`, `public/static/app-mentor.js`)
+- HTML/CSS - UI with TailwindCSS CDN (`public/index.html`)
+- JSX - Hono server-side rendering (`src/renderer.tsx`, Hono components in TSX files)
+- SQL - Cloudflare D1 queries (embedded in TypeScript)
+## Runtime
+- Node.js 18+ (implied by wrangler config)
+- Cloudflare Workers (serverless execution via Hono)
+- Cloudflare Pages Functions (`pages_build_output_dir: "./dist"`)
+- npm 10+ (evidenced by package-lock.json v3)
+- Lockfile: `package-lock.json` (present)
+## Frameworks
+- Hono 4.11.9 - Lightweight web framework for Cloudflare Workers (`src/index.tsx`)
+- Vite 6.3.5 - Build bundler and dev server (`vite.config.ts`)
+- Wrangler 4.4.0 - Cloudflare CLI for deployment and local testing
+- Not detected in package.json (unit tests not configured)
+## Key Dependencies
+- hono 4.11.9 - All API endpoints depend on Hono router and middleware
+- @hono/vite-build 1.2.0 - Required for building to Cloudflare Pages Functions format
+- @hono/vite-dev-server 0.18.2 - Enables local dev with Cloudflare bindings
+- wrangler 4.4.0 - Deploys to production and manages secrets/environment
+- @cloudflare/workerd-darwin-64 (optional) - Local Workers runtime emulation on macOS x64
+- @cloudflare/workerd-darwin-arm64 (optional) - Local Workers runtime on macOS ARM64
+- @cloudflare/workerd-linux-64 (optional) - Local Workers runtime on Linux x64
+- @cloudflare/workerd-linux-arm64 (optional) - Local Workers runtime on Linux ARM64
+- @cloudflare/unenv-preset 2.14.0 - Polyfills for Workers environment
+- @cloudflare/kv-asset-handler 0.4.2 - Serves static assets from Cloudflare KV
+## Configuration
+- `.dev.vars` - Local development secrets (contains GEMINI_API_KEY for local testing)
+- `wrangler.jsonc` - Cloudflare configuration:
+- `vite.config.ts` - Configures @hono/vite-build and @hono/vite-dev-server
+- `tsconfig.json`:
+- `package.json` - "type": "module" (ES Module imports)
+## TypeScript Configuration
+## Platform Requirements
+- Node.js 18+
+- npm (with package-lock.json v3)
+- macOS/Linux/Windows with npm installed
+- `.dev.vars` file with at least GEMINI_API_KEY set
+- Cloudflare Pages (deployment target)
+- Cloudflare Workers (serverless runtime)
+- Cloudflare D1 SQLite database
+- Cloudflare R2 object storage
+- Cloudflare KV namespace (optional, for caching)
+## Build Commands
+- Source: `src/index.tsx` (Hono app entry point)
+- Output: `dist/` (Cloudflare Pages Functions)
+- Static assets: `public/` (served by Cloudflare Pages)
+## Environment Variables Required
+- GEMINI_API_KEY - Google Gemini API key
+- OPENAI_API_KEY - OpenAI API key
+- ANTHROPIC_API_KEY - Claude API key
+- PERPLEXITY_API_KEY - Perplexity API key
+- JYSK_API_URL - Remote DB proxy URL (default: https://jungyoul.com/api/jysk-api.php)
+- JYSK_API_KEY - Remote DB API authentication key
+- Same as above, set via `wrangler pages secret put KEY VALUE`
+<!-- GSD:stack-end -->
+
+<!-- GSD:conventions-start source:CONVENTIONS.md -->
+## Conventions
+
+## Naming Patterns
+- Backend (TypeScript): `camelCase.ts` — `src/index.tsx`, `src/helpers.ts`, `src/types.ts`
+- Backend routes: kebab-case in filename — `src/routes/mentor-auth.ts`, `src/routes/mentor-groups.ts`
+- Frontend (JavaScript): `camelCase.js` or kebab-case — `public/static/app.js`, `public/modules/records/core/state.js`, `public/modules/records/views/class-record.js`
+- Module files follow descriptive kebab-case — `photo-upload-v2.js`, `aha-report-input.js`
+- camelCase for all function definitions: `getKSTNow()`, `recordXp()`, `callGeminiWithFallback()`, `renderDashboard()`
+- Data fetching functions: `load*` prefix (e.g., `loadClassRecords()`, `loadQuestionRecords()`) in `core/api.js`
+- Event handlers: `on*` prefix in handler names or `*FromData()` for XSS-safe onclick wrappers (e.g., `startBackfillRecordFromData()`, `viewRecordFromData()`)
+- Prefix `_` for private/internal functions: `_showArchiveModule()`, `_hideArchiveModule()`, `_buildTodayRecords()`
+- View renderers in modules: `render*` prefix (e.g., `renderDashboard`, `renderClassRecordDetail`, `renderExamAdd`)
+- State properties: camelCase for public state (`state.currentScreen`, `state.studentTab`, `state.todayRecords`)
+- Private state properties: prefix `_` (e.g., `state._authUser`, `state._classPhotos`, `state._viewingDbRecord`)
+- Constants: UPPER_SNAKE_CASE for true constants: `GEMINI_MODEL`, `AI_API_BASE`, `NICKNAME_BLOCKLIST`, `_SIMPLE_KW`, `_COMPLEX_KW`
+- Prefix `_` for temporary/intermediate variables: `_classPhotos`, `_editorPhotos`, `_classAssignmentText`
+- TypeScript interfaces/types: PascalCase — `type Bindings`, `type D1Database`
+- Database types (JavaScript comments): describe raw field names in snake_case as returned from DB — `{ id, subject, date, content, keywords, understanding, ... }`
+- kebab-case in screen registry: `'dashboard'`, `'record-class'`, `'class-record-detail'`, `'photo-upload'`, `'ai-loading'`, `'activity-result'`
+- Map registry in `SCREEN_MAP` object associates names to renderer functions
+## Code Style
+- No explicit `.prettierrc` or `.eslintrc` detected — codebase uses loose formatting
+- Indentation: 2 spaces (observed in TypeScript and JavaScript files)
+- Template literals: used heavily for HTML strings and XSS-safe rendering: ``` html`<div>${escapeHtml(str)}</div>` ```
+- Object spread: `{ ...recordData }` for shallow copies
+- No linting config files detected (`.eslintrc*`, `biome.json`)
+- No formatter config detected
+- Formatting is loose and not enforced; style depends on developer discipline
+- Double quotes for strings (observed in JSON, TypeScript, JavaScript)
+- Template literals for multi-line or dynamic content
+- XSS mitigation: all user input wrapped with `escapeHtml()` before insertion into HTML
+- Korean comments and logging throughout (this is a Korean-language educational app)
+## Import Organization
+- No path aliases configured (no `jsconfig.paths` or TypeScript `compilerOptions.paths`)
+- Relative imports used throughout: `./core/state.js`, `../helpers`, `../types`
+- Module entry point isolation: records module uses `_RM` global namespace to avoid conflicts with main app
+## Error Handling
+- Try-catch at API boundary (route handlers): `try { ... } catch (e: any) { return c.json({ error: e.message }, 500) }`
+- Silent error suppression with logging for non-critical operations: `catch (e) { console.error('loadClassRecords:', e); }`
+- Nested try-catch for optional operations: Database hooks (e.g., community board creation) wrapped in separate try-catch to not block main operation
+- Validation before operations: `if (!loginId || !password) return c.json({ error: 'message' }, 400);`
+- Timeouts on external API calls: `fetchWithTimeout(url, init, 60000)` with AbortController
+- Success: `c.json({ success: true, data: { ... } })` (or just `data` object directly)
+- Failure: `c.json({ error: "메시지" }, status_code)` or `c.json({ success: false, error: "..." })`
+- Status codes: 400 (validation), 401 (auth), 409 (conflict), 500 (server error)
+## Logging
+- Informational: `console.log('[OCR] 완료 (${ocrText.length}자)')`
+- Errors: `console.error('loadClassRecords:', e)`
+- Prefixed context: `[OCR]`, `[분석]`, `[API]` — square brackets for operation scope
+- Fallback decisions logged: `console.log('Gemini API 실패 (${geminiRes.status}), Claude로 폴백')`
+- Silent failures for non-critical operations (XP recording, board creation hooks) — logged but don't block main flow
+## Comments
+- Section headers: `// ==================== XSS 방지 헬퍼 ====================` (thick divider for major sections)
+- Function purposes: Comments above non-obvious functions
+- Business logic notes: e.g., `// Gemini API가 할당량 초과(429) 등으로 실패할 경우 OpenAI gpt-4o-mini로 자동 폴백`
+- Data structure notes: e.g., comments explaining state shape in `_initialState`
+- Database rules (CLAUDE.md): SQL-specific gotchas like `AUTO_INCREMENT 금지 → INTEGER PRIMARY KEY AUTOINCREMENT 사용`
+- Not systematically used; minimal type documentation
+- Function signatures in TypeScript provide type hints implicitly
+- Complex functions document parameters as inline comments
+- English and Korean mixed depending on context
+- Large block comments use `/* */` format; section headers use `// ==...==` pattern
+- Inline comments explain "why" not "what" (following common best practices)
+## Function Design
+- Frontend: Large functions (100-300+ lines) common in render functions and event handlers (e.g., `renderDashboard`, `renderClassRecordEdit`)
+- Backend: Functions typically 30-80 lines per route handler
+- No strict size limits; complexity managed through modular organization and helper extraction
+- Backend routes: destructure from `c.req.json()` directly in handler
+- Frontend callbacks: often passed `el` (DOM element) for onclick handlers to extract `dataset` attributes
+- API functions: accept options objects `{ geminiKey, openaiKey, prompt, ... }`
+- Optional parameters with defaults: `function showToast(msg, type = 'info')`
+- Backend: always return `c.json()` response (never bare values)
+- API functions: return `Promise<Response>` or Promise of parsed data
+- Frontend DB layer (`DB.load*`): side-effect based — updates `state` directly, no return value
+- Render functions: return HTML string (template literal)
+## Module Design
+- Backend: export named functions and constants: `export function getKSTNow()`, `export const GEMINI_MODEL`
+- Frontend records module: exports default object `export const DB = { loadClassRecords() { ... }, saveClassRecord() { ... } }`
+- View functions: named exports: `export { renderDashboard, registerHandlers as dashboardHandlers }`
+- Handlers: exported as `registerHandlers` function that attaches event listeners
+- No barrel files (`index.js` re-exports) detected
+- Each module imported explicitly: `import { DB } from './core/api.js'`
+- Records module has flat import structure in main `records.js` file
+- Records module isolated with `_RM` global namespace (e.g., `_RM.fn()`, `_RM.state`) to avoid conflicts with main app global scope
+- Main app uses top-level globals: `state`, `goScreen()`, `renderScreen()`
+- No module bundler (Vite serves ES modules directly in dev, builds with Hono for production)
+## Database Naming
+- Dates stored as `YYYY-MM-DD` strings for date-only fields
+- Timestamps as `YYYY-MM-DD HH:MM:SS` for `*_at` columns
+- JSON stored as TEXT: `photos`, `keywords`, `ai_credit_log`, `photo_tags`
+- Booleans as INTEGER (0/1): `is_active`, `is_public`
+## Special Patterns
+- All user input escaped with `escapeHtml()` before HTML insertion
+- onclick handlers wrap user data in `data-*` attributes: `onclick="viewRecordFromData(this)"` then extract via `el.dataset.*`
+- Never use `innerHTML` with user input
+- Vanilla JavaScript: mutable `state` object with Proxy-based reactivity in records module
+- Side-effect based: `DB.load*()` functions update `state` directly
+- No immutable patterns or Redux-style reducers
+- Async/await consistently used for API calls
+- Promise chains avoided in favor of await
+- AbortController for fetch timeouts
+- TailwindCSS CDN (no custom config)
+- Mobile-first: separate `#app-content` (mobile) and `#tablet-content` (tablet) containers
+- Media query breakpoints not explicitly documented; appears to be based on layout requirements
+<!-- GSD:conventions-end -->
+
+<!-- GSD:architecture-start source:ARCHITECTURE.md -->
+## Architecture
+
+## Pattern Overview
+- Monolithic API backend in `src/index.tsx` (280K+) routed via modular route handlers
+- Multi-view SPA frontend with vanilla JavaScript and state management via Proxy
+- Independent, pluggable records module (`public/modules/records/`) with isolated state/router
+- Cloudflare Workers runtime with D1 (SQLite) persistence and R2 photo storage
+- Full-stack TypeScript (backend) + vanilla JS (frontend) architecture
+## Layers
+- Purpose: HTTP request handling, database operations, AI integrations, authentication
+- Location: `src/index.tsx` (main router) + `src/routes/*.ts` (route modules)
+- Contains: Hono route definitions, query builders, middleware (CORS, caching), AI prompt logic
+- Depends on: `src/types.ts`, `src/helpers.ts`, Cloudflare bindings (DB, R2, KV)
+- Used by: Frontend SPA via `/api/*` endpoints
+- Purpose: Reusable functions for cryptography, API calls, date/time, validation
+- Location: `src/helpers.ts` (backend helpers), `public/modules/records/core/utils.js` (frontend utils)
+- Contains: Password hashing, token generation, KST time handling, Gemini/Claude API wrappers, HTML sanitization, nickname validation
+- Depends on: External APIs (Google Gemini, OpenAI, Anthropic), Node crypto APIs
+- Used by: Route handlers and frontend views
+- Purpose: Core app shell, authentication, navigation, global state
+- Location: `public/static/app.js` (700K+), `public/static/app.css`
+- Contains: Global state object, screen routing, form handlers, localStorage cache, API bindings
+- Depends on: TailwindCSS CDN, API layer
+- Used by: Student/mentor users accessing main interface
+- Purpose: Isolated SPA for recording class sessions, exams, activities, assignments
+- Location: `public/modules/records/`
+- Contains: Modular views (dashboard, forms, galleries), centralized state management, API client, router, event bus
+- Depends on: Core utilities, API layer
+- Used by: Main app or standalone via `dev.html`
+- Structure: `core/` (state, router, API, events), `views/` (38+ screen renderers), `components/` (reusables like photo upload)
+- Purpose: Persistent data storage across users, groups, records, exams
+- Location: Cloudflare D1 (remote SQLite), schema at `schema/full_database_schema.sql`
+- Contains: 14+ tables (users, groups, records, exams, activities, assignments, etc.)
+- Accessed by: Backend API via `c.env.DB` binding
+- Data flow: API constructs SQL → D1 executes → returns results
+- Purpose: Photo/document persistence
+- Location: Cloudflare R2 bucket (`credit-planner-photos`)
+- Contains: Base64-encoded photos from class records, exam corrections, activity logs
+- Accessed by: Backend API via `c.env.R2` binding, referenced from DB via `ref:ID`
+## Data Flow
+- Central `state` object (Proxy) with 80+ properties tracking UI/data state
+- All mutations via `setState(key, value)` trigger validation + `events.emit(EVENTS.STATE_CHANGED)`
+- Views listen to events → re-render only affected sections
+- Derived state (`todayRecords`, mission progress) computed on demand from `_db*` sources + config
+## Key Abstractions
+- Purpose: Organize API endpoints by domain (auth, student, mentor, analysis)
+- Examples: `src/routes/mentor-auth.ts`, `src/routes/mentor-student.ts`, `src/routes/mentor-feedback.ts`
+- Pattern: Each route file is a `new Hono<{ Bindings }>()` instance, exported, then mounted via `app.route('/', moduleRouter)`
+- Usage: Keeps main `index.tsx` modular; each route file handles ~5-10 related endpoints
+- Purpose: Screen-specific HTML generation + event handler registration
+- Examples: `views/class-record.js`, `views/dashboard.js`, `views/exam-list.js`
+- Pattern: Each file exports:
+- Usage: Router calls `renderFn()` to get HTML, injects into container, calls `registerHandlers()` to bind logic
+- Purpose: Single source for all backend API calls with consistent error handling
+- Location: `public/modules/records/core/api.js`
+- Pattern: `export const DB = { loadClassRecords, saveClassRecord, loadQuestionRecords, ... }`
+- Usage: Views import `{ DB }` and call `DB.saveClassRecord(data)` — no direct fetch in views
+- Purpose: Decouple state changes from view updates
+- Location: `public/modules/records/core/events.js`
+- Pattern: Central event dispatcher; views emit events (`events.emit(EVENTS.RECORD_SAVED)`), other views listen
+- Usage: When quiz record completes, it emits event → dashboard listener refreshes mission counter without direct call
+- Purpose: Track screen navigation history + support back button
+- Location: `public/modules/records/core/router.js`
+- Pattern: `navigate(screen)` pushes to history, `goBack()` pops; prevents infinite loops with `_screenHistory`
+- Usage: Ensures deep linking, prevents accidental premature backs
+## Entry Points
+- Location: `src/index.tsx` (lines 28-72)
+- Triggers: HTTP request to Cloudflare Pages Functions
+- Responsibilities:
+- Location: `src/routes/mentor-auth.ts` (and others)
+- Triggers: Request to `/api/auth/*`, `/api/mentor/*`, `/api/student/*` paths
+- Responsibilities: Validate input, query D1, return JSON responses
+- Example: `/api/auth/mentor/login` → hash validation → return token + user metadata
+- Location: `public/static/app.js` (entry point defined in index.html)
+- Triggers: Page load or hard refresh
+- Responsibilities:
+- Location: `public/modules/records/records.js` (export `{ init, navigate, getState, setState }`)
+- Triggers: Called by main app via `recordsModule.init({ preloadedData })`
+- Responsibilities:
+## Error Handling
+- **API Errors:** Responses always return `{ success: bool, data/error, code }` structure. Frontend checks `success` and shows toast/alert with `error` message.
+- **AI Fallback:** Gemini API → Claude API → OpenAI fallback chain in `callGeminiWithFallback()`. If all fail, throw error with all failure reasons.
+- **DB Constraints:** D1 query errors caught in try-catch, return 400 with sanitized error message. Never expose raw SQL errors to client.
+- **Photo Upload:** Concurrent photo uploads wrapped in Promise.all with reject handling. Partial upload (1 of 3 photos fails) → show warning but save record anyway.
+- **Validation:** Input validation before DB ops (length checks, type coercion, regex patterns). Failed validation returns 400 with field error.
+## Cross-Cutting Concerns
+- Backend: `console.error()` for exceptions, `console.log()` for fallback events
+- Frontend: Global error handler attached to Records Module, logs to browser console
+- No persistent log storage (design trade-off)
+- Backend: Validator functions for password strength, invite code format, nickname content (NICKNAME_BLOCKLIST in helpers)
+- Frontend: Client-side form validation before submit; server-side re-validates all inputs
+- Token-based: `/api/auth/*/login` returns JWT-like token, frontend stores in `window._token`
+- Every API request checked server-side: mentor endpoints verify token matches mentor ID in path
+- Student endpoints: verify student ID matches logged-in student (frontend passes `studentId` in URL)
+- No refresh token mechanism; tokens don't expire in this design (security gap noted in CLAUDE.md)
+- Mentor: Can view own groups, students, feedback — checked via token + ID match
+- Student: Can only view own records, classmates, time slots — checked via student ID in path
+- Admin: Special `ADMIN_KEY` env var for `/api/admin/*` endpoints
+- Community board: Checked via `canAccessBoard()` helper (student must be in group or enrolled class)
+- Backend: Cache headers set to `no-cache` for `sw.js`, `app.js`, `app.css` to ensure latest version
+- Frontend: Records module state is in-memory only; page refresh reloads from server
+- localStorage used only for timetable (non-critical, can diverge from DB)
+- Not implemented; relies on Cloudflare's default protections
+- Photo uploads timeout after 10 minutes; AI requests timeout after 10 minutes
+<!-- GSD:architecture-end -->
+
+<!-- GSD:workflow-start source:GSD defaults -->
+## GSD Workflow Enforcement
+
+Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+
+Use these entry points:
+- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
+- `/gsd:debug` for investigation and bug fixing
+- `/gsd:execute-phase` for planned phase work
+
+Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
+<!-- GSD:workflow-end -->
+
+<!-- GSD:profile-start -->
+## Developer Profile
+
+> Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
+> This section is managed by `generate-claude-profile` -- do not edit manually.
+<!-- GSD:profile-end -->
