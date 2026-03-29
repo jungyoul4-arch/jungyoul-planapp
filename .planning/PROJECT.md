@@ -12,14 +12,13 @@
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ KaTeX 라이브러리가 프로덕션 환경에서 정상 로드됨 — Validated in Phase 1: CDN Loading Fix
 
 ### Active
 
 - [ ] 앱 전체에서 `$...$` (인라인) 및 `$$...$$` (블록) LaTeX 수식이 KaTeX로 렌더링됨
 - [ ] 수업 탐구 기록 페이지의 핵심 키워드, 세특 질문, 퀴즈, 요약 등 모든 영역에서 수식이 정상 표시됨
 - [ ] 앱의 다른 페이지(질문, 성장 등)에서도 수식이 포함된 콘텐츠가 정상 렌더링됨
-- [ ] KaTeX 라이브러리가 프로덕션 환경에서 정상 로드됨
 
 ### Out of Scope
 
@@ -66,4 +65,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-29 after initialization*
+*Last updated: 2026-03-29 after Phase 1 completion*
