@@ -3385,3 +3385,21 @@
 .archive-module.view-only-mode .cl-save-btn {
   display: none !important;
 }
+
+/* KaTeX mobile overflow prevention */
+.archive-module .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 0;
+}
+
+.archive-module .katex-display > .katex {
+  white-space: nowrap;
+}
+
+/* KaTeX formula copy selection UX */
+.archive-module .katex {
+  user-select: all;
+  -webkit-user-select: all;
+}
