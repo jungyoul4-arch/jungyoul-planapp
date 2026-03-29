@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
-import { kstToday, getSubjectColor, tryParseJSON, markKeywords, getAssignmentDisplayText, skeletonDetail, showToast } from '../core/utils.js';
+import { kstToday, getSubjectColor, tryParseJSON, markKeywords, safeMathHtml, getAssignmentDisplayText, skeletonDetail, showToast } from '../core/utils.js';
 import { generateCreditLogPDF } from '../components/pdf-generator.js';
 import { render, navigate } from '../core/router.js';
 
@@ -298,8 +298,6 @@ function _renderDetailCreditLog(log, dbId) {
   const examQs = log.exam_questions || [];
   const legacyExam = log.exam_connection || [];
   const activeRecall = log.active_recall || [];
-  function nl2br(t) { return (t || '').replace(/\n/g, '<br>'); }
-
   // 세특 질문 (신형식: 체크박스 / 구형식: Q&A 쌍)
   let seteukHtml = '';
   if (seteukQs.length > 0) {
@@ -309,13 +307,13 @@ function _renderDetailCreditLog(log, dbId) {
           ${q.resolved ? '<i class="fas fa-check" style="color:white;font-size:10px"></i>' : ''}
         </button>
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${q.q}</div>
-          ${q.reason ? '<div style="font-size:11px;color:var(--text-secondary);margin-top:3px"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:3px;font-size:9px"></i>' + q.reason + '</div>' : ''}
+          <div style="font-size:13px;font-weight:600;color:${q.resolved ? 'var(--text-muted)' : 'var(--text-primary)'};${q.resolved ? 'text-decoration:line-through;opacity:0.6' : ''}">${safeMathHtml(q.q)}</div>
+          ${q.reason ? '<div style="font-size:11px;color:var(--text-secondary);margin-top:3px"><i class="fas fa-lightbulb" style="color:#FECA57;margin-right:3px;font-size:9px"></i>' + safeMathHtml(q.reason) + '</div>' : ''}
         </div>
         <span style="font-size:11px;font-weight:700;color:var(--primary-light)">Q${i + 1}</span>
       </div>`).join('');
   } else if (legacyQs.length > 0) {
-    seteukHtml = legacyQs.map((q, i) => '<div class="cl-question-pair"><div class="cl-question-num">Q' + (i + 1) + '</div><div class="cl-question-body"><div class="cl-question-original"><span class="cl-q-label">💬 질문</span><p>' + (q.original || '') + '</p></div>' + (q.improved ? '<div class="cl-question-improved"><span class="cl-q-label">✨ AI 고도화</span><p>' + markKeywords(q.improved, keywords) + '</p></div>' : '') + '</div></div>').join('');
+    seteukHtml = legacyQs.map((q, i) => '<div class="cl-question-pair"><div class="cl-question-num">Q' + (i + 1) + '</div><div class="cl-question-body"><div class="cl-question-original"><span class="cl-q-label">💬 질문</span><p>' + (q.original || '') + '</p></div>' + (q.improved ? '<div class="cl-question-improved"><span class="cl-q-label">✨ AI 고도화</span><p>' + safeMathHtml(q.improved, { keywords }) + '</p></div>' : '') + '</div></div>').join('');
   }
 
   // 예상 시험 문제 (신형식) 또는 시험 연결 포인트 (구형식)
@@ -351,14 +349,14 @@ function _renderDetailCreditLog(log, dbId) {
       </div>
       ${log.topic ? `<div class="cl-section"><span class="cl-section-label">📖 단원 / 주제</span><div class="cl-section-value cl-handwriting">${log.topic}</div></div>` : ''}
       ${log.pages ? `<div class="cl-section"><span class="cl-section-label">📚 교과서</span><div class="cl-section-value cl-handwriting">${log.pages}</div></div>` : ''}
-      ${log.highlights ? `<div class="cl-section cl-highlight-section"><span class="cl-section-label">★ 선생님 강조 포인트</span><div class="cl-section-value cl-handwriting">${markKeywords(nl2br(log.highlights), keywords)}</div></div>` : ''}
+      ${log.highlights ? `<div class="cl-section cl-highlight-section"><span class="cl-section-label">★ 선생님 강조 포인트</span><div class="cl-section-value cl-handwriting">${safeMathHtml(log.highlights, { keywords })}</div></div>` : ''}
       ${seteukHtml ? `<div class="cl-section cl-questions-section"><span class="cl-section-label">💡 세특 소재 질문</span>${seteukHtml}</div>` : ''}
-      ${examItems.length > 0 ? `<div class="cl-section cl-exam-section"><span class="cl-section-label">${examLabel}</span><div class="cl-exam-list">${examItems.map((item, i) => '<div class="cl-exam-item"><span class="cl-exam-num">' + (i + 1) + '</span><span class="cl-exam-text">' + item + '</span></div>').join('')}</div></div>` : ''}
+      ${examItems.length > 0 ? `<div class="cl-section cl-exam-section"><span class="cl-section-label">${examLabel}</span><div class="cl-exam-list">${examItems.map((item, i) => '<div class="cl-exam-item"><span class="cl-exam-num">' + (i + 1) + '</span><span class="cl-exam-text">' + safeMathHtml(item) + '</span></div>').join('')}</div></div>` : ''}
       ${keywords.length > 0 ? `<div class="cl-section"><span class="cl-section-label">🔑 핵심 키워드</span><div class="cl-keywords">${keywords.map(k => '<span class="cl-keyword-chip">' + k + '</span>').join('')}</div></div>` : ''}
       ${assignmentHtml}
-      ${log.summary ? `<div class="cl-section cl-summary-section"><span class="cl-section-label">📋 수업 맥락 요약</span><div class="cl-section-value cl-handwriting">${nl2br(log.summary)}</div></div>` : ''}
-      ${log.teacher_insight ? `<div class="cl-section cl-insight-section"><span class="cl-section-label">📝 세특 관찰 코멘트</span><div class="cl-insight-box">${nl2br(log.teacher_insight)}</div></div>` : ''}
-      ${activeRecall.length > 0 ? `<div class="cl-section cl-recall-section"><span class="cl-section-label">🧠 메타인지 자극 질문</span><div class="cl-recall-list">${activeRecall.map((item, i) => '<div class="cl-recall-item"><div class="cl-recall-q" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'flex\':\'none\'"><span class="cl-recall-icon">Q</span><span class="cl-recall-text">' + item.question + '</span><i class="fas fa-chevron-down cl-recall-toggle"></i></div><div class="cl-recall-a" style="display:none"><span class="cl-recall-a-icon">A</span><span>' + item.answer + '</span></div></div>').join('')}</div><div class="cl-recall-hint">질문을 탭하면 답을 확인할 수 있어요</div></div>` : ''}
+      ${log.summary ? `<div class="cl-section cl-summary-section"><span class="cl-section-label">📋 수업 맥락 요약</span><div class="cl-section-value cl-handwriting">${safeMathHtml(log.summary)}</div></div>` : ''}
+      ${log.teacher_insight ? `<div class="cl-section cl-insight-section"><span class="cl-section-label">📝 세특 관찰 코멘트</span><div class="cl-insight-box">${safeMathHtml(log.teacher_insight)}</div></div>` : ''}
+      ${activeRecall.length > 0 ? `<div class="cl-section cl-recall-section"><span class="cl-section-label">🧠 메타인지 자극 질문</span><div class="cl-recall-list">${activeRecall.map((item, i) => '<div class="cl-recall-item"><div class="cl-recall-q" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'flex\':\'none\'"><span class="cl-recall-icon">Q</span><span class="cl-recall-text">' + safeMathHtml(item.question) + '</span><i class="fas fa-chevron-down cl-recall-toggle"></i></div><div class="cl-recall-a" style="display:none"><span class="cl-recall-a-icon">A</span><span>' + safeMathHtml(item.answer) + '</span></div></div>').join('')}</div><div class="cl-recall-hint">질문을 탭하면 답을 확인할 수 있어요</div></div>` : ''}
     </div>
     <button class="cl-pdf-btn" onclick="_RM.downloadDetailPDF('${dbId}')" style="width:100%;margin-top:12px">
       <i class="fas fa-file-pdf" style="margin-right:6px"></i>PDF로 저장

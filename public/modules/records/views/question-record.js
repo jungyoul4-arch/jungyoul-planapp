@@ -8,6 +8,7 @@ import { DB } from '../core/api.js';
 import { events, EVENTS } from '../core/events.js';
 import { navigate } from '../core/router.js';
 import { showXpPopup } from '../components/xp-popup.js';
+import { safeMathHtml } from '../core/utils.js';
 
 const SOURCE_TAGS = [
   { value: '수업', icon: '📖' },
@@ -993,7 +994,7 @@ function _renderAiSection(q, aiImproved, aiExpanded) {
       ${aiExpanded ? `
         <div class="qb-ai-content">
           ${aiImproved
-            ? `<div class="qb-ai-improved">${aiImproved}</div>`
+            ? `<div class="qb-ai-improved">${safeMathHtml(aiImproved)}</div>`
             : `<div class="qb-ai-loading"><div class="rpt-btn-spinner" style="width:20px;height:20px;margin-right:8px"></div>AI가 질문을 고도화하고 있어요...</div>`
           }
         </div>

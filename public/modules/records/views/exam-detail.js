@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { navigate, render } from '../core/router.js';
-import { getDday, escapeHtml } from '../core/utils.js';
+import { getDday, escapeHtml, renderMath } from '../core/utils.js';
 
 function getExamTypeIcon(type) {
   const map = { midterm:'📘', final:'📕', mock:'📗', performance:'📝' };
@@ -194,7 +194,7 @@ export function renderExamDetail() {
                 <span>📋 정율 맞춤 학습 계획</span>
                 <button class="card-link" onclick="_RM.generateExamPlan('${ex.id}')">다시 생성 →</button>
               </div>
-              <div class="exam-ai-plan-content">${ex.aiPlan}</div>
+              <div class="exam-ai-plan-content">${renderMath(ex.aiPlan)}</div>
             </div>
           ` : `
             <div style="text-align:center;padding:16px">

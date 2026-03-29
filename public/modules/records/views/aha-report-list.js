@@ -6,7 +6,7 @@
 import { state } from '../core/state.js';
 import { DB } from '../core/api.js';
 import { navigate, render } from '../core/router.js';
-import { tryParseJSON, getSubjectColor, skeletonCards } from '../core/utils.js';
+import { tryParseJSON, getSubjectColor, skeletonCards, safeMathHtml } from '../core/utils.js';
 import { generateAhaReportPDF } from '../components/pdf-generator.js';
 
 export function registerHandlers(RM) {
@@ -319,8 +319,6 @@ export function renderAhaDetail() {
   const subject = detail.subject || '';
   const dateStr = detail.date || detail.created_at?.slice(0, 10) || '';
 
-  function nl2br(t) { return (t || '').replace(/\n/g, '<br>'); }
-
   return `
     <div class="full-screen animate-slide">
       <div class="screen-header">
@@ -342,7 +340,7 @@ export function renderAhaDetail() {
               <span class="aha-section-badge" style="background:rgba(255,107,107,0.15);color:#FF6B6B">SA</span>
               <span class="aha-section-label">문제상황</span>
             </div>
-            <div class="aha-section-content">${nl2br(detail.section_sa)}</div>
+            <div class="aha-section-content">${safeMathHtml(detail.section_sa)}</div>
           </div>` : ''}
 
           ${pa.length > 0 ? `
@@ -362,7 +360,7 @@ export function renderAhaDetail() {
               <span class="aha-section-badge" style="background:rgba(0,184,148,0.15);color:#00B894">DA</span>
               <span class="aha-section-label">탐구과정 & 결론</span>
             </div>
-            <div class="aha-section-content">${nl2br(detail.section_da)}</div>
+            <div class="aha-section-content">${safeMathHtml(detail.section_da)}</div>
           </div>` : ''}
 
           ${detail.section_poa ? `
@@ -371,7 +369,7 @@ export function renderAhaDetail() {
               <span class="aha-section-badge" style="background:rgba(253,203,110,0.15);color:#FECA57">POA</span>
               <span class="aha-section-label">아하포인트</span>
             </div>
-            <div class="aha-section-content">${nl2br(detail.section_poa)}</div>
+            <div class="aha-section-content">${safeMathHtml(detail.section_poa)}</div>
           </div>` : ''}
 
           ${ppa.change || ppa.lacking ? `
@@ -381,8 +379,8 @@ export function renderAhaDetail() {
               <span class="aha-section-label">성찰</span>
             </div>
             <div class="aha-ppa-content">
-              ${ppa.change ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">🔄</span><div><strong>전후 생각 변화</strong><p>${nl2br(ppa.change)}</p></div></div>` : ''}
-              ${ppa.lacking ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">📌</span><div><strong>부족했던 것</strong><p>${nl2br(ppa.lacking)}</p></div></div>` : ''}
+              ${ppa.change ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">🔄</span><div><strong>전후 생각 변화</strong><p>${safeMathHtml(ppa.change)}</p></div></div>` : ''}
+              ${ppa.lacking ? `<div class="aha-ppa-row"><span class="aha-ppa-icon">📌</span><div><strong>부족했던 것</strong><p>${safeMathHtml(ppa.lacking)}</p></div></div>` : ''}
             </div>
           </div>` : ''}
 
@@ -392,7 +390,7 @@ export function renderAhaDetail() {
               <span class="aha-feedback-icon">🎯</span>
               <span class="aha-feedback-title">아하 리포트 피드백</span>
             </div>
-            <div class="aha-feedback-body">${nl2br(detail.ai_feedback)}</div>
+            <div class="aha-feedback-body">${safeMathHtml(detail.ai_feedback)}</div>
           </div>` : ''}
 
           ${photos.length > 0 ? `
