@@ -159,13 +159,19 @@ export const DB = {
       }
     }
 
-    // 결과 조합
+    // 결과 조합 (r2: 참조가 해석되지 않은 경우 필터링)
     return photos.map((p, i) => {
       if (refMap[i] !== undefined) {
-        return batchResult[refMap[i]] || p;
+        const resolved = batchResult[refMap[i]];
+        if (!resolved) return null; // 해석 실패 → null로 표시
+        // r2: 키가 그대로 들어온 경우 방어 (백엔드 R2 장애 시)
+        if (typeof resolved === 'string' && resolved.includes('r2:')) return null;
+        return resolved;
       }
+      // 비-ref 사진도 r2: 문자열이면 무효 처리
+      if (typeof p === 'string' && p.includes('r2:')) return null;
       return p;
-    });
+    }).filter(Boolean);
   },
 
   // 개별 사진 삭제

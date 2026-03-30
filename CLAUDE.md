@@ -243,8 +243,13 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 - [2026-03-06] base64 사진을 메인 테이블에 저장하면 안됨: `class_records.photos`에 7장의 base64 사진(각 500KB~1MB)을 JSON으로 저장하면 단일 행이 수 MB. `loadClassRecords`로 200건 조회 시 응답이 거대해져 silent failure. 사진은 반드시 별도 테이블(class_record_photos) + R2에 저장하고, 메인 테이블에는 `ref:ID` 참조만 저장할 것
 
 
+### R2/사진 관련
+- [2026-03-31] **wrangler.jsonc에 R2 바인딩 누락 → 사진 전체 깨짐**: `r2_buckets` 설정이 없으면 `c.env.R2`가 undefined가 되어, `photo_data`에 저장된 `r2:photos/...` 키를 R2에서 읽지 못함. fallback 코드가 R2 키 문자열을 base64 데이터로 잘못 감싸서 `data:image/jpeg;base64,r2:photos/...` (무효 URL) 반환. 사진이 있는 모든 화면에서 이미지 깨짐. **해결**: ① wrangler.jsonc에 `r2_buckets` 추가 ② fallback에서 `r2:` 시작 데이터는 절대 base64로 감싸지 않고 에러 반환 ③ 프론트엔드에서 `r2:` 포함 응답 필터링. **교훈**: 바인딩 설정 변경 시 관련 런타임 동작을 반드시 확인. R2 키를 base64로 감싸는 것은 silent failure — 에러 없이 깨진 이미지만 표시됨
+
+### Cloudflare Workers 지역 제한 (AI API)
+- [2026-03-31] **Cloudflare Workers 엣지 지역 → AI API 전체 차단 (다수 학생 장애)**: Cloudflare Workers는 사용자에게 가장 가까운 엣지에서 실행되는데, 일부 엣지(아시아 특정 지역)에서 Gemini(`User location is not supported`), OpenAI(`unsupported_country_region_territory`), Anthropic(`Request not allowed`) 3개 AI 서비스가 모두 차단됨. AI 수업기록(사진→OCR→분석) 플로우가 완전 불능. **해결**: ① `wrangler.jsonc`에 `placement: { mode: "smart" }` 추가하여 Worker를 AI API 서버 근처(미국/유럽) 데이터센터에서 실행 ② `callGeminiMultiImage`에 OpenAI Vision 폴백 추가 (Gemini OCR 실패 시 OpenAI OCR → Sonnet/Gemini/OpenAI 분석 폴백 체인). **교훈**: 외부 API에 의존하는 Worker는 반드시 `placement.mode = "smart"` 설정 필수. 지역 제한은 간헐적으로 발생하므로 로컬 테스트에서는 잡히지 않음. 3개 이상의 AI 서비스 폴백 체인 유지 필수
+
 ### API 관련
-<!-- 실수 발생 시 아래에 추가 -->
 - [2026-03-11] 메인앱↔모듈 데이터 전달 시 필드 동기화: app.js의 `DB.loadClassRecords()`와 records 모듈의 `api.js loadClassRecords()`가 매핑하는 필드가 달라 `preloadedData` 전달 시 누락 발생. 두 곳의 필드 목록을 반드시 동기화할 것
 - [2026-03-04] SELECT 필드 누락: `class_records` INSERT에 `photos, ai_credit_log, photo_tags`를 저장하지만 GET SELECT에서 해당 필드 누락 → 프론트에서 항상 빈 값. INSERT와 SELECT 필드 목록을 반드시 동기화할 것
 - [2026-03-04] 프론트-백엔드 필드명 불일치: 프론트엔드 `imageData`(base64) → 백엔드 DB 컬럼 `image_key`. api.js에서 반드시 매핑 `payload.imageKey = payload.imageData; delete payload.imageData;` 처리. 필드명 불일치는 데이터가 사라지는 원인
@@ -334,7 +339,7 @@ saveActivityLog()          → DB.updateActivityRecord() + DB.saveActivityLog()
 
 ---
 
-*마지막 업데이트: 2026-03-11*
+*마지막 업데이트: 2026-03-31*
 *이 파일은 프로젝트와 함께 계속 성장합니다.*
 
 <!-- GSD:project-start source:PROJECT.md -->

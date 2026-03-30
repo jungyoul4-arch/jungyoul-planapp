@@ -1704,7 +1704,11 @@ app.get('/api/photos/:photoId', async (c) => {
     if (!row) return c.json({ error: 'Photo not found' }, 404);
     
     // R2에서 조회
-    if (row.photo_data?.startsWith('r2:') && c.env.R2) {
+    if (row.photo_data?.startsWith('r2:')) {
+      if (!c.env.R2) {
+        console.error('R2 binding not available for photo:', photoId);
+        return c.json({ error: 'Photo storage unavailable' }, 503);
+      }
       try {
         const r2Key = row.photo_data.slice(3);
         const obj = await c.env.R2.get(r2Key);
@@ -1720,8 +1724,9 @@ app.get('/api/photos/:photoId', async (c) => {
       } catch (e) {
         console.error('R2 read failed:', e);
       }
+      return c.json({ error: 'Photo not found in storage' }, 404);
     }
-    
+
     // DB에서 base64 직접 반환 (레거시 호환)
     if (row.photo_data.startsWith('data:')) {
       return c.json({ photoData: row.photo_data });
@@ -1748,7 +1753,11 @@ app.post('/api/photos/batch', async (c) => {
 
     const photos: Record<string, string> = {};
     for (const row of rows.results as any[]) {
-      if (row.photo_data?.startsWith('r2:') && c.env.R2) {
+      if (row.photo_data?.startsWith('r2:')) {
+        if (!c.env.R2) {
+          console.error('R2 binding not available for batch photo:', row.id);
+          continue; // R2 없으면 해당 사진 스킵 (잘못된 base64 감싸기 방지)
+        }
         try {
           const r2Key = row.photo_data.slice(3);
           const obj = await c.env.R2.get(r2Key);
@@ -1760,9 +1769,9 @@ app.post('/api/photos/batch', async (c) => {
             const base64 = btoa(binary);
             const mime = obj.httpMetadata?.contentType || 'image/jpeg';
             photos[row.id] = `data:${mime};base64,${base64}`;
-            continue;
           }
         } catch (e) { console.error('R2 batch read failed:', e); }
+        continue; // r2: 참조는 여기서 처리 완료 — 아래 레거시 분기로 fall-through 금지
       }
       if (row.photo_data?.startsWith('data:')) {
         photos[row.id] = row.photo_data;

@@ -234,6 +234,47 @@ export async function callGeminiMultiImage(opts: {
     console.log('[OCR] Gemini OCR 실패:', e)
   }
 
+  // STEP 1.5: OpenAI Vision OCR 폴백 (Gemini OCR 실패 시)
+  if (!ocrSuccess && openaiKey) {
+    try {
+      console.log('[OCR] OpenAI Vision OCR 폴백 시도')
+      const contentParts: any[] = [
+        { type: 'text', text: '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.' }
+      ]
+      for (const img of images) {
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
+        })
+      }
+      const ocrRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: contentParts }],
+          temperature: 0.1,
+          max_tokens: 4096,
+        })
+      }, 600000)
+      if (ocrRes.ok) {
+        const data: any = await ocrRes.json()
+        const rawOcr = data.choices?.[0]?.message?.content || ''
+        ocrText = images.map((_, i) => {
+          const tag = tags[i] || '노트'
+          const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
+          return `--- 사진${i + 1} ${label} ${tag} ---`
+        }).join('\n') + '\n\n' + rawOcr
+        ocrSuccess = true
+        console.log(`[OCR] OpenAI Vision OCR 성공 (${ocrText.length}자)`)
+      } else {
+        console.log(`[OCR] OpenAI Vision OCR 실패: ${ocrRes.status}`)
+      }
+    } catch (e: any) {
+      console.log('[OCR] OpenAI Vision OCR 에러:', e.message)
+    }
+  }
+
   // STEP 2: Sonnet 분석 (1순위 — OCR 텍스트 기반 구조화 분석)
   let sonnetError = ''
   if (ocrSuccess && anthropicKey) {
@@ -318,7 +359,57 @@ export async function callGeminiMultiImage(opts: {
     console.log(`${GEMINI_MODEL} 분석 에러:`, e)
   }
 
-  throw new Error(`AI 분석 실패 — Sonnet: ${sonnetError || 'skipped'} | Gemini: ${geminiAnalysisError || 'unknown'}`)
+  // STEP 4 폴백: OpenAI Vision (Gemini + Sonnet 모두 실패 시 최종 안전망)
+  if (openaiKey) {
+    try {
+      console.log('[분석] OpenAI Vision 최종 폴백 시도')
+      const openaiMessages: any[] = [
+        { role: 'system', content: systemPrompt || prompt },
+      ]
+      // OCR 텍스트가 있으면 텍스트 기반, 없으면 이미지 직접 전송
+      if (ocrSuccess && ocrText) {
+        openaiMessages.push({ role: 'user', content: (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.` })
+      } else {
+        // 이미지를 OpenAI Vision으로 직접 전송
+        const contentParts: any[] = [{ type: 'text', text: (userContext || '') + '\n\n위 JSON 형식으로만 응답하세요.' }]
+        for (const img of images) {
+          contentParts.push({
+            type: 'image_url',
+            image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
+          })
+        }
+        openaiMessages.push({ role: 'user', content: contentParts })
+      }
+
+      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: openaiMessages,
+          temperature,
+          max_tokens: 8192,
+          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        })
+      }, 600000)
+
+      if (openaiRes.ok) {
+        const data: any = await openaiRes.json()
+        const text = data.choices?.[0]?.message?.content || '{}'
+        console.log('[분석] OpenAI Vision 폴백 성공')
+        return { text, source: 'openai-vision-fallback' }
+      }
+      const errBody = await openaiRes.text().catch(() => 'unknown')
+      console.log(`[분석] OpenAI Vision 폴백 실패: ${openaiRes.status}`, errBody.substring(0, 200))
+    } catch (e: any) {
+      console.log('[분석] OpenAI Vision 폴백 에러:', e.message)
+    }
+  }
+
+  throw new Error(`모든 AI 서비스 실패 — Sonnet: ${sonnetError || 'skipped'} | Gemini: ${geminiAnalysisError || 'unknown'} | OpenAI: 폴백 실패`)
 }
 
 // ==================== AUTH: 비밀번호 해싱 (Web Crypto API) ====================
