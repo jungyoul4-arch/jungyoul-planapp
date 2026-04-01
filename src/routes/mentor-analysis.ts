@@ -109,6 +109,8 @@ ${questionLines}
       prompt,
       jsonMode: true,
       temperature: 0.4,
+      externalId: String(studentId),
+      task: 'question-analysis',
     })
 
     let resultJson: any

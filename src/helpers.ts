@@ -65,8 +65,10 @@ export async function callProxyGemini(opts: {
   maxTokens?: number,
   thinkingBudget?: number,
   timeoutMs?: number,
+  externalId?: string,
+  task?: string,
 }): Promise<string> {
-  const { proxySecret, prompt, images, model = 'gemini-3-flash-preview', jsonMode = false, temperature = 0.3, maxTokens = 8192, thinkingBudget, timeoutMs = 300000 } = opts
+  const { proxySecret, prompt, images, model = 'gemini-3-flash-preview', jsonMode = false, temperature = 0.3, maxTokens = 8192, thinkingBudget, timeoutMs = 300000, externalId, task } = opts
   const parts: any[] = []
   if (images) {
     for (const img of images) {
@@ -78,10 +80,14 @@ export async function callProxyGemini(opts: {
   const config: any = { temperature, max_output_tokens: maxTokens }
   if (thinkingBudget) config.thinking_budget = thinkingBudget
 
+  const body: any = { model, parts, config }
+  if (externalId) body.external_id = externalId
+  if (task) body.task = task
+
   const res = await fetchWithTimeout(`${AI_PROXY_URL}/gemini`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxySecret}` },
-    body: JSON.stringify({ model, parts, config })
+    body: JSON.stringify(body)
   }, timeoutMs)
 
   const data: any = await res.json()
@@ -101,8 +107,10 @@ export async function callProxyClaude(opts: {
   temperature?: number,
   maxTokens?: number,
   timeoutMs?: number,
+  externalId?: string,
+  task?: string,
 }): Promise<string> {
-  const { proxySecret, prompt, systemPrompt, messages: rawMessages, images, model = 'claude-sonnet-4-20250514', jsonMode = false, temperature = 0.3, maxTokens = 4096, timeoutMs = 300000 } = opts
+  const { proxySecret, prompt, systemPrompt, messages: rawMessages, images, model = 'claude-sonnet-4-20250514', jsonMode = false, temperature = 0.3, maxTokens = 4096, timeoutMs = 300000, externalId, task } = opts
 
   let messages: any[]
   if (rawMessages && rawMessages.length > 0) {
@@ -127,6 +135,8 @@ export async function callProxyClaude(opts: {
 
   const body: any = { model, messages, config: { max_tokens: maxTokens, temperature } }
   if (systemPrompt) body.system = systemPrompt
+  if (externalId) body.external_id = externalId
+  if (task) body.task = task
 
   const res = await fetchWithTimeout(`${AI_PROXY_URL}/claude`, {
     method: 'POST',
@@ -150,8 +160,10 @@ export async function callProxyOpenAI(opts: {
   temperature?: number,
   maxTokens?: number,
   timeoutMs?: number,
+  externalId?: string,
+  task?: string,
 }): Promise<string> {
-  const { proxySecret, prompt, systemPrompt, images, model = 'gpt-4o', jsonMode = false, temperature = 0.3, maxTokens = 8192, timeoutMs = 300000 } = opts
+  const { proxySecret, prompt, systemPrompt, images, model = 'gpt-4o', jsonMode = false, temperature = 0.3, maxTokens = 8192, timeoutMs = 300000, externalId, task } = opts
 
   const messages: any[] = []
   if (systemPrompt) {
@@ -166,10 +178,14 @@ export async function callProxyOpenAI(opts: {
   userContent.push({ type: 'text', content: jsonMode ? appendJsonInstruction(prompt) : prompt })
   messages.push({ role: 'user', content: userContent })
 
+  const reqBody: any = { model, messages, config: { max_tokens: maxTokens, temperature } }
+  if (externalId) reqBody.external_id = externalId
+  if (task) reqBody.task = task
+
   const res = await fetchWithTimeout(`${AI_PROXY_URL}/openai`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxySecret}` },
-    body: JSON.stringify({ model, messages, config: { max_tokens: maxTokens, temperature } })
+    body: JSON.stringify(reqBody)
   }, timeoutMs)
 
   const data: any = await res.json()
@@ -185,8 +201,10 @@ export async function callGeminiWithFallback(opts: {
   jsonMode?: boolean,
   temperature?: number,
   inlineData?: { mime_type: string, data: string },
+  externalId?: string,
+  task?: string,
 }) {
-  const { proxySecret, prompt, jsonMode = true, temperature = 0.3, inlineData } = opts
+  const { proxySecret, prompt, jsonMode = true, temperature = 0.3, inlineData, externalId, task } = opts
   let geminiError = ''
 
   // Step 1: Gemini 시도
@@ -195,7 +213,7 @@ export async function callGeminiWithFallback(opts: {
       proxySecret, prompt, jsonMode, temperature,
       images: inlineData ? [inlineData] : undefined,
       maxTokens: jsonMode ? 8192 : 2048,
-      timeoutMs: 30000,
+      timeoutMs: 30000, externalId, task,
     })
     return { text, source: 'gemini' }
   } catch (e: any) {
@@ -205,7 +223,7 @@ export async function callGeminiWithFallback(opts: {
 
   // Step 2: Claude 폴백
   try {
-    const text = await callSonnetAnalysis(proxySecret, prompt, '위 지시에 따라 응답하세요.', jsonMode, temperature)
+    const text = await callSonnetAnalysis(proxySecret, prompt, '위 지시에 따라 응답하세요.', jsonMode, temperature, externalId, task)
     return { text, source: 'claude-fallback' }
   } catch (e) {
     console.log('Claude 폴백 실패:', e)
@@ -219,19 +237,19 @@ export async function callGeminiWithFallback(opts: {
 export const GEMINI_MODEL = 'gemini-3-flash-preview'
 
 // 단일 이미지 OCR (병렬 처리용)
-export async function callGeminiOcrSingle(proxySecret: string, image: { mime_type: string, data: string }, tag: string, index: number) {
+export async function callGeminiOcrSingle(proxySecret: string, image: { mime_type: string, data: string }, tag: string, index: number, externalId?: string, task?: string) {
   const ocrPrompt = `이 사진(${tag})의 모든 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 텍스트만 반환.`
   return await callProxyGemini({
     proxySecret, prompt: ocrPrompt, images: [image],
-    temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+    temperature: 0.1, maxTokens: 4096, timeoutMs: 300000, externalId, task,
   })
 }
 
 // Sonnet 분석 호출 (텍스트 전용)
-export async function callSonnetAnalysis(proxySecret: string, systemPrompt: string, userPrompt: string, jsonMode: boolean = true, temperature: number = 0.3) {
+export async function callSonnetAnalysis(proxySecret: string, systemPrompt: string, userPrompt: string, jsonMode: boolean = true, temperature: number = 0.3, externalId?: string, task?: string) {
   return await callProxyClaude({
     proxySecret, prompt: userPrompt, systemPrompt, jsonMode, temperature,
-    maxTokens: 4096, timeoutMs: 300000,
+    maxTokens: 4096, timeoutMs: 300000, externalId, task,
   })
 }
 
@@ -244,8 +262,10 @@ export async function callGeminiMultiImage(opts: {
   tags?: string[],
   jsonMode?: boolean,
   temperature?: number,
+  externalId?: string,
+  task?: string,
 }) {
-  const { proxySecret, systemPrompt, prompt, userContext, images, tags = [], jsonMode = true, temperature = 0.3 } = opts
+  const { proxySecret, systemPrompt, prompt, userContext, images, tags = [], jsonMode = true, temperature = 0.3, externalId, task } = opts
 
   // ================================================================
   // 2단계 파이프라인: Gemini OCR (병렬) → Sonnet 분석
@@ -262,7 +282,7 @@ export async function callGeminiMultiImage(opts: {
     if (images.length >= 3) {
       // 3장 이상: 병렬 OCR
       const ocrPromises = images.map((img, i) =>
-        callGeminiOcrSingle(proxySecret, img, tags[i] || '노트', i)
+        callGeminiOcrSingle(proxySecret, img, tags[i] || '노트', i, externalId, task)
           .catch(e => { console.log(`OCR 사진${i + 1} 실패:`, e); return `(사진${i + 1} OCR 실패)` })
       )
       const ocrResults = await Promise.all(ocrPromises)
@@ -277,7 +297,7 @@ export async function callGeminiMultiImage(opts: {
       const ocrPrompt = '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.'
       const rawOcr = await callProxyGemini({
         proxySecret, prompt: ocrPrompt, images,
-        temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+        temperature: 0.1, maxTokens: 4096, timeoutMs: 300000, externalId, task,
       })
       ocrText = images.map((_, i) => {
         const tag = tags[i] || '노트'
@@ -299,7 +319,7 @@ export async function callGeminiMultiImage(opts: {
       const rawOcr = await callProxyOpenAI({
         proxySecret,
         prompt: '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.',
-        images, temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+        images, temperature: 0.1, maxTokens: 4096, timeoutMs: 300000, externalId, task,
       })
       ocrText = images.map((_, i) => {
         const tag = tags[i] || '노트'
@@ -320,7 +340,7 @@ export async function callGeminiMultiImage(opts: {
       console.log('[분석] Sonnet 분석 시작')
       const sysPrompt = systemPrompt || prompt
       const usrPrompt = (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-      const text = await callSonnetAnalysis(proxySecret, sysPrompt, usrPrompt, jsonMode, temperature)
+      const text = await callSonnetAnalysis(proxySecret, sysPrompt, usrPrompt, jsonMode, temperature, externalId, task)
       console.log('[분석] Sonnet 분석 성공')
       return { text, source: 'gemini-ocr+sonnet' }
     } catch (e: any) {
@@ -337,7 +357,7 @@ export async function callGeminiMultiImage(opts: {
       const textPrompt = prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
       const text = await callProxyGemini({
         proxySecret, prompt: textPrompt, jsonMode, temperature,
-        maxTokens: 8192, timeoutMs: 300000,
+        maxTokens: 8192, timeoutMs: 300000, externalId, task,
       })
       console.log('[분석] Gemini 텍스트 분석 성공')
       return { text, source: 'gemini-ocr+analysis' }
@@ -346,7 +366,7 @@ export async function callGeminiMultiImage(opts: {
       console.log('[분석] Gemini 이미지 직접 분석 폴백 시도')
       const text = await callProxyGemini({
         proxySecret, prompt, images, jsonMode, temperature,
-        maxTokens: 8192, timeoutMs: 300000,
+        maxTokens: 8192, timeoutMs: 300000, externalId, task,
       })
       return { text, source: GEMINI_MODEL }
     }
@@ -365,7 +385,7 @@ export async function callGeminiMultiImage(opts: {
       proxySecret, prompt: userPrompt,
       systemPrompt: systemPrompt || prompt,
       images: (!ocrSuccess || !ocrText) ? images : undefined,
-      jsonMode, temperature, maxTokens: 8192, timeoutMs: 300000,
+      jsonMode, temperature, maxTokens: 8192, timeoutMs: 300000, externalId, task,
     })
     console.log('[분석] OpenAI Vision 폴백 성공')
     return { text, source: 'openai-vision-fallback' }

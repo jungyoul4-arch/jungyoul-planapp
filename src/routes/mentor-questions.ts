@@ -346,6 +346,8 @@ ${question.content ? `추가 설명: ${question.content}` : ''}
       prompt,
       jsonMode: false,
       temperature: 0.4,
+      externalId: question.student_id ? String(question.student_id) : undefined,
+      task: 'question-improve',
     })
 
     const improved = text.trim().replace(/^["']|["']$/g, '')

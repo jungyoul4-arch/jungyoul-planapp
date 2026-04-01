@@ -294,6 +294,7 @@ ${studentLines}`
       proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       temperature: 0.3,
+      task: 'progress-summary',
     })
 
     return c.json({ success: true, summary: text })

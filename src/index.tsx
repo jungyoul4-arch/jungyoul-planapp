@@ -276,6 +276,8 @@ app.post('/api/analyze', async (c) => {
       model: 'gpt-4o-mini',
       jsonMode: true,
       temperature: 0.3,
+      externalId: studentId ? String(studentId) : undefined,
+      task: 'analyze',
     })
 
     const result = JSON.parse(cleanJsonResponse(rawText))
@@ -302,6 +304,8 @@ app.post('/api/coaching', async (c) => {
       messages: messages.map((m: any) => ({ role: m.role, content: m.content })),
       maxTokens: 1024,
       timeoutMs: 45000,
+      externalId: studentId ? String(studentId) : undefined,
+      task: 'coaching',
     })
 
     // JSON 파싱 시도, 실패하면 텍스트 그대로 반환
@@ -342,6 +346,7 @@ app.post('/api/image-analyze', async (c) => {
       jsonMode: true,
       temperature: 0.3,
       inlineData: { mime_type: mimeType || 'image/jpeg', data: cleanBase64 },
+      task: 'image-analyze',
     })
 
     try {
@@ -395,6 +400,8 @@ app.post('/api/ai/credit-log', async (c) => {
       tags: imageTags,
       jsonMode: true,
       temperature: 0.3,
+      externalId: studentId ? String(studentId) : undefined,
+      task: 'credit-log',
     })
 
     try {
@@ -492,6 +499,8 @@ app.post('/api/deep-analyze', async (c) => {
 
     const text = await callProxyClaude({
       proxySecret: c.env.AI_PROXY_SECRET,
+      externalId: studentId ? String(studentId) : undefined,
+      task: 'deep-analyze',
       systemPrompt: `당신은 고등학교 수준의 고난도 문제를 분석하는 전문 튜터입니다.
 학생이 이해할 수 있도록 단계적으로 설명하되, 핵심 개념과 풀이 전략을 명확히 제시하세요.
 답을 바로 주지 말고, 사고 과정을 안내하세요.
@@ -534,6 +543,7 @@ app.post('/api/exam-coach', async (c) => {
       prompt,
       jsonMode: false,
       temperature: 0.7,
+      task: 'exam-coach',
     })
 
     return c.json({ plan: text })
@@ -586,6 +596,7 @@ app.post('/api/report-diagnose', async (c) => {
       prompt: fullPrompt,
       jsonMode: true,
       temperature: 0.3,
+      task: 'report-diagnose',
     })
 
     try {
@@ -4214,6 +4225,7 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
       const rawText = await callProxyGemini({
         proxySecret, prompt: CAREER_PDF_PARSE_PROMPT, images,
         jsonMode: true, temperature: 0.1, maxTokens: 8192, timeoutMs: 90000,
+        externalId: String(studentId), task: 'career-profile',
       })
       parsedData = JSON.parse(cleanJsonResponse(rawText))
     } catch (parseErr: any) {
@@ -4386,6 +4398,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
       aiText = await callProxyGemini({
         proxySecret: c.env.AI_PROXY_SECRET,
         prompt, images: imageData, jsonMode: true, temperature: 0.1,
+        externalId: String(studentId), task: 'timetable-photo',
       })
     } catch (geminiErr: any) {
       console.error('Gemini Vision failed, trying OpenAI:', geminiErr.message)
@@ -4395,6 +4408,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
         aiText = await callProxyOpenAI({
           proxySecret: c.env.AI_PROXY_SECRET,
           prompt, images: imageData, jsonMode: true, temperature: 0.1, timeoutMs: 300000,
+          externalId: String(studentId), task: 'timetable-photo',
         })
       } catch (openaiErr: any) {
         console.error('OpenAI Vision error:', openaiErr.message)
@@ -4723,17 +4737,17 @@ app.post('/api/ai/activity-analyze', async (c) => {
 
     // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
     } catch (geminiErr) {
       console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
       aiSource = 'openai'
       try {
-        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
       } catch (openaiErr) {
         console.log('Activity AI: OpenAI fail, Claude fallback:', openaiErr)
         aiSource = 'claude'
         try {
-          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
         } catch (claudeErr) {
           return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
@@ -4824,17 +4838,17 @@ OCR 규칙:
 
     // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
     } catch (geminiErr) {
       console.log('Gemini 실패 (v2), OpenAI 폴백:', geminiErr)
       aiSource = 'openai'
       try {
-        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
       } catch (openaiErr) {
         console.log('OpenAI 실패 (v2), Claude 폴백:', openaiErr)
         aiSource = 'claude'
         try {
-          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
         } catch (claudeErr) {
           return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
@@ -4978,12 +4992,12 @@ PPA (성찰):
 
     // Step 1: Claude → Step 2: Gemini (프록시 경유)
     try {
-      rawText = await callProxyClaude({ proxySecret, systemPrompt, prompt: userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000 })
+      rawText = await callProxyClaude({ proxySecret, systemPrompt, prompt: userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000, task: 'aha-feedback' })
     } catch (claudeErr) {
       console.log('Claude feedback 실패, Gemini로 폴백:', claudeErr)
       aiSource = 'gemini'
       try {
-        rawText = await callProxyGemini({ proxySecret, prompt: systemPrompt + '\n\n' + userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000 })
+        rawText = await callProxyGemini({ proxySecret, prompt: systemPrompt + '\n\n' + userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000, task: 'aha-feedback' })
       } catch (geminiErr) {
         console.log('Gemini feedback fallback error:', geminiErr)
         return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
@@ -5097,17 +5111,17 @@ OCR 규칙:
 
     // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, task: 'aha-report' })
     } catch (geminiErr) {
       console.log('Gemini 실패, OpenAI 폴백:', geminiErr)
       aiSource = 'openai'
       try {
-        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, task: 'aha-report' })
       } catch (openaiErr) {
         console.log('OpenAI 실패, Claude 폴백:', openaiErr)
         aiSource = 'claude'
         try {
-          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, task: 'aha-report' })
         } catch (claudeErr) {
           return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
