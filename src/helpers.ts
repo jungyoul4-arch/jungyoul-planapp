@@ -39,126 +39,204 @@ export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs
   }
 }
 
-// ==================== Gemini → OpenAI 폴백 헬퍼 ====================
-// Gemini API가 할당량 초과(429) 등으로 실패할 경우 OpenAI gpt-4o-mini로 자동 폴백
+// ==================== AI 프록시 서버 호출 헬퍼 ====================
+// 모든 AI API 호출을 jungyoul.com 프록시 서버를 경유하여 지역 제한 우회
+
+const AI_PROXY_URL = 'https://jungyoul.com/api/ai-proxy/planner'
+
+/** JSON 모드일 때 프롬프트 끝에 JSON 지시 추가 */
+function appendJsonInstruction(prompt: string): string {
+  return prompt + '\n\n중요: 반드시 유효한 JSON 형식으로만 응답하세요. 마크다운 코드블록 없이 순수 JSON만 출력하세요.'
+}
+
+/** AI 응답에서 마크다운 코드블록 래퍼 제거 */
+export function cleanJsonResponse(text: string): string {
+  return text.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim()
+}
+
+/** Gemini 프록시 호출 */
+export async function callProxyGemini(opts: {
+  proxySecret: string,
+  prompt: string,
+  images?: Array<{ mime_type: string, data: string }>,
+  model?: string,
+  jsonMode?: boolean,
+  temperature?: number,
+  maxTokens?: number,
+  thinkingBudget?: number,
+  timeoutMs?: number,
+}): Promise<string> {
+  const { proxySecret, prompt, images, model = 'gemini-3-flash-preview', jsonMode = false, temperature = 0.3, maxTokens = 8192, thinkingBudget, timeoutMs = 300000 } = opts
+  const parts: any[] = []
+  if (images) {
+    for (const img of images) {
+      parts.push({ type: 'image', b64: img.data, mime: img.mime_type })
+    }
+  }
+  parts.push({ type: 'text', content: jsonMode ? appendJsonInstruction(prompt) : prompt })
+
+  const config: any = { temperature, max_output_tokens: maxTokens }
+  if (thinkingBudget) config.thinking_budget = thinkingBudget
+
+  const res = await fetchWithTimeout(`${AI_PROXY_URL}/gemini`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxySecret}` },
+    body: JSON.stringify({ model, parts, config })
+  }, timeoutMs)
+
+  const data: any = await res.json()
+  if (!data.ok) throw new Error(data.error || `Gemini 프록시 실패 (HTTP ${res.status})`)
+  return data.text
+}
+
+/** Claude 프록시 호출 */
+export async function callProxyClaude(opts: {
+  proxySecret: string,
+  prompt?: string,
+  systemPrompt?: string,
+  messages?: Array<{ role: string, content: any }>,
+  images?: Array<{ mime_type: string, data: string }>,
+  model?: string,
+  jsonMode?: boolean,
+  temperature?: number,
+  maxTokens?: number,
+  timeoutMs?: number,
+}): Promise<string> {
+  const { proxySecret, prompt, systemPrompt, messages: rawMessages, images, model = 'claude-sonnet-4-20250514', jsonMode = false, temperature = 0.3, maxTokens = 4096, timeoutMs = 300000 } = opts
+
+  let messages: any[]
+  if (rawMessages && rawMessages.length > 0) {
+    // 멀티턴 대화 — content를 프록시 형식으로 변환
+    messages = rawMessages.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string'
+        ? [{ type: 'text', content: m.content }]
+        : m.content
+    }))
+  } else {
+    // 단일 메시지 — prompt + images로 구성
+    const content: any[] = []
+    if (images) {
+      for (const img of images) {
+        content.push({ type: 'image', b64: img.data, mime: img.mime_type })
+      }
+    }
+    content.push({ type: 'text', content: jsonMode ? appendJsonInstruction(prompt || '') : (prompt || '') })
+    messages = [{ role: 'user', content }]
+  }
+
+  const body: any = { model, messages, config: { max_tokens: maxTokens, temperature } }
+  if (systemPrompt) body.system = systemPrompt
+
+  const res = await fetchWithTimeout(`${AI_PROXY_URL}/claude`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxySecret}` },
+    body: JSON.stringify(body)
+  }, timeoutMs)
+
+  const data: any = await res.json()
+  if (!data.ok) throw new Error(data.error || `Claude 프록시 실패 (HTTP ${res.status})`)
+  return data.text
+}
+
+/** OpenAI 프록시 호출 */
+export async function callProxyOpenAI(opts: {
+  proxySecret: string,
+  prompt: string,
+  systemPrompt?: string,
+  images?: Array<{ mime_type: string, data: string }>,
+  model?: string,
+  jsonMode?: boolean,
+  temperature?: number,
+  maxTokens?: number,
+  timeoutMs?: number,
+}): Promise<string> {
+  const { proxySecret, prompt, systemPrompt, images, model = 'gpt-4o', jsonMode = false, temperature = 0.3, maxTokens = 8192, timeoutMs = 300000 } = opts
+
+  const messages: any[] = []
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: [{ type: 'text', content: systemPrompt }] })
+  }
+  const userContent: any[] = []
+  if (images) {
+    for (const img of images) {
+      userContent.push({ type: 'image', b64: img.data, mime: img.mime_type })
+    }
+  }
+  userContent.push({ type: 'text', content: jsonMode ? appendJsonInstruction(prompt) : prompt })
+  messages.push({ role: 'user', content: userContent })
+
+  const res = await fetchWithTimeout(`${AI_PROXY_URL}/openai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxySecret}` },
+    body: JSON.stringify({ model, messages, config: { max_tokens: maxTokens, temperature } })
+  }, timeoutMs)
+
+  const data: any = await res.json()
+  if (!data.ok) throw new Error(data.error || `OpenAI 프록시 실패 (HTTP ${res.status})`)
+  return data.text
+}
+
+// ==================== Gemini → Claude 폴백 헬퍼 (프록시 경유) ====================
 
 export async function callGeminiWithFallback(opts: {
-  geminiKey: string,
-  openaiKey: string,
-  anthropicKey?: string,
+  proxySecret: string,
   prompt: string,
   jsonMode?: boolean,
   temperature?: number,
   inlineData?: { mime_type: string, data: string },
 }) {
-  const { geminiKey, openaiKey, anthropicKey, prompt, jsonMode = true, temperature = 0.3, inlineData } = opts
+  const { proxySecret, prompt, jsonMode = true, temperature = 0.3, inlineData } = opts
   let geminiError = ''
 
   // Step 1: Gemini 시도
   try {
-    const parts: any[] = [{ text: prompt }]
-    if (inlineData) parts.push({ inline_data: inlineData })
-
-    const geminiRes = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            temperature,
-            ...(jsonMode ? { responseMimeType: 'application/json' } : { maxOutputTokens: 2048 })
-          }
-        })
-      },
-      30000
-    )
-
-    if (geminiRes.ok) {
-      const data: any = await geminiRes.json()
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-      return { text, source: 'gemini' }
-    }
-
-    geminiError = `Gemini ${geminiRes.status}: ${await geminiRes.text().catch(() => 'unknown')}`
-    console.log(`Gemini API 실패 (${geminiRes.status}), Claude로 폴백`)
+    const text = await callProxyGemini({
+      proxySecret, prompt, jsonMode, temperature,
+      images: inlineData ? [inlineData] : undefined,
+      maxTokens: jsonMode ? 8192 : 2048,
+      timeoutMs: 30000,
+    })
+    return { text, source: 'gemini' }
   } catch (e: any) {
-    geminiError = `Gemini error: ${e.message}`
-    console.log('Gemini API 에러, Claude로 폴백:', e)
+    geminiError = e.message
+    console.log('Gemini 프록시 실패, Claude로 폴백:', e.message)
   }
 
   // Step 2: Claude 폴백
-  if (anthropicKey) {
-    try {
-      const text = await callSonnetAnalysis(anthropicKey, prompt, '위 지시에 따라 응답하세요.', jsonMode, temperature)
-      return { text, source: 'claude-fallback' }
-    } catch (e) {
-      console.log('Claude 폴백 실패:', e)
-    }
+  try {
+    const text = await callSonnetAnalysis(proxySecret, prompt, '위 지시에 따라 응답하세요.', jsonMode, temperature)
+    return { text, source: 'claude-fallback' }
+  } catch (e) {
+    console.log('Claude 폴백 실패:', e)
   }
 
   throw new Error(`AI 호출 실패 — ${geminiError}`)
 }
 
-// ==================== Gemini 2.5 Flash 다중 이미지 헬퍼 ====================
+// ==================== Gemini 다중 이미지 헬퍼 (프록시 경유) ====================
 
 export const GEMINI_MODEL = 'gemini-3-flash-preview'
 
 // 단일 이미지 OCR (병렬 처리용)
-export async function callGeminiOcrSingle(geminiKey: string, image: { mime_type: string, data: string }, tag: string, index: number) {
+export async function callGeminiOcrSingle(proxySecret: string, image: { mime_type: string, data: string }, tag: string, index: number) {
   const ocrPrompt = `이 사진(${tag})의 모든 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 텍스트만 반환.`
-  const parts: any[] = [{ text: ocrPrompt }, { inline_data: image }]
-
-  const res = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
-      })
-    },
-    600000 // 10분 타임아웃
-  )
-
-  if (!res.ok) throw new Error(`OCR 실패 (사진${index + 1}): ${res.status}`)
-  const data: any = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+  return await callProxyGemini({
+    proxySecret, prompt: ocrPrompt, images: [image],
+    temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+  })
 }
 
 // Sonnet 분석 호출 (텍스트 전용)
-export async function callSonnetAnalysis(anthropicKey: string, systemPrompt: string, userPrompt: string, jsonMode: boolean = true, temperature: number = 0.3) {
-  const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': anthropicKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      temperature,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
-    })
-  }, 600000) // 10분 타임아웃
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Sonnet 분석 실패 (${res.status}): ${err}`)
-  }
-
-  const data: any = await res.json()
-  return data.content[0].text
+export async function callSonnetAnalysis(proxySecret: string, systemPrompt: string, userPrompt: string, jsonMode: boolean = true, temperature: number = 0.3) {
+  return await callProxyClaude({
+    proxySecret, prompt: userPrompt, systemPrompt, jsonMode, temperature,
+    maxTokens: 4096, timeoutMs: 300000,
+  })
 }
 
 export async function callGeminiMultiImage(opts: {
-  geminiKey: string,
-  openaiKey: string,
-  anthropicKey?: string,
+  proxySecret: string,
   systemPrompt?: string,
   prompt: string,
   userContext?: string,
@@ -167,7 +245,7 @@ export async function callGeminiMultiImage(opts: {
   jsonMode?: boolean,
   temperature?: number,
 }) {
-  const { geminiKey, openaiKey, anthropicKey, systemPrompt, prompt, userContext, images, tags = [], jsonMode = true, temperature = 0.3 } = opts
+  const { proxySecret, systemPrompt, prompt, userContext, images, tags = [], jsonMode = true, temperature = 0.3 } = opts
 
   // ================================================================
   // 2단계 파이프라인: Gemini OCR (병렬) → Sonnet 분석
@@ -184,7 +262,7 @@ export async function callGeminiMultiImage(opts: {
     if (images.length >= 3) {
       // 3장 이상: 병렬 OCR
       const ocrPromises = images.map((img, i) =>
-        callGeminiOcrSingle(geminiKey, img, tags[i] || '노트', i)
+        callGeminiOcrSingle(proxySecret, img, tags[i] || '노트', i)
           .catch(e => { console.log(`OCR 사진${i + 1} 실패:`, e); return `(사진${i + 1} OCR 실패)` })
       )
       const ocrResults = await Promise.all(ocrPromises)
@@ -196,37 +274,17 @@ export async function callGeminiMultiImage(opts: {
       ocrSuccess = true
     } else {
       // 1~2장: 한 번에 OCR
-      const parts: any[] = [
-        { text: '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.' }
-      ]
-      for (const img of images) {
-        parts.push({ inline_data: img })
-      }
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
-          })
-        },
-        600000 // 10분 타임아웃
-      )
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        const rawOcr = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        ocrText = images.map((_, i) => {
-          const tag = tags[i] || '노트'
-          const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
-          return `--- 사진${i + 1} ${label} ${tag} ---`
-        }).join('\n') + '\n\n' + rawOcr
-        ocrSuccess = true
-      } else {
-        ocrError = `Gemini OCR ${geminiRes.status}: ${await geminiRes.text().catch(() => 'unknown')}`
-        console.log('[OCR] ' + ocrError)
-      }
+      const ocrPrompt = '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.'
+      const rawOcr = await callProxyGemini({
+        proxySecret, prompt: ocrPrompt, images,
+        temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+      })
+      ocrText = images.map((_, i) => {
+        const tag = tags[i] || '노트'
+        const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
+        return `--- 사진${i + 1} ${label} ${tag} ---`
+      }).join('\n') + '\n\n' + rawOcr
+      ocrSuccess = true
     }
     if (ocrSuccess) console.log(`[OCR] 완료 (${ocrText.length}자)`)
   } catch (e: any) {
@@ -235,55 +293,35 @@ export async function callGeminiMultiImage(opts: {
   }
 
   // STEP 1.5: OpenAI Vision OCR 폴백 (Gemini OCR 실패 시)
-  if (!ocrSuccess && openaiKey) {
+  if (!ocrSuccess) {
     try {
       console.log('[OCR] OpenAI Vision OCR 폴백 시도')
-      const contentParts: any[] = [
-        { type: 'text', text: '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.' }
-      ]
-      for (const img of images) {
-        contentParts.push({
-          type: 'image_url',
-          image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
-        })
-      }
-      const ocrRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: contentParts }],
-          temperature: 0.1,
-          max_tokens: 4096,
-        })
-      }, 600000)
-      if (ocrRes.ok) {
-        const data: any = await ocrRes.json()
-        const rawOcr = data.choices?.[0]?.message?.content || ''
-        ocrText = images.map((_, i) => {
-          const tag = tags[i] || '노트'
-          const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
-          return `--- 사진${i + 1} ${label} ${tag} ---`
-        }).join('\n') + '\n\n' + rawOcr
-        ocrSuccess = true
-        console.log(`[OCR] OpenAI Vision OCR 성공 (${ocrText.length}자)`)
-      } else {
-        console.log(`[OCR] OpenAI Vision OCR 실패: ${ocrRes.status}`)
-      }
+      const rawOcr = await callProxyOpenAI({
+        proxySecret,
+        prompt: '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.',
+        images, temperature: 0.1, maxTokens: 4096, timeoutMs: 300000,
+      })
+      ocrText = images.map((_, i) => {
+        const tag = tags[i] || '노트'
+        const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
+        return `--- 사진${i + 1} ${label} ${tag} ---`
+      }).join('\n') + '\n\n' + rawOcr
+      ocrSuccess = true
+      console.log(`[OCR] OpenAI Vision OCR 성공 (${ocrText.length}자)`)
     } catch (e: any) {
-      console.log('[OCR] OpenAI Vision OCR 에러:', e.message)
+      console.log('[OCR] OpenAI Vision OCR 실패:', e.message)
     }
   }
 
   // STEP 2: Sonnet 분석 (1순위 — OCR 텍스트 기반 구조화 분석)
   let sonnetError = ''
-  if (ocrSuccess && anthropicKey) {
+  if (ocrSuccess) {
     try {
-      console.log('[분석] Sonnet 4.6 분석 시작')
+      console.log('[분석] Sonnet 분석 시작')
       const sysPrompt = systemPrompt || prompt
       const usrPrompt = (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-      const text = await callSonnetAnalysis(anthropicKey, sysPrompt, usrPrompt, jsonMode, temperature)
-      console.log('[분석] Sonnet 4.6 분석 성공')
+      const text = await callSonnetAnalysis(proxySecret, sysPrompt, usrPrompt, jsonMode, temperature)
+      console.log('[분석] Sonnet 분석 성공')
       return { text, source: 'gemini-ocr+sonnet' }
     } catch (e: any) {
       sonnetError = e.message
@@ -297,116 +335,42 @@ export async function callGeminiMultiImage(opts: {
     if (ocrSuccess) {
       console.log('[분석] Gemini 텍스트 분석 폴백 시도')
       const textPrompt = prompt + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: textPrompt }] }],
-            generationConfig: {
-              temperature,
-              maxOutputTokens: 8192,
-              ...(jsonMode ? { responseMimeType: 'application/json' } : {})
-            }
-          })
-        },
-        600000 // 10분 타임아웃
-      )
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-        console.log('[분석] Gemini 텍스트 분석 성공')
-        return { text, source: `gemini-ocr+analysis` }
-      }
-      const errBody = await geminiRes.text().catch(() => 'unknown')
-      geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
-      console.log(`[분석] Gemini 텍스트 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
+      const text = await callProxyGemini({
+        proxySecret, prompt: textPrompt, jsonMode, temperature,
+        maxTokens: 8192, timeoutMs: 300000,
+      })
+      console.log('[분석] Gemini 텍스트 분석 성공')
+      return { text, source: 'gemini-ocr+analysis' }
     } else {
       // OCR도 실패: 이미지 직접 전송
       console.log('[분석] Gemini 이미지 직접 분석 폴백 시도')
-      const parts: any[] = [{ text: prompt }]
-      for (const img of images) {
-        parts.push({ inline_data: img })
-      }
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-              temperature,
-              maxOutputTokens: 8192,
-              ...(jsonMode ? { responseMimeType: 'application/json' } : {})
-            }
-          })
-        },
-        600000 // 10분 타임아웃
-      )
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-        return { text, source: GEMINI_MODEL }
-      }
-      const errBody = await geminiRes.text().catch(() => 'unknown')
-      geminiAnalysisError = `${GEMINI_MODEL} ${geminiRes.status}: ${errBody.substring(0, 200)}`
-      console.log(`[분석] Gemini 이미지 분석 실패: ${geminiRes.status}`, errBody.substring(0, 200))
+      const text = await callProxyGemini({
+        proxySecret, prompt, images, jsonMode, temperature,
+        maxTokens: 8192, timeoutMs: 300000,
+      })
+      return { text, source: GEMINI_MODEL }
     }
   } catch (e: any) {
-    geminiAnalysisError = `${GEMINI_MODEL} error: ${e.message}`
-    console.log(`${GEMINI_MODEL} 분석 에러:`, e)
+    geminiAnalysisError = e.message
+    console.log(`Gemini 분석 에러:`, e.message)
   }
 
   // STEP 4 폴백: OpenAI Vision (Gemini + Sonnet 모두 실패 시 최종 안전망)
-  if (openaiKey) {
-    try {
-      console.log('[분석] OpenAI Vision 최종 폴백 시도')
-      const openaiMessages: any[] = [
-        { role: 'system', content: systemPrompt || prompt },
-      ]
-      // OCR 텍스트가 있으면 텍스트 기반, 없으면 이미지 직접 전송
-      if (ocrSuccess && ocrText) {
-        openaiMessages.push({ role: 'user', content: (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.` })
-      } else {
-        // 이미지를 OpenAI Vision으로 직접 전송
-        const contentParts: any[] = [{ type: 'text', text: (userContext || '') + '\n\n위 JSON 형식으로만 응답하세요.' }]
-        for (const img of images) {
-          contentParts.push({
-            type: 'image_url',
-            image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
-          })
-        }
-        openaiMessages.push({ role: 'user', content: contentParts })
-      }
-
-      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openaiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: openaiMessages,
-          temperature,
-          max_tokens: 8192,
-          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        })
-      }, 600000)
-
-      if (openaiRes.ok) {
-        const data: any = await openaiRes.json()
-        const text = data.choices?.[0]?.message?.content || '{}'
-        console.log('[분석] OpenAI Vision 폴백 성공')
-        return { text, source: 'openai-vision-fallback' }
-      }
-      const errBody = await openaiRes.text().catch(() => 'unknown')
-      console.log(`[분석] OpenAI Vision 폴백 실패: ${openaiRes.status}`, errBody.substring(0, 200))
-    } catch (e: any) {
-      console.log('[분석] OpenAI Vision 폴백 에러:', e.message)
-    }
+  try {
+    console.log('[분석] OpenAI Vision 최종 폴백 시도')
+    const userPrompt = ocrSuccess && ocrText
+      ? (userContext || '') + `\n\n=== OCR 결과 ===\n${ocrText}\n\n위 JSON 형식으로만 응답하세요.`
+      : (userContext || '') + '\n\n위 JSON 형식으로만 응답하세요.'
+    const text = await callProxyOpenAI({
+      proxySecret, prompt: userPrompt,
+      systemPrompt: systemPrompt || prompt,
+      images: (!ocrSuccess || !ocrText) ? images : undefined,
+      jsonMode, temperature, maxTokens: 8192, timeoutMs: 300000,
+    })
+    console.log('[분석] OpenAI Vision 폴백 성공')
+    return { text, source: 'openai-vision-fallback' }
+  } catch (e: any) {
+    console.log('[분석] OpenAI Vision 폴백 에러:', e.message)
   }
 
   throw new Error(`모든 AI 서비스 실패 — Sonnet: ${sonnetError || 'skipped'} | Gemini: ${geminiAnalysisError || 'unknown'} | OpenAI: 폴백 실패`)

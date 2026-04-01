@@ -291,9 +291,7 @@ mentorDashboard.post('/api/mentor/groups/:groupId/ai-progress-summary', async (c
 ${studentLines}`
 
     const { text } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       temperature: 0.3,
     })

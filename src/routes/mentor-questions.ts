@@ -342,9 +342,7 @@ ${question.content ? `추가 설명: ${question.content}` : ''}
 고도화된 질문 (한 문장~두 문장):`
 
     const { text } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       jsonMode: false,
       temperature: 0.4,

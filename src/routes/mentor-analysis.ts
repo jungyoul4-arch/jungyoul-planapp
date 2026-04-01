@@ -105,9 +105,7 @@ ${questionLines}
 }`
 
     const { text, source } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       jsonMode: true,
       temperature: 0.4,

@@ -1,7 +1,5 @@
 export type Bindings = {
-  OPENAI_API_KEY: string
-  ANTHROPIC_API_KEY: string
-  GEMINI_API_KEY: string
+  AI_PROXY_SECRET: string
   PERPLEXITY_API_KEY: string
   QA_APP_SECRET: string
   ADMIN_KEY: string     // 관리자 API 인증 키

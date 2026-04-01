@@ -7,6 +7,7 @@ import {
   recordXp, fetchWithTimeout,
   callGeminiWithFallback, GEMINI_MODEL, callGeminiOcrSingle,
   callSonnetAnalysis, callGeminiMultiImage,
+  callProxyGemini, callProxyClaude, callProxyOpenAI, cleanJsonResponse,
   hashPassword, verifyPassword, generateToken, generateInviteCode,
   stripHtmlForPreview, sanitizeHTML,
   NICKNAME_BLOCKLIST, validateNickname,
@@ -268,30 +269,16 @@ app.post('/api/analyze', async (c) => {
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT_ANALYZE + careerCtx },
-          { role: 'user', content: `과목: ${subject || '미지정'}\n질문 축: ${axis === 'reflection' ? '축2(성찰)' : '축1(호기심)'}\n\n학생 질문: "${question}"` }
-        ],
-        temperature: 0.3,
-        response_format: { type: "json_object" }
-      })
+    const rawText = await callProxyOpenAI({
+      proxySecret: c.env.AI_PROXY_SECRET,
+      prompt: `과목: ${subject || '미지정'}\n질문 축: ${axis === 'reflection' ? '축2(성찰)' : '축1(호기심)'}\n\n학생 질문: "${question}"`,
+      systemPrompt: SYSTEM_PROMPT_ANALYZE + careerCtx,
+      model: 'gpt-4o-mini',
+      jsonMode: true,
+      temperature: 0.3,
     })
 
-    if (!res.ok) {
-      const err = await res.text()
-      return c.json({ error: 'OpenAI API 오류', detail: err }, 500)
-    }
-
-    const data: any = await res.json()
-    const result = JSON.parse(data.choices[0].message.content)
+    const result = JSON.parse(cleanJsonResponse(rawText))
     return c.json(result)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -309,31 +296,13 @@ app.post('/api/coaching', async (c) => {
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
-    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': c.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT_COACHING + `\n\n현재 학생의 질문 단계: ${currentLevel || 'A-2'}\n과목: ${subject || '미지정'}` + careerCtx,
-        messages: messages.map((m: any) => ({
-          role: m.role,
-          content: m.content
-        }))
-      })
-    }, 45000)
-
-    if (!res.ok) {
-      const err = await res.text()
-      return c.json({ error: 'Claude API 오류', detail: err }, 500)
-    }
-
-    const data: any = await res.json()
-    const text = data.content[0].text
+    const text = await callProxyClaude({
+      proxySecret: c.env.AI_PROXY_SECRET,
+      systemPrompt: SYSTEM_PROMPT_COACHING + `\n\n현재 학생의 질문 단계: ${currentLevel || 'A-2'}\n과목: ${subject || '미지정'}` + careerCtx,
+      messages: messages.map((m: any) => ({ role: m.role, content: m.content })),
+      maxTokens: 1024,
+      timeoutMs: 45000,
+    })
 
     // JSON 파싱 시도, 실패하면 텍스트 그대로 반환
     try {
@@ -366,11 +335,9 @@ app.post('/api/image-analyze', async (c) => {
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
     const fullPrompt = SYSTEM_PROMPT_IMAGE + `\n\n과목 힌트: ${subject || '미지정'}\n\n위 형식에 맞게 JSON으로만 응답하세요.`
 
-    // Gemini 우선 시도 (이미지 지원) → 실패 시 OpenAI 폴백 (이미지 없이 텍스트만)
+    // Gemini 우선 시도 (이미지 지원) → 실패 시 Claude 폴백
     const { text } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt: fullPrompt,
       jsonMode: true,
       temperature: 0.3,
@@ -420,9 +387,7 @@ app.post('/api/ai/credit-log', async (c) => {
     const imageTags = images.map((img: any) => img.tag || '참고')
 
     const { text } = await callGeminiMultiImage({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       systemPrompt,
       prompt: fullPrompt,
       userContext,
@@ -525,17 +490,9 @@ app.post('/api/deep-analyze', async (c) => {
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
 
-    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': c.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2048,
-        system: `당신은 고등학교 수준의 고난도 문제를 분석하는 전문 튜터입니다.
+    const text = await callProxyClaude({
+      proxySecret: c.env.AI_PROXY_SECRET,
+      systemPrompt: `당신은 고등학교 수준의 고난도 문제를 분석하는 전문 튜터입니다.
 학생이 이해할 수 있도록 단계적으로 설명하되, 핵심 개념과 풀이 전략을 명확히 제시하세요.
 답을 바로 주지 말고, 사고 과정을 안내하세요.
 
@@ -548,19 +505,11 @@ app.post('/api/deep-analyze', async (c) => {
   "commonMistakes": ["흔한 실수1"],
   "relatedTopics": ["관련 주제1"]
 }` + careerCtx,
-        messages: [
-          { role: 'user', content: `과목: ${subject}\n${context ? `배경: ${context}\n` : ''}\n질문: ${question}` }
-        ]
-      })
+      prompt: `과목: ${subject}\n${context ? `배경: ${context}\n` : ''}\n질문: ${question}`,
+      jsonMode: true,
+      maxTokens: 2048,
+      temperature: 0.3,
     })
-
-    if (!res.ok) {
-      const err = await res.text()
-      return c.json({ error: 'Claude API 오류', detail: err }, 500)
-    }
-
-    const data: any = await res.json()
-    const text = data.content[0].text
 
     try {
       return c.json(JSON.parse(text))
@@ -581,9 +530,7 @@ app.post('/api/exam-coach', async (c) => {
     if (!prompt) return c.json({ error: '프롬프트가 필요합니다' }, 400)
 
     const { text } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       jsonMode: false,
       temperature: 0.7,
@@ -635,16 +582,14 @@ app.post('/api/report-diagnose', async (c) => {
     const fullPrompt = REPORT_DIAGNOSIS_PROMPT + `\n\n학생의 질문:\n"${question}"\n\n현재 탐구 단계: ${phase || '주제 선정'}\n탐구 주제: ${projectTitle || '미정'}\n과목: ${subject || '미지정'}\n\nJSON만 출력:`
 
     const { text } = await callGeminiWithFallback({
-      geminiKey: c.env.GEMINI_API_KEY,
-      openaiKey: c.env.OPENAI_API_KEY,
-      anthropicKey: c.env.ANTHROPIC_API_KEY,
+      proxySecret: c.env.AI_PROXY_SECRET,
       prompt: fullPrompt,
       jsonMode: true,
       temperature: 0.3,
     })
 
     try {
-      return c.json(JSON.parse(text))
+      return c.json(JSON.parse(cleanJsonResponse(text)))
     } catch {
       return c.json({ level: 'A-1', axis: 'curiosity', xp: 8, coaching_comment: text })
     }
@@ -4245,8 +4190,8 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
       return c.json({ success: false, error: 'PDF 페이지 이미지가 필요합니다' }, 400)
     }
 
-    const geminiKey = c.env.GEMINI_API_KEY
-    if (!geminiKey) return c.json({ success: false, error: 'Gemini API 키가 설정되지 않았습니다' }, 500)
+    const proxySecret = c.env.AI_PROXY_SECRET
+    if (!proxySecret) return c.json({ success: false, error: 'AI 프록시 설정이 되지 않았습니다' }, 500)
 
     // 1. R2에 원본 PDF 저장
     let pdfR2Key = ''
@@ -4262,43 +4207,15 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
       }
     }
 
-    // 2. 페이지 이미지 → Gemini Vision으로 파싱 (이미지는 한국 지역에서도 작동)
+    // 2. 페이지 이미지 → Gemini Vision으로 파싱 (프록시 경유)
     let parsedData: any = null
     try {
-      const imageParts = pageImages.map((img: string) => ({
-        inline_data: { mime_type: 'image/jpeg', data: img }
-      }))
-
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: CAREER_PDF_PARSE_PROMPT },
-                ...imageParts
-              ]
-            }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
-          })
-        },
-        90000
-      )
-
-      if (!geminiRes.ok) {
-        const errText = await geminiRes.text()
-        throw new Error(`Gemini API ${geminiRes.status}: ${errText.substring(0, 300)}`)
-      }
-
-      const geminiData: any = await geminiRes.json()
-      const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || ''
-
-      // JSON 파싱 (코드블록 처리)
-      const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/) || rawText.match(/```\s*([\s\S]*?)```/)
-      const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText.trim()
-      parsedData = JSON.parse(jsonStr)
+      const images = pageImages.map((img: string) => ({ mime_type: 'image/jpeg', data: img }))
+      const rawText = await callProxyGemini({
+        proxySecret, prompt: CAREER_PDF_PARSE_PROMPT, images,
+        jsonMode: true, temperature: 0.1, maxTokens: 8192, timeoutMs: 90000,
+      })
+      parsedData = JSON.parse(cleanJsonResponse(rawText))
     } catch (parseErr: any) {
       console.error('Career PDF parse error:', parseErr)
       // 파싱 실패해도 DB에 pending으로 저장
@@ -4460,65 +4377,35 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
   ]
 }`
 
-    // Gemini → OpenAI 폴백으로 시간표 분석
+    // Gemini → OpenAI 폴백으로 시간표 분석 (프록시 경유)
     let aiText = '{}'
+    const imageData = [{ mime_type: mimeType, data: cleanBase64 }]
 
     // 1차: Gemini Vision
     try {
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${c.env.GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [
-              { text: prompt },
-              { inline_data: { mime_type: mimeType, data: cleanBase64 } }
-            ] }],
-            generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
-          })
-        }
-      )
-      if (!geminiRes.ok) throw new Error('Gemini ' + geminiRes.status)
-      const geminiData: any = await geminiRes.json()
-      aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+      aiText = await callProxyGemini({
+        proxySecret: c.env.AI_PROXY_SECRET,
+        prompt, images: imageData, jsonMode: true, temperature: 0.1,
+      })
     } catch (geminiErr: any) {
       console.error('Gemini Vision failed, trying OpenAI:', geminiErr.message)
 
       // 2차: OpenAI GPT-4o Vision 폴백
-      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${cleanBase64}` } }
-            ]
-          }],
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
+      try {
+        aiText = await callProxyOpenAI({
+          proxySecret: c.env.AI_PROXY_SECRET,
+          prompt, images: imageData, jsonMode: true, temperature: 0.1, timeoutMs: 300000,
         })
-      }, 600000) // 10분 타임아웃
-      if (!openaiRes.ok) {
-        const errText = await openaiRes.text()
-        console.error('OpenAI Vision error:', errText)
+      } catch (openaiErr: any) {
+        console.error('OpenAI Vision error:', openaiErr.message)
         return c.json({ success: false, error: 'AI 분석 실패 (Gemini+OpenAI 모두 실패)' }, 500)
       }
-      const openaiData: any = await openaiRes.json()
-      aiText = openaiData.choices?.[0]?.message?.content || '{}'
     }
 
     // JSON 파싱 (```json 블록 제거)
     let parsed: any
     try {
-      const jsonStr = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
-      parsed = JSON.parse(jsonStr)
+      parsed = JSON.parse(cleanJsonResponse(aiText))
     } catch {
       return c.json({ success: false, error: 'AI 응답 파싱 실패', raw: aiText }, 500)
     }
@@ -4804,9 +4691,6 @@ const ACTIVITY_PROMPTS: Record<string, string> = {
 
 app.post('/api/ai/activity-analyze', async (c) => {
   try {
-    const geminiKey = c.env.GEMINI_API_KEY
-    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
-
     const { photos, activityType, comment, studentId } = await c.req.json<{
       photos: string[],
       activityType: string,
@@ -4835,75 +4719,29 @@ app.post('/api/ai/activity-analyze', async (c) => {
 
     let rawText = '{}'
     let aiSource = 'gemini'
+    const proxySecret = c.env.AI_PROXY_SECRET
 
-    // Step 1: Gemini
+    // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
-          })
-        }
-      )
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-      } else {
-        throw new Error(`Gemini ${geminiRes.status}`)
-      }
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
     } catch (geminiErr) {
-      // Step 2: OpenAI 폴백
       console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
       aiSource = 'openai'
-      const openaiKey = c.env.OPENAI_API_KEY
-      if (!openaiKey) return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
-
-      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-      for (const img of imageDataList) {
-        openaiContent.push({ type: 'image_url', image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' } })
-      }
-
-      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: openaiContent }], temperature: 0.2, response_format: { type: 'json_object' } })
-      }, 600000) // 10분 타임아웃
-      if (!openaiRes.ok) {
-        // Step 3: Claude Vision 폴백
-        const anthropicKey = c.env.ANTHROPIC_API_KEY
-        if (anthropicKey) {
-          console.log('Activity AI: OpenAI fail, Claude fallback')
-          aiSource = 'claude'
-          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-          for (const img of imageDataList) {
-            claudeContent.push({ type: 'image', source: { type: 'base64', media_type: img.mime_type, data: img.data } })
-          }
-          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
-          }, 600000) // 10분 타임아웃
-          if (claudeRes.ok) {
-            const claudeData: any = await claudeRes.json()
-            rawText = claudeData.content?.[0]?.text || '{}'
-          } else {
-            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
-          }
-        } else {
-          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.' }, 500)
+      try {
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+      } catch (openaiErr) {
+        console.log('Activity AI: OpenAI fail, Claude fallback:', openaiErr)
+        aiSource = 'claude'
+        try {
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        } catch (claudeErr) {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
-      } else {
-        const openaiData: any = await openaiRes.json()
-        rawText = openaiData.choices?.[0]?.message?.content || '{}'
       }
     }
 
     let result: any
-    try { result = JSON.parse(rawText) } catch {
+    try { result = JSON.parse(cleanJsonResponse(rawText)) } catch {
       return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
     }
 
@@ -4918,9 +4756,6 @@ app.post('/api/ai/activity-analyze', async (c) => {
 // ==================== 아하 리포트 v2 AI 분석 (5섹션: SA/PA/DA/POA/PPA) ====================
 app.post('/api/aha-report/analyze-v2', async (c) => {
   try {
-    const geminiKey = c.env.GEMINI_API_KEY
-    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
-
     const { photos, subject, source, date, studentId } = await c.req.json<{
       photos: string[],
       subject?: string,
@@ -4985,115 +4820,30 @@ OCR 규칙:
 
     let rawText = '{}'
     let aiSource = 'gemini'
+    const proxySecret = c.env.AI_PROXY_SECRET
 
-    // Step 1: Gemini 시도
+    // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: 'application/json'
-            }
-          })
-        }
-      )
-
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-      } else {
-        const errStatus = geminiRes.status
-        console.log('Gemini API error (v2):', errStatus, '→ OpenAI로 폴백')
-        throw new Error(`Gemini ${errStatus}`)
-      }
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
     } catch (geminiErr) {
-      // Step 2: OpenAI GPT-4o 폴백
-      console.log('Gemini 실패 (v2), OpenAI GPT-4o로 폴백:', geminiErr)
+      console.log('Gemini 실패 (v2), OpenAI 폴백:', geminiErr)
       aiSource = 'openai'
-
-      const openaiKey = c.env.OPENAI_API_KEY
-      if (!openaiKey) {
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
-      }
-
-      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-      for (const img of imageDataList) {
-        openaiContent.push({
-          type: 'image_url',
-          image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
-        })
-      }
-
-      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openaiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: openaiContent }],
-          temperature: 0.2,
-          response_format: { type: 'json_object' }
-        })
-      }, 600000) // 10분 타임아웃
-
-      if (!openaiRes.ok) {
-        const errText = await openaiRes.text()
-        console.log('OpenAI fallback error (v2):', openaiRes.status, errText)
-
-        // Step 3: Claude Vision 폴백 (Gemini+OpenAI 모두 지역 차단 시)
-        const anthropicKey = c.env.ANTHROPIC_API_KEY
-        if (anthropicKey) {
-          console.log('OpenAI 실패, Claude Vision으로 폴백')
-          aiSource = 'claude'
-          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-          for (const img of imageDataList) {
-            claudeContent.push({
-              type: 'image',
-              source: { type: 'base64', media_type: img.mime_type, data: img.data }
-            })
-          }
-          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'x-api-key': anthropicKey,
-              'anthropic-version': '2023-06-01',
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'claude-sonnet-4-6',
-              max_tokens: 4096,
-              temperature: 0.2,
-              messages: [{ role: 'user', content: claudeContent }],
-            })
-          }, 600000) // 10분 타임아웃
-
-          if (claudeRes.ok) {
-            const claudeData: any = await claudeRes.json()
-            rawText = claudeData.content?.[0]?.text || '{}'
-          } else {
-            const claudeErr = await claudeRes.text()
-            console.log('Claude fallback error (v2):', claudeRes.status, claudeErr)
-            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
-          }
-        } else {
-          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 500)
+      try {
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+      } catch (openaiErr) {
+        console.log('OpenAI 실패 (v2), Claude 폴백:', openaiErr)
+        aiSource = 'claude'
+        try {
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        } catch (claudeErr) {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
-      } else {
-        const openaiData: any = await openaiRes.json()
-        rawText = openaiData.choices?.[0]?.message?.content || '{}'
       }
     }
 
     let result: any
     try {
-      result = JSON.parse(rawText)
+      result = JSON.parse(cleanJsonResponse(rawText))
     } catch {
       return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
     }
@@ -5125,9 +4875,6 @@ OCR 규칙:
 // ==================== 아하 리포트 v2 피드백 (Claude Sonnet 4.6) ====================
 app.post('/api/aha-report/feedback', async (c) => {
   try {
-    const anthropicKey = c.env.ANTHROPIC_API_KEY
-    if (!anthropicKey) return c.json({ error: 'Anthropic API 키가 설정되지 않았습니다.' }, 500)
-
     const { sa, pa, da, poa, ppa, subject, studentName } = await c.req.json<{
       sa: string, pa: string[], da: string, poa: string,
       ppa: { change?: string, lacking?: string }, subject?: string, studentName?: string
@@ -5227,60 +4974,16 @@ PPA (성찰):
 
     let rawText = '{}'
     let aiSource = 'claude'
+    const proxySecret = c.env.AI_PROXY_SECRET
 
-    // Step 1: Claude Sonnet 4.6 (기본)
+    // Step 1: Claude → Step 2: Gemini (프록시 경유)
     try {
-      const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': anthropicKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4096,
-          temperature: 0.5,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        })
-      }, 600000) // 10분 타임아웃
-
-      if (claudeRes.ok) {
-        const data: any = await claudeRes.json()
-        rawText = data.content?.[0]?.text || '{}'
-      } else {
-        const errText = await claudeRes.text()
-        console.log('Claude feedback error:', claudeRes.status, errText)
-        throw new Error(`Claude ${claudeRes.status}`)
-      }
+      rawText = await callProxyClaude({ proxySecret, systemPrompt, prompt: userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000 })
     } catch (claudeErr) {
-      // Step 2: Gemini 폴백
       console.log('Claude feedback 실패, Gemini로 폴백:', claudeErr)
       aiSource = 'gemini'
-      const geminiKey = c.env.GEMINI_API_KEY
-      if (!geminiKey) {
-        return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
-      }
-
       try {
-        const geminiRes = await fetchWithTimeout(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }],
-              generationConfig: { temperature: 0.5, responseMimeType: 'application/json' }
-            })
-          }, 600000 // 10분 타임아웃
-        )
-        if (geminiRes.ok) {
-          const data: any = await geminiRes.json()
-          rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-        } else {
-          return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
-        }
+        rawText = await callProxyGemini({ proxySecret, prompt: systemPrompt + '\n\n' + userPrompt, jsonMode: true, temperature: 0.5, timeoutMs: 300000 })
       } catch (geminiErr) {
         console.log('Gemini feedback fallback error:', geminiErr)
         return c.json({ error: '피드백 생성에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
@@ -5310,8 +5013,6 @@ PPA (성찰):
 // ==================== 아하 리포트 AI 분석 (Gemini 3.0 Flash) ====================
 app.post('/api/aha-report/analyze', async (c) => {
   try {
-    const geminiKey = c.env.GEMINI_API_KEY
-    if (!geminiKey) return c.json({ error: 'Gemini API 키가 설정되지 않았습니다.' }, 500)
 
     const { photos, subject, unit } = await c.req.json<{
       photos: string[],  // base64 data URLs
@@ -5392,100 +5093,30 @@ OCR 규칙:
 
     let rawText = '{}'
     let aiSource = 'gemini'
+    const proxySecret = c.env.AI_PROXY_SECRET
 
-    // Step 1: Gemini 시도
+    // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      const geminiRes = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: 'application/json'
-            }
-          })
-        }
-      )
-
-      if (geminiRes.ok) {
-        const data: any = await geminiRes.json()
-        rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-      } else {
-        const errStatus = geminiRes.status
-        console.log('Gemini API error:', errStatus, '→ OpenAI로 폴백')
-        throw new Error(`Gemini ${errStatus}`)
-      }
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2 })
     } catch (geminiErr) {
-      // Step 2: OpenAI GPT-4o 폴백 (이미지 지원)
-      console.log('Gemini 실패, OpenAI GPT-4o로 폴백:', geminiErr)
+      console.log('Gemini 실패, OpenAI 폴백:', geminiErr)
       aiSource = 'openai'
-
-      const openaiKey = c.env.OPENAI_API_KEY
-      if (!openaiKey) {
-        return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'no_fallback_key' }, 500)
-      }
-
-      const openaiContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-      for (const img of imageDataList) {
-        openaiContent.push({
-          type: 'image_url',
-          image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' }
-        })
-      }
-
-      const openaiRes = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openaiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: openaiContent }],
-          temperature: 0.2,
-          response_format: { type: 'json_object' }
-        })
-      }, 600000) // 10분 타임아웃
-
-      if (!openaiRes.ok) {
-        const errText = await openaiRes.text()
-        console.log('OpenAI fallback error:', openaiRes.status, errText)
-
-        // Step 3: Claude Vision 폴백
-        const anthropicKey = c.env.ANTHROPIC_API_KEY
-        if (anthropicKey) {
-          console.log('OpenAI 실패, Claude Vision으로 폴백')
-          aiSource = 'claude'
-          const claudeContent: any[] = [{ type: 'text', text: promptText + '\n\n반드시 위에 지정한 JSON 형식으로만 응답해주세요.' }]
-          for (const img of imageDataList) {
-            claudeContent.push({ type: 'image', source: { type: 'base64', media_type: img.mime_type, data: img.data } })
-          }
-          const claudeRes = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4096, temperature: 0.2, messages: [{ role: 'user', content: claudeContent }] })
-          }, 600000) // 10분 타임아웃
-          if (claudeRes.ok) {
-            const claudeData: any = await claudeRes.json()
-            rawText = claudeData.content?.[0]?.text || '{}'
-          } else {
-            return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
-          }
-        } else {
-          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: openaiRes.status }, 500)
+      try {
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+      } catch (openaiErr) {
+        console.log('OpenAI 실패, Claude 폴백:', openaiErr)
+        aiSource = 'claude'
+        try {
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000 })
+        } catch (claudeErr) {
+          return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
-      } else {
-        const openaiData: any = await openaiRes.json()
-        rawText = openaiData.choices?.[0]?.message?.content || '{}'
       }
     }
 
     let result: any
     try {
-      result = JSON.parse(rawText)
+      result = JSON.parse(cleanJsonResponse(rawText))
     } catch {
       return c.json({ error: '분석 결과를 파싱할 수 없습니다. 사진을 다시 확인해주세요.', raw: rawText }, 500)
     }
@@ -5731,9 +5362,7 @@ app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
     services: {
-      openai: !!c.env.OPENAI_API_KEY,
-      anthropic: !!c.env.ANTHROPIC_API_KEY,
-      gemini: !!c.env.GEMINI_API_KEY,
+      aiProxy: !!c.env.AI_PROXY_SECRET,
       perplexity: !!c.env.PERPLEXITY_API_KEY
     }
   })
