@@ -1,0 +1,17188 @@
+/* ==============================
+   고교학점플래너 CreditPlanner - Interactive Prototype v3
+   학생 앱 UI 집중 리뉴얼
+   ============================== */
+
+// AI API는 Pages 직접 URL로 호출 (커스텀 도메인 HKG 엣지에서 AI API 지역 차단 우회)
+const AI_API_BASE = 'https://credit-planner-v8-359.pages.dev';
+
+// ==================== XSS 방지 헬퍼 ====================
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+// ==================== XSS-safe onclick 래퍼 ====================
+function startBackfillRecordFromData(el) {
+  startBackfillRecord(el.dataset.backfillDate, parseInt(el.dataset.backfillPeriod), el.dataset.backfillSubject);
+}
+function viewRecordFromData(el) {
+  state._viewingDbRecord = el.dataset.recordId;
+  goScreen('class-record-detail');
+}
+function viewRecordFromGallery(el) {
+  if (el.dataset.recordSource === 'today') {
+    state._viewingTodayRecordIdx = parseInt(el.dataset.recordTodayIdx);
+  } else {
+    state._viewingDbRecord = el.dataset.recordId;
+  }
+  goScreen('class-record-detail');
+}
+function setRecordGalleryFilter(el) {
+  state._recordGalleryFilter = el.dataset.galleryFilter;
+  renderScreen();
+}
+function pickPeriodSubjectFromData(el) {
+  pickPeriodSubject(el.dataset.periodSubject);
+}
+function openGrowthAhaReportFromData(el) {
+  openGrowthAhaReport(parseInt(el.dataset.ahaClassId), el.dataset.ahaClassName);
+}
+function ttRemoveSubjectFromData(el) {
+  ttRemoveSubject(el.dataset.ttRemoveSubject);
+}
+
+// ==================== 토스트 알림 ====================
+function showToast(msg, type = 'info') {
+  const existing = document.getElementById('app-toast');
+  if (existing) existing.remove();
+  const colors = { info: '#3b82f6', error: '#ef4444', success: '#22c55e' };
+  const icons = { info: 'ℹ️', error: '⚠️', success: '✅' };
+  const el = document.createElement('div');
+  el.id = 'app-toast';
+  el.style.cssText = `position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 20px;border-radius:12px;background:${colors[type] || colors.info};color:#fff;font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,0.2);animation:toast-in 0.3s ease;max-width:90vw;text-align:center`;
+  el.textContent = `${icons[type] || ''} ${msg}`;
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+}
+
+// ==================== KST (한국 표준시) 유틸리티 ====================
+// new Date()는 브라우저 로컬 시간이지만, toISOString()은 UTC → 자정 근처 날짜 오류 방지
+function kstNow() {
+  // 항상 KST 기준 Date 객체 반환 (UTC+9 보정)
+  return new Date(Date.now() + 9 * 3600000);
+}
+function kstToday() {
+  // 'YYYY-MM-DD' 형식의 KST 오늘 날짜
+  return kstNow().toISOString().slice(0, 10);
+}
+function kstDate(d) {
+  // Date 객체 → KST 기준 'YYYY-MM-DD'
+  if (!d) return kstToday();
+  const kd = new Date(d.getTime() + 9 * 3600000);
+  return kd.toISOString().slice(0, 10);
+}
+// 심플 과제 판단 (키워드 기반)
+const _SIMPLE_KW = ['풀기','풀이','읽기','외우기','암기','제출','프린트','복습','정리','필기'];
+const _COMPLEX_KW = ['보고서','탐구','발표','제작','조사','만들기','프로젝트','실험','에세이','작문','감상문'];
+function isSimpleAssignment(title) {
+  if (!title) return true;
+  const t = title.toLowerCase();
+  if (_COMPLEX_KW.some(k => t.includes(k))) return false;
+  if (_SIMPLE_KW.some(k => t.includes(k))) return true;
+  return true;
+}
+
+function kstDateOffset(days) {
+  // KST 기준 오늘로부터 N일 후 'YYYY-MM-DD'
+  return kstDate(new Date(Date.now() + days * 86400000));
+}
+
+// ==================== APP STATE ====================
+const state = {
+  mode: 'student',
+  currentScreen: 'login',
+  studentTab: 'home',
+  mentorTab: 'students',
+  directorTab: 'overview',
+  // 인증 상태
+  _authUser: null,
+  _authToken: null,
+  _authRole: null,
+  _authGroup: null,
+  _authMentorGroups: null,
+  _loginError: '',
+  _loginLoading: false,
+  xp: 0,
+  level: 1,
+  streak: 0,
+  // 성장 아하 리포트 상태
+  _growthAhaClasses: [],  // [] = 빈 배열(로드됨), null = 로딩 중
+  mood: null,
+  selectedStudent: null,
+  inputMode: 'keyword',
+  _mentorFeedbacks: [], // 멘토 피드백 목록
+  _mentorFeedbackUnread: 0, // 미읽음 피드백 수
+  // Community state
+  _communityBoards: [],
+  _communityPosts: [],
+  _communityCurrentBoard: null,
+  _communityCurrentPost: null,
+  _communityComments: [],
+  _communityFriends: [],
+  _communityShareSettings: null,
+  _communityPage: 1,
+  _communityHasMore: false,
+  _communityUnreadCount: 0,
+  _communityNotifications: [],
+  _communityNicknameInput: '',
+  _communityNicknameError: '',
+  _communityScreen: 'home',
+  _communityMyInviteCode: null,
+  _communityFriendProfile: null,
+  _communityViewingFriendId: null,
+  _communityFriendsTab: 'list',
+  _communityFriendCodeInput: '',
+  _communityEditingPostId: null,
+  _editorPhotos: [],
+  _editorTitle: '',
+  _editorContent: '',
+  _classPhotos: [], // 수업 기록 사진 배열
+  _recordGalleryFilter: '전체', // 수업 기록 갤러리 과목 필터
+  _classAssignmentText: '', // 과제 내용
+  _classAssignmentDue: '', // 과제 마감일 (YYYY-MM-DD)
+  todayAcademyRecords: null, // 오늘 학원 수업 목록 (initTodayAcademy에서 자동 생성)
+  todayRecords: [], // syncTodayRecords()에서 오늘 요일 기준으로 자동 생성
+  missions: [
+    { text: '수업 기록 3개 이상', icon: '📝', current: 0, target: 3, done: false },
+    { text: '질문 1개 이상', icon: '❓', current: 0, target: 1, done: false },
+    { text: '교학상장 도전!', icon: '🤝', current: 0, target: 1, done: false },
+  ],
+  weeklyData: {
+    records: [0, 0, 0, 0, 0, 0, 0],
+    questions: [0, 0, 0, 0, 0, 0, 0],
+    days: ['월','화','수','목','금','토','일']
+  },
+  students: [],
+  notifications: [],
+  // 과제 데이터
+  assignments: [],
+  assignmentFilter: 'all', // 'all','in-progress','pending','completed'
+  editingAssignment: null,
+  viewingAssignment: null,
+  // 시간표 데이터 (동적 관리)
+  timetable: {
+    // 기본 학교 시간표 (요일별 교시) - 사용자가 직접 설정
+    school: [
+      // [월, 화, 수, 목, 금]
+      ['','','','',''],     // 1교시
+      ['','','','',''],     // 2교시
+      ['','','','',''],     // 3교시
+      ['','','','',''],     // 4교시
+      ['','','','',''],     // 5교시
+      ['','','','',''],     // 6교시
+      ['','','','',''],     // 7교시
+    ],
+    // 과목별 선생님 매핑
+    teachers: {},
+    // 과목 색상
+    subjectColors: {
+      '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+      '한국사':'#74B9FF','체육':'#A29BFE','미술':'#FD79A8','동아리':'#00CEC9','창체':'#E17055'
+    },
+    // 교시별 시간
+    periodTimes: [
+      {start:'08:30',end:'09:20'}, // 1교시
+      {start:'09:30',end:'10:20'}, // 2교시
+      {start:'10:30',end:'11:20'}, // 3교시
+      {start:'11:30',end:'12:20'}, // 4교시
+      {start:'13:20',end:'14:10'}, // 5교시
+      {start:'14:20',end:'15:10'}, // 6교시
+      {start:'15:20',end:'16:10'}, // 7교시
+    ],
+    // 학원 스케줄
+    academy: [],
+  },
+  // 시간표 편집 상태
+  editingTimetable: false,
+  editingAcademy: null, // null or academy id
+  selectedTtCell: null, // {period, dayIdx}
+  selectedAcSlot: null, // {day, slot} 학원 그리드 선택
+  viewingAcademyDetail: null, // academy id 상세보기
+  // 급우(교학상장 대상) 목록 — 학생 관리에서 추가/삭제/편집
+  classmates: [],
+  // 비교과 활동 데이터
+  extracurriculars: [],
+  // 플래너 상태
+  plannerView: 'daily', // 'daily','weekly','monthly'
+  plannerDate: kstToday(), // 현재 선택 날짜
+  // 포트폴리오 상태
+  portfolioPeriod: '1week', // '1week','2week','1month','custom'
+  portfolioTab: 'all', // 'all','class','question','assignment','report','reading','activity'
+  portfolioCustomStart: '',
+  portfolioCustomEnd: '',
+  plannerAiOpen: false,
+  plannerAiMessages: [
+    { role:'ai', text:'안녕하세요! 👋 플래너 정율 도우미예요. 일정 추가, 과제 계획 조정, 공부 시간 배분 등 무엇이든 도와줄게요!' },
+  ],
+  plannerAddOpen: false,
+  // 통합 플래너 일정 데이터
+  plannerItems: [],
+  plannerEvents: [], // DB 연동 이벤트 (과제+시험)
+  plannerEventsMonth: '', // 로딩된 월 (YYYY-MM)
+  dailyTodos: [], // 오늘 할 일 (DB 연동)
+  dailyTodosLoaded: false, // 로딩 여부
+  // ==================== 시험 관리 데이터 ====================
+  exams: [],
+  viewingExam: null, // 현재 보고 있는 시험 id
+  examAddMode: false, // 시험 추가 모드
+  examAiLoading: false, // 정율 학습계획 생성 중
+  // 탐구보고서 상태
+  viewingReport: null, // 현재 보고 있는 탐구보고서 ec id
+  reportPhaseTab: 0, // 현재 선택된 Phase 탭 (0~4)
+  reportViewMode: 'question', // 'question','timeline','growth','report'
+  reportAiLoading: false,
+  reportDiagResult: null, // 최근 질문 진단 결과
+  reportAiResponse: null, // 최근 정율 멘토/검색 응답
+  // 창의적 체험활동 통합 상태
+  activityFilter: 'all', // 'all','club','career','self','report','reading'
+  viewingActivity: null, // 현재 보고 있는 활동 ec id
+  activityLogInput: {}, // 활동 기록 입력 임시 저장
+  // 질문 코칭 과목 선택 상태
+  _questionSubject: '수학', // 기본 선택 과목
+  _questionText: '', // 사용자 입력 질문 텍스트 유지
+  // 릴레이단어장
+  _relay: { classId: null, className: '', checked: false, wordbook: null, myEntry: null, finishedStudents: [], loading: false },
+};
+
+// ==================== MAIN RENDER ====================
+
+// 네이티브 모드 감지 (폰 프레임 없이 풀스크린으로 표시할 기기)
+// PC 대형 모니터(1280px+)만 프로토타입 폰 프레임 표시
+// devicePreview: null(자동), 'phone', 'tablet', 'pc'
+let devicePreview = null;
+
+function isNativeMode() {
+  // 디바이스 프리뷰가 수동 설정된 경우: phone/tablet/tablet-landscape → native, pc → not native
+  if (devicePreview === 'phone' || devicePreview === 'tablet' || devicePreview === 'tablet-landscape') return true;
+  if (devicePreview === 'pc') return false;
+  return window.innerWidth <= 1279;
+}
+
+function getDevicePreviewClass() {
+  if (devicePreview === 'phone') return 'preview-phone';
+  if (devicePreview === 'tablet') return 'preview-tablet';
+  if (devicePreview === 'tablet-landscape') return 'preview-tablet-landscape';
+  return 'preview-pc';
+}
+
+// renderScreen debounce: 연속 호출 시 마지막 1회만 실행 (깜빡임 방지)
+// ==================== Archive Module 통합 ====================
+let _archiveModuleActive = false;
+
+function _showArchiveModule(isTablet, { skipRefresh = false, skipInitialRender = false } = {}) {
+  const containerId = isTablet ? 'archive-container-tablet' : 'archive-container-phone';
+  const contentId = isTablet ? 'tablet-content' : 'app-content';
+  const recEl = document.getElementById(containerId);
+  const contentEl = document.getElementById(contentId);
+  if (!recEl || !contentEl) return;
+
+  contentEl.style.display = 'none';
+  recEl.style.display = 'flex';
+
+  if (!_archiveModuleActive && window.ArchiveModule) {
+    window.ArchiveModule.init({
+      container: recEl,
+      studentId: state._authUser?.id,
+      studentName: state._authUser?.name || '',
+      timetable: state.timetable || {},
+      classmates: state.classmates || [],
+      skipInitialRender: skipInitialRender,
+      viewOnly: _viewOnly, // 읽기 전용 모드 (선생님이 학생 플래너 조회 시)
+      // 메인 앱에서 이미 로드한 DB 데이터 전달 → 아카이브 모듈의 중복 API 호출 제거
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+        exams: state.exams || [],
+        assignments: state._dbAssignments || [],
+        careerProfile: state._careerProfile || null,
+      },
+    });
+    _archiveModuleActive = true;
+  } else if (_archiveModuleActive && window.ArchiveModule && !skipRefresh) {
+    // 이미 init된 상태에서 다시 진입 — 데이터 주입 완료 후 navigate 1회만 실행 (깜빡임 방지)
+    window.ArchiveModule.refresh({
+      skipRender: true,
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+        careerProfile: state._careerProfile || null,
+      },
+    }).then(() => {
+      window.ArchiveModule.navigate('dashboard');
+    });
+  }
+}
+
+let _hidingArchive = false;
+function _hideArchiveModule() {
+  const phoneRec = document.getElementById('archive-container-phone');
+  const tabletRec = document.getElementById('archive-container-tablet');
+  const phoneContent = document.getElementById('app-content');
+  const tabletContent = document.getElementById('tablet-content');
+  if (phoneRec) phoneRec.style.display = 'none';
+  if (tabletRec) tabletRec.style.display = 'none';
+  if (phoneContent) phoneContent.style.display = '';
+  if (tabletContent) tabletContent.style.display = '';
+  // _archiveModuleActive는 유지 — 다시 탭 전환 시 init 재호출 불필요
+  // 아카이브에서 홈으로 돌아올 때 DB 기록 반영하여 시간표 done 상태 갱신
+  // 먼저 즉시 렌더 → 백그라운드로 DB 갱신 (깜빡임 방지)
+  if (_archiveModuleActive && state._authUser?.id && !_hidingArchive) {
+    _hidingArchive = true;
+    DB.loadClassRecords().then(() => {
+      syncTodayRecords();
+      _hidingArchive = false;
+      // 데이터 변경이 있을 때만 다시 렌더
+      renderScreen();
+    }).catch(() => { _hidingArchive = false; });
+  }
+}
+
+// ==================== 홈 → 아카이브 기록 플로우 브릿지 ====================
+// 브릿지 진행 중 플래그 — renderScreen 내부에서 _showArchiveModule 재호출 방지
+let _bridgeInProgress = false;
+
+// 아카이브 모듈이 준비될 때까지 대기 후 콜백 실행
+function _waitForArchiveReady(callback) {
+  const wasActive = _archiveModuleActive;
+  // isNativeMode()일 때는 항상 tabletContainer 사용 (모바일 폰 포함)
+  const isTablet = isNativeMode();
+
+  state.studentTab = 'archive';
+  state.currentScreen = 'main';
+  // 브릿지에서 직접 _showArchiveModule을 호출하므로, renderScreen 내부 재호출 차단
+  // ★ renderScreen()은 requestAnimationFrame으로 비동기 실행되므로,
+  //    _bridgeInProgress는 여기서 리셋하지 않고 _renderScreenImpl 안에서 리셋
+  _bridgeInProgress = true;
+  _showArchiveModule(isTablet, { skipRefresh: wasActive, skipInitialRender: !wasActive });
+  renderScreen();
+
+  if (wasActive && window._RM) {
+    // 이미 활성화됨 → 메인 앱 데이터 주입 후 콜백 실행 (API 중복 호출 방지)
+    window.ArchiveModule.refresh({
+      skipRender: true,
+      preloadedData: {
+        classRecords: state._dbClassRecords || [],
+        questionRecords: state._dbQuestionRecords || [],
+        teachRecords: state._dbTeachRecords || [],
+        activityRecords: state._dbActivityRecords || [],
+        reportRecords: state._dbReportRecords || [],
+        careerProfile: state._careerProfile || null,
+      },
+    }).then(() => {
+      callback();
+    });
+  } else {
+    // 처음 초기화 → _RM 준비 + DB 로딩 완료까지 대기 (최대 3초)
+    let tries = 0;
+    const check = setInterval(() => {
+      tries++;
+      if (window._RM) {
+        clearInterval(check);
+        // DB 로딩 완료까지 대기한 후 콜백 실행 (빈 화면 깜빡임 방지)
+        const ready = window.ArchiveModule?._initReady || Promise.resolve();
+        ready.then(() => callback());
+      } else if (tries > 30) {
+        clearInterval(check);
+        console.warn('[Bridge] ArchiveModule not ready after 3s');
+      }
+    }, 100);
+  }
+}
+
+// 홈 시간표에서 '기록하기' 클릭 → 아카이브 모듈의 사진 업로드 플로우로 진입
+function openArchiveRecord(periodIdx) {
+  _waitForArchiveReady(() => {
+    window._RM.selectPeriod(periodIdx);
+  });
+}
+
+// 홈에서 기록 완료된 과목 클릭 → 아카이브 모듈의 상세 보기로 진입
+function viewRecordViaArchive(periodIdx) {
+  _waitForArchiveReady(() => {
+    window._RM.viewCompletedPeriod(periodIdx);
+  });
+}
+
+// 홈에서 미기록 수업 배너/수업종료 팝업 버튼 → 아카이브 오늘의 업(period-select)으로 진입
+function openArchivePeriodSelect() {
+  _waitForArchiveReady(() => {
+    window._RM.nav('period-select');
+  });
+}
+
+let _renderTimer = null;
+let _renderForced = false;
+// 이전 렌더링 상태 추적 - 같은 화면이면 innerHTML 교체 스킵
+let _lastRenderedKey = '';
+
+function renderScreen(force) {
+  if (force) { _renderForced = true; }
+  if (_renderTimer) cancelAnimationFrame(_renderTimer);
+  _renderTimer = requestAnimationFrame(() => {
+    _renderTimer = null;
+    const wasForced = _renderForced;
+    _renderForced = false;
+    _renderScreenImpl(wasForced);
+  });
+}
+function _renderScreenImpl(forced) {
+  // 브릿지 진행 중 플래그: _showArchiveModule 중복 호출 방지에 사용된 후 여기서 리셋
+  // (renderScreen은 requestAnimationFrame 비동기이므로 호출부에서 리셋하면 안됨)
+  const wasBridge = _bridgeInProgress;
+  _bridgeInProgress = false;
+
+  // 자동 로그인 데이터 로딩 중이면 렌더 스킵 → initial-loader가 계속 표시됨
+  if (_autoLoginDataLoading) return;
+
+  // 초기 로딩 인디케이터 페이드아웃 제거
+  ['initial-loader', 'initial-loader-tablet', 'initial-loader-desktop'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.opacity = '0';
+      setTimeout(() => el.remove(), 300);
+    }
+  });
+
+  // renderScreen 전에 질문 입력 내용 보존
+  const prevQuestionInput = document.getElementById('question-input');
+  if (prevQuestionInput) {
+    state._questionText = prevQuestionInput.value;
+  }
+
+  const container = document.getElementById('app-content');
+  const tabletContent = document.getElementById('tablet-content');
+  const deskContainer = document.getElementById('desktop-content');
+  const phoneContainer = document.getElementById('phone-container');
+  const tabletContainer = document.getElementById('tablet-container');
+  const desktopContainer = document.getElementById('desktop-container');
+  const modeHeader = document.getElementById('mode-header');
+  const modeSelector = document.getElementById('mode-selector');
+  const deviceSelector = document.getElementById('device-preview-selector');
+  const native = isNativeMode();
+  const isPreviewMode = devicePreview !== null;
+
+  // 같은 화면이면 DOM 전체 교체 스킵 (깜빡임 방지)
+  const _m = typeof _mentor !== 'undefined' ? _mentor : {};
+  const renderKey = `${state.mode}|${state.currentScreen}|${state.studentTab}|${state.mentorTab}|${state.directorTab}|${native}|${devicePreview}|${_externalMode}|${state._loginLoading}|${_m.initialLoading}|${_m.loading}|${_m.detailLoading}|${_m.viewerLoading}|${_m.selectedGroupId}|${_m.selectedStudentId}|${_m.detailTab}|${state.plannerView}|${state.plannerDate}|${state.dailyTodos.length}|${state.dailyTodos.filter(t=>t.is_completed).length}|${state._editingTodoId||''}|${state._communityScreen}|${state._communityUnreadCount}|${state._communityBoards?.length||0}|${state._communityPosts?.length||0}|${state._communityCurrentPost?.id||''}|${state._communityComments?.length||0}|${state._communityFriends?.length||0}|${state._communityNotifications?.length||0}|${state._assignmentUsePlan}|${_m._qLoading?1:(_m._qData?2:0)}|${_m._smLoading?1:(_m._smMatrix?2:0)}|${_m._phLoading?1:(_m._phData?2:0)}|${_m._smSelectedSubject||''}|${_m._smProgressLoading?1:(_m._smProgress?2:0)}|${_m._smAiLoading?1:0}|${_m._qExpandedId||0}|${_m._qFilterSubject||''}|${_m._qFilterStatus||''}|${_m._qFilterStudent||''}`;
+  const skipFullRender = !forced && (_lastRenderedKey === renderKey) && _lastRenderedKey !== '';
+  if (!skipFullRender) {
+    _lastRenderedKey = renderKey;
+  }
+
+  // 모드 선택 헤더/버튼/디바이스선택: PC에서만 표시 (또는 프리뷰 모드일 때), 학생뷰어에서는 숨김
+  // 외부 앱 호출 시(_externalMode)에는 항상 숨김
+  const hideControls = _externalMode || (native && !isPreviewMode) || state.mode === 'mentor-student-viewer';
+  if (modeHeader) modeHeader.style.display = hideControls ? 'none' : 'flex';
+  if (modeSelector) modeSelector.style.display = hideControls ? 'none' : 'flex';
+  if (deviceSelector) deviceSelector.style.display = hideControls ? 'none' : 'flex';
+
+  // 프리뷰 프레임 래퍼 관리
+  // 외부 앱 호출(_externalMode)일 때는 프리뷰 프레임 없이 전체 화면으로 표시
+  let previewFrame = document.getElementById('device-preview-frame');
+  const usePreviewFrame = isPreviewMode && !_externalMode && (devicePreview === 'phone' || devicePreview === 'tablet' || devicePreview === 'tablet-landscape');
+  if (usePreviewFrame) {
+    // phone/tablet 프리뷰: tablet-container를 프리뷰 프레임 안에 배치
+    if (!previewFrame) {
+      previewFrame = document.createElement('div');
+      previewFrame.id = 'device-preview-frame';
+      tabletContainer.parentNode.insertBefore(previewFrame, tabletContainer);
+    }
+    previewFrame.className = getDevicePreviewClass();
+    if (tabletContainer.parentNode !== previewFrame) {
+      previewFrame.appendChild(tabletContainer);
+    }
+    previewFrame.style.display = 'flex';
+  } else if (previewFrame) {
+    // PC 모드 또는 실제 네이티브: 프리뷰 프레임 해제
+    if (tabletContainer.parentNode === previewFrame) {
+      previewFrame.parentNode.insertBefore(tabletContainer, previewFrame);
+    }
+    previewFrame.style.display = 'none';
+  }
+
+  // skipFullRender: 같은 화면(모드+스크린+탭)이면 DOM 전체 교체 없이 종료 → 깜빡임 방지
+  if (skipFullRender) return;
+
+  if (state.mode === 'student') {
+    desktopContainer.style.display = 'none';
+    if (native) {
+      phoneContainer.style.display = 'none';
+      tabletContainer.style.display = 'flex';
+      // 사이드바 렌더링 (로그인/온보딩 화면이 아닐 때만)
+      const sidebarEl = document.getElementById('tablet-sidebar');
+      const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'timetable-onboarding' || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor';
+      if (sidebarEl) {
+        if (isAuthScreen) {
+          sidebarEl.style.display = 'none';
+          sidebarEl.innerHTML = '';
+        } else {
+          sidebarEl.style.display = 'flex';
+          sidebarEl.innerHTML = renderSidebar();
+          // 사이드바 네비 이벤트 → document 레벨 위임 (1회만 등록)
+        }
+      }
+      // Records 모듈 탭 전환
+      // wasBridge=true면 브릿지가 이미 _showArchiveModule을 호출했으므로 중복 호출 방지
+      if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
+        if (!wasBridge) _showArchiveModule(true);
+        initMobileBottomTab();
+      } else {
+        _hideArchiveModule();
+        // 깜빡임 방지: skipFullRender일 때 DOM 교체 스킵
+        if (!skipFullRender) {
+          tabletContent.innerHTML = renderStudentApp();
+          initStudentEvents(tabletContent);
+          initAuthEvents(tabletContent);
+        }
+        initMobileBottomTab();
+        setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); } }, 100);
+        setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
+        setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
+        setTimeout(() => smartScrollTimetable(), 80);
+        if (state.currentScreen === 'timetable-manage') setTimeout(initAcademyDragDrop, 50);
+        // Home tab GSAP stagger animation
+        setTimeout(() => {
+          if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
+            const cards = tabletContent.querySelectorAll('.home-row-top .card, .home-row-bottom .card, .home-bottom-col-left .card, .home-bottom-btn');
+            if (cards.length) {
+              window.gsap.from(cards, { duration: 0.55, y: 24, opacity: 0, stagger: 0.06, ease: 'power2.out', clearProps: 'all' });
+            }
+          }
+        }, 30);
+      }
+    } else {
+      phoneContainer.style.display = 'flex';
+      tabletContainer.style.display = 'none';
+      // Records 모듈 탭 전환
+      // wasBridge=true면 브릿지가 이미 _showArchiveModule을 호출했으므로 중복 호출 방지
+      if (state.studentTab === 'archive' && state.currentScreen === 'main' && state._authUser) {
+        if (!wasBridge) _showArchiveModule(false);
+      } else {
+        _hideArchiveModule();
+        // 깜빡임 방지: skipFullRender일 때 DOM 교체 스킵
+        if (!skipFullRender) {
+          container.innerHTML = renderStudentApp();
+          initStudentEvents(container);
+          initAuthEvents(container);
+        }
+        setTimeout(() => { if (state.currentScreen === 'growth-analysis') drawGrowthChart(); }, 50);
+        setTimeout(() => { if (state.studentTab === 'my' && state.currentScreen === 'main') { loadXpHistory(); } }, 100);
+        setTimeout(() => { if ((state.studentTab === 'my' || state.studentTab === 'growth') && state.currentScreen === 'main') { loadGrowthAhaClasses(); } }, 100);
+        setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 150);
+        setTimeout(() => smartScrollTimetable(), 80);
+        if (state.currentScreen === 'timetable-manage') setTimeout(initAcademyDragDrop, 50);
+        // Home tab GSAP stagger animation (phone)
+        setTimeout(() => {
+          if (state.studentTab === 'home' && state.currentScreen === 'main' && window.gsap) {
+            const cards = container.querySelectorAll('.home-row-top .card, .home-row-bottom .card, .home-bottom-col-left .card, .home-bottom-btn');
+            if (cards.length) {
+              window.gsap.from(cards, { duration: 0.55, y: 24, opacity: 0, stagger: 0.06, ease: 'power2.out', clearProps: 'all' });
+            }
+          }
+        }, 30);
+      }
+    }
+  } else if (state.mode === 'mentor') {
+    phoneContainer.style.display = 'none';
+    tabletContainer.style.display = 'none';
+    desktopContainer.style.display = 'block';
+    deskContainer.innerHTML = renderMentorDashboard();
+    initMentorEvents();
+  } else if (state.mode === 'mentor-student-viewer') {
+    // 멘토가 학생 플래너를 열람: 데스크톱 대시보드 레이아웃
+    phoneContainer.style.display = 'none';
+    tabletContainer.style.display = 'none';
+    desktopContainer.style.display = 'block';
+
+    const sname = _mentor.viewerStudentName || '';
+    const semoji = _mentor.viewerStudentEmoji || '🐻';
+
+    if (_mentor.viewerLoading) {
+      deskContainer.innerHTML = `
+        <div class="msv-top-bar">
+          <button onclick="mentorExitStudentView()" class="msv-back-btn"><i class="fas fa-arrow-left"></i> 학생 목록으로 돌아가기</button>
+          <span class="msv-title-label">${semoji} ${sname} 학생의 플래너 <span class="msv-badge">👁 열람 모드</span></span>
+        </div>
+        <div style="text-align:center;padding:120px 20px;color:var(--text-muted)">
+          <i class="fas fa-spinner fa-spin" style="font-size:48px;color:var(--primary-light)"></i>
+          <p style="margin-top:20px;font-size:18px;font-weight:600">${sname} 학생 데이터를 불러오는 중...</p>
+        </div>`;
+    } else {
+      deskContainer.innerHTML = renderMentorStudentDashboard();
+      initMentorStudentDashboardEvents();
+    }
+
+    setTimeout(() => { drawGrowthChart(); }, 200);
+    setTimeout(() => { loadXpHistory(); }, 250);
+    setTimeout(() => { const chat = document.getElementById('socrates-chat-area'); if (chat) bindAiGeneratedButtons(chat); }, 300);
+  } else {
+    phoneContainer.style.display = 'none';
+    tabletContainer.style.display = 'none';
+    desktopContainer.style.display = 'block';
+    deskContainer.innerHTML = renderDirectorDashboard();
+    initDirectorEvents();
+  }
+}
+
+// 화면 크기 변경 감지 → 자동 모드 전환
+let _lastNative = isNativeMode();
+let _lastOrientation = screen.orientation?.type || (window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+
+window.addEventListener('resize', () => {
+  const nowNative = isNativeMode();
+  const nowOrientation = screen.orientation?.type || (window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+  const orientationChanged = (nowOrientation.includes('landscape') !== _lastOrientation.includes('landscape'));
+  
+  if (nowNative !== _lastNative || orientationChanged) {
+    _lastNative = nowNative;
+    _lastOrientation = nowOrientation;
+    renderScreen();
+  }
+});
+
+// orientation change 이벤트 (모바일/태블릿 전용)
+if (screen.orientation) {
+  screen.orientation.addEventListener('change', () => {
+    _lastOrientation = screen.orientation.type;
+    // 약간의 딜레이 후 렌더링 (새 뷰포트 안정화 대기)
+    setTimeout(() => renderScreen(), 100);
+  });
+} else {
+  // fallback: orientationchange
+  window.addEventListener('orientationchange', () => {
+    setTimeout(() => {
+      _lastOrientation = window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+      renderScreen();
+    }, 200);
+  });
+}
+
+// ==================== STUDENT APP ROUTER ====================
+
+function renderStudentApp() {
+  if (state.currentScreen === 'timetable-onboarding') return renderTimetableOnboarding();
+  if (state.currentScreen.startsWith('onboarding')) return renderOnboarding();
+  // 외부 앱 호출 시 로그인 화면 대신 로딩 표시
+  if (_externalMode && (state.currentScreen === 'login' || state.currentScreen === 'register-student' || state.currentScreen === 'register-mentor' || state.currentScreen === 'login-mentor')) {
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;color:var(--text-muted)">
+      <i class="fas fa-spinner fa-spin" style="font-size:36px;color:var(--primary-light);margin-bottom:16px"></i>
+      <p style="font-size:15px">로그인 중...</p>
+    </div>`;
+  }
+  if (state.currentScreen === 'login') return renderLoginScreen();
+  if (state.currentScreen === 'register-student') return renderStudentRegister();
+  if (state.currentScreen === 'register-mentor') return renderMentorRegister();
+  if (state.currentScreen === 'login-mentor') return renderMentorLogin();
+  if (state.currentScreen === 'login-director') return renderDirectorLogin();
+  if (state.currentScreen === 'record-class') return renderRecordClass();
+  if (state.currentScreen === 'record-question') return renderRecordQuestion();
+  if (state.currentScreen === 'record-teach') return renderRecordTeach();
+  if (state.currentScreen === 'record-activity') return renderRecordActivity();
+  if (state.currentScreen === 'class-end-popup') return renderClassEndPopup();
+  if (state.currentScreen === 'academy-record-popup') return renderAcademyRecordPopup();
+  if (state.currentScreen === 'evening-routine') return renderEveningRoutine();
+  if (state.currentScreen === 'weekly-report') return renderWeeklyReportStudent();
+  if (state.currentScreen === 'record-history') return renderRecordHistory();
+  if (state.currentScreen === 'notifications') return renderNotifications();
+  if (state.currentScreen === 'croquet-history') return renderCroquetHistory();
+  if (state.currentScreen === 'aha-report') return renderAhaReport();
+  if (state.currentScreen === 'aha-report-list') return renderAhaReportList();
+  if (state.currentScreen === 'aha-report-detail') return renderAhaReportDetail();
+  if (state.currentScreen === 'record-assignment') return renderRecordAssignment();
+  if (state.currentScreen === 'assignment-plan') return renderAssignmentPlan();
+  if (state.currentScreen === 'assignment-list') return renderAssignmentList();
+  if (state.currentScreen === 'planner-add') return renderPlannerAddItem();
+  if (state.currentScreen === 'timetable-manage') return renderTimetableManage();
+  if (state.currentScreen === 'academy-add') return renderAcademyAdd();
+  if (state.currentScreen === 'classmate-manage') return renderClassmateManage();
+  if (state.currentScreen === 'portfolio') return renderPortfolio();
+  if (state.currentScreen === 'exam-list') return renderExamList();
+  if (state.currentScreen === 'exam-detail') return renderExamDetail();
+  if (state.currentScreen === 'exam-add') return renderExamAdd();
+  if (state.currentScreen === 'exam-result-input') return renderExamResultInput();
+  if (state.currentScreen === 'exam-report') return renderExamReport();
+  if (state.currentScreen === 'growth-analysis') return renderGrowthAnalysis();
+  if (state.currentScreen === 'report-project') return renderReportProject();
+  if (state.currentScreen === 'report-add') return renderReportAdd();
+  if (state.currentScreen === 'activity-detail') return renderActivityDetail();
+  if (state.currentScreen === 'activity-add') return renderActivityAdd();
+  if (state.currentScreen === 'record-schoolrecord') return renderSchoolRecord();
+  if (state.currentScreen === 'class-record-edit') return renderClassRecordEdit();
+  if (state.currentScreen === 'class-record-history') return renderClassRecordHistory();
+  if (state.currentScreen === 'class-record-detail') return renderClassRecordDetail();
+  if (state.currentScreen === 'record-status') return renderRecordStatus();
+  if (state.currentScreen === 'period-select') return renderRecordStatus(); // 오늘의 수업 → 기존 record-status 연결
+  if (state.currentScreen === 'photo-album') return renderPhotoAlbum();
+  if (state.currentScreen === 'aha-list') return renderAhaReportList(); // 아하 리포트 목록 → 기존 함수 연결
+  if (state.currentScreen === 'mentor-feedback') return renderStudentFeedbackScreen();
+  if (state.currentScreen === 'timetable-onboarding') return renderTimetableOnboarding();
+  if (state.currentScreen === 'relay-wordbook') return renderRelayWordbookScreen();
+
+  let content = '';
+  content += renderXpBar();
+  switch(state.studentTab) {
+    case 'home': content += renderHomeTab(); break;
+    case 'archive': content += renderRecordTab(); break;
+    case 'planner': content += renderPlannerTab(); break;
+    case 'growth': content += renderGrowthTab(); break;
+    case 'myqa': content += '<div class="tab-content animate-in" style="display:flex;align-items:center;justify-content:center;min-height:60vh"><div style="text-align:center"><div style="font-size:48px;margin-bottom:16px">❓</div><div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:8px">질문/답변 사이트 열기</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">새 탭에서 질문/답변 사이트를 엽니다...</div></div></div>'; setTimeout(()=>{ openMyQaIframe(); state.studentTab='home'; renderScreen(); },100); break;
+    case 'my': content += renderMyTab(); break;
+    case 'community': content += renderCommunityTab(); break;
+  }
+  content += renderFab();
+  // AI 플로팅 어시스턴트 (플래너 탭에서 항상 노출)
+  if (state.studentTab === 'planner' && state.currentScreen === 'main') {
+    content += renderPlannerAiFloat();
+  }
+  return content;
+}
+
+// ==================== XP BAR ====================
+function renderXpBar() {
+  const nextLevelXp = 1500;
+  const pct = Math.min((state.xp / nextLevelXp * 100), 100).toFixed(0);
+  return `
+    <div class="xp-bar-container">
+      <span class="xp-level">Lv.${state.level}</span>
+      <div class="xp-bar"><div class="xp-bar-fill" style="width:${pct}%"></div></div>
+      <span class="xp-text">${state.xp.toLocaleString()}/${nextLevelXp.toLocaleString()}</span>
+      <span class="streak-badge">🔥${state.streak}</span>
+    </div>
+  `;
+}
+
+// ==================== SIDEBAR NAVIGATION (오르조 스타일) ====================
+function renderSidebar() {
+  const tabs = [
+    { id:'home', icon:'fa-house', label:'홈', emoji:'🏠' },
+    { id:'archive', icon:'fa-pen-to-square', label:'아카이브', emoji:'✏️' },
+    { id:'planner', icon:'fa-calendar-check', label:'플래너', emoji:'📅' },
+    { id:'growth', icon:'fa-chart-line', label:'성장', emoji:'📈' },
+    { id:'myqa', icon:'fa-circle-question', label:'내 질문', emoji:'❓' },
+    { id:'my', icon:'fa-user', label:'마이', emoji:'👤' },
+    { id:'community', icon:'fa-comments', label:'커뮤니티', emoji:'💬' },
+  ];
+
+  const userName = state._authUser?.name || '학생';
+  const doneCount = state.todayRecords.filter(r => r.done).length;
+  const total = state.todayRecords.length;
+  const unrecordedCount = countUnrecordedEndedClasses();
+
+  return `
+    <div class="sidebar">
+      <!-- 로고 영역 -->
+      <div class="sidebar-logo">
+        <img src="/static/logo.png" alt="정율사관학원" class="sidebar-logo-img">
+      </div>
+
+      <!-- 메인 네비게이션 -->
+      <nav class="sidebar-nav">
+        ${tabs.map(t => `
+          <button class="sidebar-nav-item ${state.studentTab===t.id?'active':''}" data-tab="${t.id}">
+            <i class="fas ${t.icon}"></i>
+            <span class="sidebar-nav-label">${t.label}</span>
+            ${t.id === 'archive' && unrecordedCount > 0 ? `<span class="sidebar-badge">${unrecordedCount}</span>` : ''}
+            ${t.id === 'myqa' && state.myQaStats?.unanswered > 0 ? `<span class="sidebar-badge" style="background:var(--accent)">${state.myQaStats.unanswered}</span>` : ''}
+            ${t.id === 'community' && state._communityUnreadCount > 0 ? `<span class="sidebar-badge">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
+          </button>
+        `).join('')}
+      </nav>
+
+      <!-- 하단 정보 영역 -->
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <span class="sidebar-user-emoji">${state._authUser?.emoji || '🐻'}</span>
+          <span class="sidebar-user-name">${userName}</span>
+        </div>
+        <div class="sidebar-xp">
+          <span class="sidebar-xp-level">Lv.${state.level}</span>
+          <div class="sidebar-xp-bar"><div class="sidebar-xp-fill" style="width:${Math.min(state.xp/1500*100,100).toFixed(0)}%"></div></div>
+        </div>
+        <div class="sidebar-streak">🔥 ${state.streak}일 연속</div>
+        ${state._authUser ? `<button class="sidebar-logout" onclick="logout()"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 모바일 하단 탭바 ====================
+function renderMobileBottomTab() {
+  const tabs = [
+    { id:'home', icon:'fa-house', label:'홈' },
+    { id:'archive', icon:'fa-pen-to-square', label:'아카이브' },
+    { id:'planner', icon:'fa-calendar-check', label:'플래너' },
+    { id:'growth', icon:'fa-chart-line', label:'성장' },
+    { id:'myqa', icon:'fa-circle-question', label:'질문' },
+    { id:'my', icon:'fa-user', label:'마이' },
+    { id:'community', icon:'fa-comments', label:'커뮤니티' },
+  ];
+  return `<div class="mobile-bottom-tab-bar">
+    ${tabs.map(t => `<button class="mob-tab-item ${state.studentTab===t.id?'active':''}" data-tab="${t.id}" style="position:relative">
+      <i class="fas ${t.icon}"></i><span>${t.label}</span>
+      ${t.id === 'community' && state._communityUnreadCount > 0 ? `<span class="mob-tab-badge">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
+    </button>`).join('')}
+  </div>`;
+}
+
+function initMobileBottomTab() {
+  const el = document.getElementById('mobile-bottom-tab');
+  if (!el) return;
+  // 로그인/온보딩 화면에서는 숨김
+  const isAuthScreen = state.currentScreen === 'login' || state.currentScreen.startsWith('onboarding') || state.currentScreen === 'timetable-onboarding' || state.currentScreen.startsWith('register') || state.currentScreen === 'login-mentor' || state.currentScreen === 'login-director';
+  if (isAuthScreen) { el.innerHTML = ''; return; }
+  el.innerHTML = renderMobileBottomTab();
+  // 이벤트 리스너는 document 레벨 위임으로 처리 (아래 _initDelegatedNavEvents)
+}
+
+function renderFab() {
+  // 플래너 탭에서는 AI FAB가 대신 표시됨, 기록/내질문 탭에서는 이미 메뉴가 있으므로 불필요
+  if (state.studentTab === 'planner' || state.studentTab === 'archive' || state.studentTab === 'myqa' || state.studentTab === 'community') return '';
+  return `<button class="fab" id="fab-btn"><i class="fas fa-plus"></i></button>`;
+}
+
+// ==================== ONBOARDING (S-01 ~ S-05) ====================
+
+function renderOnboarding() {
+  switch(state.currentScreen) {
+    case 'onboarding-welcome': return renderOnboardingWelcome();
+    case 'onboarding-info': return renderOnboardingInfo();
+    case 'onboarding-career': return renderOnboardingCareer();
+    case 'onboarding-timetable': return renderOnboardingTimetable();
+    case 'onboarding-guide': return renderOnboardingGuide();
+  }
+}
+
+function renderOnboardingWelcome() {
+  return `
+    <div class="onboarding-screen animate-in">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
+        <div class="onboarding-logo">
+          <img src="/static/logo.png" alt="정율사관학원" class="onboarding-logo-img">
+          <h2>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.2</span></h2>
+          <p>HS CreditPlanner</p>
+        </div>
+        <p style="text-align:center;color:var(--text-secondary);font-size:15px;line-height:1.8;margin-bottom:40px">
+          고교학점제 시대,<br>
+          <strong style="color:var(--text-primary)">학교생활의 모든 순간</strong>을 기록하고<br>
+          <strong style="color:var(--primary-light)">생기부 경쟁력</strong>으로 만드세요
+        </p>
+
+      </div>
+      <button class="btn-primary btn-glow" onclick="goScreen('onboarding-info')">
+        시작하기 <i class="fas fa-arrow-right" style="margin-left:8px"></i>
+      </button>
+    </div>
+  `;
+}
+
+function renderOnboardingInfo() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="onboarding-progress"><div class="onboarding-progress-fill" style="width:25%"></div></div>
+      <span class="onboarding-step">1/4 기본 정보</span>
+      <h1 class="onboarding-title">반갑습니다! 👋</h1>
+      <p class="onboarding-desc">고교학점플래너를 시작하기 위한 기본 정보를 입력해주세요.</p>
+      <div class="field-group">
+        <label class="field-label">이름</label>
+        <input class="input-field" placeholder="이름을 입력하세요" value="">
+      </div>
+      <div class="field-group">
+        <label class="field-label">학교</label>
+        <div class="input-with-icon">
+          <i class="fas fa-search"></i>
+          <input class="input-field" placeholder="학교명 검색" value="정율고등학교" style="padding-left:40px">
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">학년</label>
+        <div style="display:flex;gap:8px">
+          <button class="grid-select-btn" style="flex:1">1학년</button>
+          <button class="grid-select-btn active" style="flex:1">2학년</button>
+          <button class="grid-select-btn" style="flex:1">3학년</button>
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">반</label>
+        <input class="input-field" placeholder="반" value="3반" style="width:120px">
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn-primary" onclick="goScreen('onboarding-career')">다음 <i class="fas fa-arrow-right" style="margin-left:6px"></i></button>
+    </div>
+  `;
+}
+
+function renderOnboardingCareer() {
+  const fields = [
+    {name:'인문', icon:'📚'}, {name:'사회', icon:'🌍'}, {name:'상경', icon:'💰'},
+    {name:'자연', icon:'🔬'}, {name:'공학', icon:'⚙️'}, {name:'의약', icon:'🏥'},
+    {name:'예체능', icon:'🎨'}, {name:'교육', icon:'👩‍🏫'}, {name:'탐색중', icon:'🔍'}
+  ];
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="onboarding-progress"><div class="onboarding-progress-fill" style="width:50%"></div></div>
+      <span class="onboarding-step">2/4 진로 방향</span>
+      <h1 class="onboarding-title">어떤 분야에 관심 있나요? 🎯</h1>
+      <p class="onboarding-desc">관심 계열을 선택하세요. 나중에 바꿀 수 있어요.</p>
+      <div class="career-grid">
+        ${fields.map((f,i) => `
+          <button class="career-btn ${i===4?'active':''}" style="animation-delay:${i*0.04}s">
+            <span class="career-icon">${f.icon}</span>
+            <span class="career-name">${f.name}</span>
+          </button>
+        `).join('')}
+      </div>
+      <div class="field-group" style="margin-top:24px">
+        <label class="field-label">관심 학과 (선택)</label>
+        <input class="input-field" placeholder="예: 컴퓨터공학과" value="컴퓨터공학과">
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn-primary" onclick="goScreen('onboarding-timetable')">다음 <i class="fas fa-arrow-right" style="margin-left:6px"></i></button>
+    </div>
+  `;
+}
+
+function renderOnboardingTimetable() {
+  const days = ['월','화','수','목','금'];
+  const subjects = [
+    ['국어','수학','영어','과학','국어'],
+    ['수학','영어','국어','수학','과학'],
+    ['영어','과학','수학','국어','영어'],
+    ['과학','국어','과학','영어','수학'],
+    ['한국사','체육','미술','한국사','체육'],
+    ['체육','한국사','체육','미술','동아리'],
+    ['창체','','','',''],
+  ];
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '한국사':'#74B9FF','체육':'#A29BFE','미술':'#FD79A8','동아리':'#00CEC9','창체':'#E17055'
+  };
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="onboarding-progress"><div class="onboarding-progress-fill" style="width:75%"></div></div>
+      <span class="onboarding-step">3/4 시간표</span>
+      <h1 class="onboarding-title">시간표를 등록하세요 📋</h1>
+      <p class="onboarding-desc">빈 칸을 터치하면 과목을 선택할 수 있어요.</p>
+      <div class="tt-editor">
+        <div class="tt-editor-header"></div>
+        ${days.map(d => `<div class="tt-editor-header">${d}</div>`).join('')}
+        ${subjects.map((row, i) => `
+          <div class="tt-editor-period">${i+1}</div>
+          ${row.map(s => `
+            <div class="tt-editor-cell ${s?'filled':''}" ${s?`style="background:${subjectColors[s]||'var(--bg-input)'}22;color:${subjectColors[s]||'var(--text-secondary)'};border-color:${subjectColors[s]||'var(--border)'}44"`:''}>
+              ${s||'<i class="fas fa-plus" style="font-size:9px;opacity:0.3"></i>'}
+            </div>
+          `).join('')}
+        `).join('')}
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn-primary" onclick="goScreen('onboarding-guide')" style="margin-top:20px">다음 <i class="fas fa-arrow-right" style="margin-left:6px"></i></button>
+    </div>
+  `;
+}
+
+function renderOnboardingGuide() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="onboarding-progress"><div class="onboarding-progress-fill" style="width:100%"></div></div>
+      <span class="onboarding-step">4/4 시작 가이드</span>
+      <h1 class="onboarding-title">이렇게 쓰면 돼요! ✨</h1>
+      <p class="onboarding-desc">오늘 기록한 한 줄이, 3년 후 생기부의 한 문장이 됩니다.</p>
+      
+      <div class="guide-card stagger-1 animate-in">
+        <div class="guide-icon-circle" style="background:rgba(108,92,231,0.15)">📝</div>
+        <div class="guide-content">
+          <h3>수업 끝나면 30초 기록</h3>
+          <p>음성, 사진, 키워드 중 편한 방법으로</p>
+        </div>
+      </div>
+      <div class="guide-card stagger-2 animate-in">
+        <div class="guide-icon-circle" style="background:rgba(255,107,107,0.15)">❓</div>
+        <div class="guide-content">
+          <h3>질문이 있었다면 기록</h3>
+          <p>정율이 2축 9단계로 질문을 코칭해줘요</p>
+        </div>
+      </div>
+      <div class="guide-card stagger-3 animate-in">
+        <div class="guide-icon-circle" style="background:rgba(0,184,148,0.15)">🤝</div>
+        <div class="guide-content">
+          <h3>친구에게 가르쳤다면 기록</h3>
+          <p>교학상장! 가르치면서 배운 것이 세특의 보석</p>
+        </div>
+      </div>
+
+      <div style="flex:1"></div>
+      <div class="guide-bottom-hint">
+        <span>🎮</span> 기록할수록 XP가 쌓이고 레벨이 올라가요!
+      </div>
+      <button class="btn-primary btn-glow" onclick="state.currentScreen='main';state.studentTab='home';renderScreen()">
+        알겠어요, 시작! 🎉
+      </button>
+    </div>
+  `;
+}
+
+// ==================== LOGIN / REGISTER SCREENS ====================
+
+function renderLoginScreen() {
+  return `
+    <div class="onboarding-screen animate-in">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
+        <div class="onboarding-logo">
+          <img src="/static/logo.png" alt="정율사관학원" class="onboarding-logo-img">
+          <h2>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.2</span></h2>
+          <p>HS CreditPlanner</p>
+        </div>
+        <p style="text-align:center;color:var(--text-secondary);font-size:15px;line-height:1.8;margin-bottom:32px">
+          고교학점제 시대,<br>
+          <strong style="color:var(--text-primary)">학교생활의 모든 순간</strong>을 기록하고<br>
+          <strong style="color:var(--primary-light)">생기부 경쟁력</strong>으로 만드세요
+        </p>
+
+        ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;width:100%;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
+
+        <div class="field-group" style="width:100%">
+          <label class="field-label">이름 (가입할 때 입력한 이름)</label>
+          <input class="input-field" id="login-name" placeholder="홍길동" value="${location.hostname === 'localhost' ? '곽정율' : ''}" style="font-size:15px">
+        </div>
+        <div class="field-group" style="width:100%">
+          <label class="field-label">비밀번호</label>
+          <input class="input-field" id="login-password" type="password" placeholder="비밀번호 입력" value="${location.hostname === 'localhost' ? '1234' : ''}" style="font-size:15px">
+        </div>
+      </div>
+
+      <button class="btn-primary btn-glow" id="btn-student-login" style="width:100%;margin-bottom:10px" ${state._loginLoading ? 'disabled' : ''}>
+        ${state._loginLoading ? '<i class="fas fa-spinner fa-spin"></i> 로그인 중...' : '로그인 <i class="fas fa-arrow-right" style="margin-left:8px"></i>'}
+      </button>
+      <button class="btn-secondary" id="btn-go-register" style="width:100%;margin-bottom:10px">
+        처음이에요? 회원가입
+      </button>
+      <div style="text-align:center;margin-top:4px">
+        <button style="background:none;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;text-decoration:underline" id="btn-go-mentor-login">
+          선생님이신가요?
+        </button>
+        <span style="color:var(--text-muted);font-size:12px;margin:0 6px">|</span>
+        <button style="background:none;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;text-decoration:underline" id="btn-go-director-login">
+          원장 로그인
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderStudentRegister() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="back-btn" onclick="state._loginError='';goScreen('login')"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px">학생 회원가입</h1>
+      </div>
+
+      ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
+
+      <div class="field-group">
+        <label class="field-label">이름 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="reg-name" placeholder="실명을 입력하세요">
+      </div>
+      <div class="field-group">
+        <label class="field-label">비밀번호 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="reg-password" type="password" placeholder="4자 이상">
+      </div>
+      <div class="field-group">
+        <label class="field-label">비밀번호 확인 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="reg-password2" type="password" placeholder="비밀번호 다시 입력">
+      </div>
+      <div class="field-group">
+        <label class="field-label">학교명</label>
+        <input class="input-field" id="reg-school" placeholder="예: 정율고등학교">
+      </div>
+      <div class="field-group">
+        <label class="field-label">학년</label>
+        <div style="display:flex;gap:8px">
+          <button class="grid-select-btn reg-grade-btn active" data-grade="1" style="flex:1">1학년</button>
+          <button class="grid-select-btn reg-grade-btn" data-grade="2" style="flex:1">2학년</button>
+          <button class="grid-select-btn reg-grade-btn" data-grade="3" style="flex:1">3학년</button>
+        </div>
+      </div>
+
+      <div style="flex:1"></div>
+      <button class="btn-primary btn-glow" id="btn-student-register" style="width:100%;margin-top:16px" ${state._loginLoading ? 'disabled' : ''}>
+        ${state._loginLoading ? '<i class="fas fa-spinner fa-spin"></i> 가입 중...' : '가입하기 🎉'}
+      </button>
+    </div>
+  `;
+}
+
+function renderMentorLogin() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="back-btn" onclick="state._loginError='';goScreen('login')"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px">멘토 로그인</h1>
+      </div>
+
+      ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
+
+      <div style="text-align:center;margin-bottom:24px">
+        <span style="font-size:48px">👨‍🏫</span>
+        <p style="color:var(--text-secondary);font-size:13px;margin-top:8px">선생님 전용 로그인</p>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">아이디</label>
+        <input class="input-field" id="mentor-login-id" placeholder="멘토 아이디" autocomplete="username">
+      </div>
+      <div class="field-group">
+        <label class="field-label">비밀번호</label>
+        <input class="input-field" id="mentor-login-pw" type="password" placeholder="비밀번호" autocomplete="current-password">
+      </div>
+
+      <div style="flex:1"></div>
+      <button class="btn-primary" id="btn-mentor-login" style="width:100%;margin-bottom:10px" ${state._loginLoading ? 'disabled' : ''}>
+        ${state._loginLoading ? '<i class="fas fa-spinner fa-spin"></i> 로그인 중...' : '멘토 로그인'}
+      </button>
+      <button class="btn-secondary" id="btn-go-mentor-register" style="width:100%">
+        멘토 계정 만들기
+      </button>
+    </div>
+  `;
+}
+
+function renderDirectorLogin() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="back-btn" onclick="state._loginError='';goScreen('login')"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px">원장 로그인</h1>
+      </div>
+
+      ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
+
+      <div style="text-align:center;margin-bottom:24px">
+        <span style="font-size:48px">🏢</span>
+        <p style="color:var(--text-secondary);font-size:13px;margin-top:8px">원장 전용 대시보드</p>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">아이디</label>
+        <input class="input-field" id="director-login-id" placeholder="원장 아이디" autocomplete="username">
+      </div>
+      <div class="field-group">
+        <label class="field-label">비밀번호</label>
+        <input class="input-field" id="director-login-pw" type="password" placeholder="비밀번호" autocomplete="current-password">
+      </div>
+
+      <div style="flex:1"></div>
+      <button class="btn-primary" id="btn-director-login" style="width:100%;margin-bottom:10px;background:linear-gradient(135deg,#f59e0b,#d97706)" ${state._loginLoading ? 'disabled' : ''}>
+        ${state._loginLoading ? '<i class="fas fa-spinner fa-spin"></i> 로그인 중...' : '🏢 원장 로그인'}
+      </button>
+    </div>
+  `;
+}
+
+function renderMentorRegister() {
+  return `
+    <div class="onboarding-screen animate-slide">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="back-btn" onclick="state._loginError='';goScreen('login-mentor')"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px">멘토 회원가입</h1>
+      </div>
+
+      ${state._loginError ? `<div style="background:rgba(255,107,107,0.15);color:#FF6B6B;padding:10px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;text-align:center">${escapeHtml(state._loginError)}</div>` : ''}
+
+      <div class="field-group">
+        <label class="field-label">아이디 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="mentor-reg-id" placeholder="영문/숫자 조합">
+      </div>
+      <div class="field-group">
+        <label class="field-label">비밀번호 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="mentor-reg-pw" type="password" placeholder="4자 이상">
+      </div>
+      <div class="field-group">
+        <label class="field-label">이름 <span style="color:#FF6B6B">*</span></label>
+        <input class="input-field" id="mentor-reg-name" placeholder="선생님 성함">
+      </div>
+      <div class="field-group">
+        <label class="field-label">학원명</label>
+        <input class="input-field" id="mentor-reg-academy" placeholder="예: 정율사관학원">
+      </div>
+      <div class="field-group">
+        <label class="field-label">연락처</label>
+        <input class="input-field" id="mentor-reg-phone" placeholder="010-XXXX-XXXX">
+      </div>
+
+      <div style="flex:1"></div>
+      <button class="btn-primary btn-glow" id="btn-mentor-register" style="width:100%;margin-top:16px" ${state._loginLoading ? 'disabled' : ''}>
+        ${state._loginLoading ? '<i class="fas fa-spinner fa-spin"></i> 가입 중...' : '멘토 등록하기'}
+      </button>
+    </div>
+  `;
+}
+
+
+// ==================== AUTH EVENT HANDLERS ====================
+
+function initAuthEvents(container) {
+  if (!container) return;
+
+  // 학생 로그인
+  container.querySelector('#btn-student-login')?.addEventListener('click', async () => {
+    const name = container.querySelector('#login-name')?.value?.trim();
+    const pw = container.querySelector('#login-password')?.value;
+    if (!name || !pw) { state._loginError = '이름과 비밀번호를 입력해주세요'; renderScreen(); return; }
+
+    state._loginLoading = true; state._loginError = ''; renderScreen();
+    try {
+      const res = await fetch('/api/auth/student/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ name, password: pw })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '로그인 실패');
+
+      // 로그인 성공 - 상태 저장
+      state._authUser = data.user;
+      state._authToken = data.token;
+      state._authRole = 'student';
+      state._authGroup = data.group;
+      state._loginError = '';
+      state._loginLoading = false;
+
+      // localStorage에 저장 (자동 로그인)
+      localStorage.setItem('cp_auth', JSON.stringify({
+        user: data.user, token: data.token, role: 'student', group: data.group
+      }));
+
+      state.mode = 'student';
+
+      // 학기 데이터 확인 → 없으면 시간표 온보딩
+      try {
+        const semRes = await fetch('/api/student/' + data.user.id + '/semesters');
+        const semData = await semRes.json();
+        if (semData.success && (!semData.data || semData.data.length === 0)) {
+          state.currentScreen = 'timetable-onboarding';
+          state._ttOnboardingStep = 'intro';
+          state.studentTab = 'home';
+          renderScreen();
+          return;
+        }
+      } catch(_) { /* 실패 시 그냥 메인으로 */ }
+
+      state.currentScreen = 'main';
+      state.studentTab = 'home';
+      // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
+      _screenHistory.length = 0;
+      _screenHistory.push('main');
+      try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+
+      // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
+      DB.loadAll().then(() => { state._loginLoading = false; refreshDataWidgets(); renderScreen(); });
+      startCommunityNotifPoll();
+      // 수업 종료 자동 감지 시작
+      startClassEndChecker();
+      // 멀티디바이스 자동 동기화 시작
+      startAutoSync();
+    } catch (e) {
+      state._loginError = e.message;
+      state._loginLoading = false;
+      renderScreen();
+    }
+  });
+
+  // 학생 가입 페이지로
+  container.querySelector('#btn-go-register')?.addEventListener('click', () => {
+    state._loginError = ''; goScreen('register-student');
+  });
+
+  // 멘토 로그인 페이지로
+  container.querySelector('#btn-go-mentor-login')?.addEventListener('click', () => {
+    state._loginError = ''; goScreen('login-mentor');
+  });
+
+  // 원장 로그인 페이지로
+  container.querySelector('#btn-go-director-login')?.addEventListener('click', () => {
+    state._loginError = ''; goScreen('login-director');
+  });
+
+  // 멘토 가입 페이지로
+  container.querySelector('#btn-go-mentor-register')?.addEventListener('click', () => {
+    state._loginError = ''; goScreen('register-mentor');
+  });
+
+  // 학생 회원가입
+  container.querySelector('#btn-student-register')?.addEventListener('click', async () => {
+    const name = container.querySelector('#reg-name')?.value?.trim();
+    const pw = container.querySelector('#reg-password')?.value;
+    const pw2 = container.querySelector('#reg-password2')?.value;
+    const school = container.querySelector('#reg-school')?.value?.trim();
+    const gradeBtn = container.querySelector('.reg-grade-btn.active');
+    const grade = gradeBtn ? parseInt(gradeBtn.dataset.grade) : 1;
+
+    if (!name || !pw) { state._loginError = '이름, 비밀번호는 필수입니다'; renderScreen(); return; }
+    if (pw !== pw2) { state._loginError = '비밀번호가 일치하지 않습니다'; renderScreen(); return; }
+    if (pw.length < 4) { state._loginError = '비밀번호는 4자 이상이어야 합니다'; renderScreen(); return; }
+
+    state._loginLoading = true; state._loginError = ''; renderScreen();
+    try {
+      const res = await fetch('/api/auth/student/register', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ name, password: pw, schoolName: school, grade })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '가입 실패');
+
+      state._loginLoading = false;
+      alert(`🎉 회원가입이 완료되었습니다!\\n\\n이제 로그인해주세요.`);
+      state._loginError = '';
+      goScreen('login');
+    } catch (e) {
+      state._loginError = e.message;
+      state._loginLoading = false;
+      renderScreen();
+    }
+  });
+
+  // 학생 가입: 학년 선택
+  container.querySelectorAll('.reg-grade-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.reg-grade-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
+
+
+  // 멘토 로그인
+  container.querySelector('#btn-mentor-login')?.addEventListener('click', async () => {
+    const id = container.querySelector('#mentor-login-id')?.value?.trim();
+    const pw = container.querySelector('#mentor-login-pw')?.value;
+    if (!id || !pw) { state._loginError = '아이디와 비밀번호를 입력해주세요'; renderScreen(); return; }
+
+    state._loginLoading = true; state._loginError = ''; renderScreen();
+    try {
+      const res = await fetch('/api/auth/mentor/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ loginId: id, password: pw })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '로그인 실패');
+
+      state._authUser = data.user;
+      state._authToken = data.token;
+      state._authRole = 'mentor';
+      state._authMentorGroups = data.groups;
+      state._loginError = '';
+      state._loginLoading = false;
+
+      localStorage.setItem('cp_auth', JSON.stringify({
+        user: data.user, token: data.token, role: 'mentor', groups: data.groups
+      }));
+
+      state.mode = 'mentor';
+      state.currentScreen = 'main';
+      // 멘토 대시보드 데이터 로드
+      _mentor.initialLoading = false;
+      await mentorLoadGroups();
+      await mentorLoadGroupSummary();
+      renderScreen();
+      // DB 마이그레이션 (멘토 첫 접속 시 테이블 생성)
+      fetch('/api/migrate').catch(() => {});
+    } catch (e) {
+      state._loginError = e.message;
+      state._loginLoading = false;
+      renderScreen();
+    }
+  });
+
+  // 원장 로그인
+  container.querySelector('#btn-director-login')?.addEventListener('click', async () => {
+    const id = container.querySelector('#director-login-id')?.value?.trim();
+    const pw = container.querySelector('#director-login-pw')?.value;
+    if (!id || !pw) { state._loginError = '아이디와 비밀번호를 입력해주세요'; renderScreen(); return; }
+
+    state._loginLoading = true; state._loginError = ''; renderScreen();
+    try {
+      const res = await fetch('/api/auth/director/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ loginId: id, password: pw })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '로그인 실패');
+
+      state._authUser = data.user;
+      state._authToken = data.token;
+      state._authRole = 'director';
+      state._loginError = '';
+      state._loginLoading = false;
+
+      localStorage.setItem('cp_auth', JSON.stringify({
+        user: data.user, token: data.token, role: 'director'
+      }));
+
+      state.mode = 'director';
+      state.currentScreen = 'main';
+      renderScreen();
+      // DB 마이그레이션
+      fetch('/api/migrate').catch(() => {});
+    } catch (e) {
+      state._loginError = e.message;
+      state._loginLoading = false;
+      renderScreen();
+    }
+  });
+
+  // 원장 비밀번호 Enter 키
+  container.querySelector('#director-login-pw')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') container.querySelector('#btn-director-login')?.click();
+  });
+
+  // 멘토 회원가입
+  container.querySelector('#btn-mentor-register')?.addEventListener('click', async () => {
+    const id = container.querySelector('#mentor-reg-id')?.value?.trim();
+    const pw = container.querySelector('#mentor-reg-pw')?.value;
+    const name = container.querySelector('#mentor-reg-name')?.value?.trim();
+    const academy = container.querySelector('#mentor-reg-academy')?.value?.trim();
+    const phone = container.querySelector('#mentor-reg-phone')?.value?.trim();
+
+    if (!id || !pw || !name) { state._loginError = '아이디, 비밀번호, 이름은 필수입니다'; renderScreen(); return; }
+    if (pw.length < 4) { state._loginError = '비밀번호는 4자 이상이어야 합니다'; renderScreen(); return; }
+
+    state._loginLoading = true; state._loginError = ''; renderScreen();
+    try {
+      const res = await fetch('/api/auth/mentor/register', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ loginId: id, password: pw, name, academyName: academy, phone })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '가입 실패');
+
+      state._loginLoading = false;
+      alert(`🎉 멘토 등록 완료!\\n\\n이제 로그인해주세요.`);
+      state._loginError = '';
+      goScreen('login-mentor');
+    } catch (e) {
+      state._loginError = e.message;
+      state._loginLoading = false;
+      renderScreen();
+    }
+  });
+
+  // Enter 키 로그인
+  container.querySelector('#login-password')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') container.querySelector('#btn-student-login')?.click();
+  });
+  container.querySelector('#mentor-login-pw')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') container.querySelector('#btn-mentor-login')?.click();
+  });
+}
+
+// 로그아웃
+function logout() {
+  if (!confirm('로그아웃 하시겠습니까?')) return;
+  // 타이머 정리
+  stopAutoSync();
+  stopCommunityNotifPoll();
+  if (_classCheckTimer) { clearInterval(_classCheckTimer); _classCheckTimer = null; }
+  state._authUser = null;
+  state._authToken = null;
+  state._authRole = null;
+  state._authGroup = null;
+  state._authMentorGroups = null;
+  state._loginError = '';
+  localStorage.removeItem('cp_auth');
+  _archiveModuleActive = false;
+  _hideArchiveModule();
+  state._growthAhaClasses = [];
+  state.currentScreen = 'login';
+  state.mode = 'student';
+  renderScreen();
+}
+
+// 자동 로그인 (페이지 로드 시)
+// ==================== 외부 앱 연동 (URL 파라미터 기반 자동 로그인) ====================
+// 호출 예: planner.jung-youl.com?user_id=1234&device_mode=1&op_mode=view
+// device_mode: 1=핸드폰, 2=패드세로, 3=패드가로, 4=PC
+let _externalMode = false; // 외부 앱에서 호출된 경우 true
+let _viewOnly = false; // 읽기 전용 모드 (op_mode=view)
+
+function getUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    user_id: params.get('user_id'),
+    device_mode: params.get('device_mode'),
+    op_mode: params.get('op_mode'),
+  };
+}
+
+function applyDeviceMode(mode) {
+  // device_mode: 1=핸드폰, 2=패드세로, 3=패드가로, 4=PC
+  const m = Number(mode);
+  if (m === 1) {
+    devicePreview = 'phone';
+    document.body.classList.add('force-phone-mode');
+  } else if (m === 2) {
+    devicePreview = 'tablet';
+    document.body.classList.remove('force-phone-mode');
+  } else if (m === 3) {
+    devicePreview = 'tablet-landscape';
+    document.body.classList.remove('force-phone-mode');
+  } else if (m === 4) {
+    devicePreview = null; // PC = no preview (full desktop)
+    document.body.classList.remove('force-phone-mode');
+  }
+}
+
+function hideAuthUI() {
+  // 로그인/가입 버튼, 모드 선택 헤더를 숨김
+  _externalMode = true;
+  // CSS로 숨기기 (동적 렌더링 후에도 적용)
+  const style = document.createElement('style');
+  style.id = 'external-mode-style';
+  style.textContent = `
+    #mode-header, #mode-selector, #device-preview-selector { display: none !important; }
+    .mode-btn, .logout-btn, .register-link, .login-link { display: none !important; }
+  `;
+  document.head.appendChild(style);
+}
+
+// 멘토가 학생 플래너를 iframe으로 조회 (읽기 전용)
+function openStudentViewerIframe(externalUserId, studentName) {
+  // 기존 모달이 있으면 제거
+  const existing = document.getElementById('student-viewer-modal');
+  if (existing) existing.remove();
+
+  // 현재 device_mode 가져오기
+  const urlParams = new URLSearchParams(window.location.search);
+  const deviceMode = urlParams.get('device_mode') || '4';
+
+  // iframe URL 생성
+  const iframeSrc = `${window.location.origin}?user_id=${externalUserId}&device_mode=${deviceMode}&op_mode=view`;
+
+  // 모달 생성
+  const modal = document.createElement('div');
+  modal.id = 'student-viewer-modal';
+  modal.innerHTML = `
+    <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:var(--card-bg);border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:18px">👤</span>
+          <span style="font-weight:600;color:var(--text-primary)">${studentName || '학생'} 플래너</span>
+          <span style="font-size:12px;color:var(--accent);background:rgba(108,92,231,0.15);padding:2px 8px;border-radius:4px">열람 모드</span>
+        </div>
+        <button onclick="closeStudentViewerIframe()" style="background:none;border:none;font-size:24px;color:var(--text-muted);cursor:pointer;padding:4px 8px">&times;</button>
+      </div>
+      <iframe src="${iframeSrc}" style="flex:1;border:none;background:#fff"></iframe>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function closeStudentViewerIframe() {
+  const modal = document.getElementById('student-viewer-modal');
+  if (modal) modal.remove();
+}
+
+function applyViewOnlyMode() {
+  // 읽기 전용 모드 - 선생님이 학생 플래너 조회 시 쓰기/수정/삭제 버튼 숨김
+  _viewOnly = true;
+  sessionStorage.setItem('cp_viewOnly', 'true');
+  const style = document.createElement('style');
+  style.id = 'view-only-style';
+  style.textContent = `
+    /* 읽기 전용 모드: 저장/수정/삭제 버튼 숨김 */
+    .save-btn, .delete-btn, .edit-btn, .add-btn { display: none !important; }
+    .btn-save, .btn-delete, .btn-edit, .btn-add { display: none !important; }
+    [data-action="save"], [data-action="delete"], [data-action="edit"], [data-action="add"] { display: none !important; }
+    .view-only-hidden { display: none !important; }
+    /* 입력 필드 비활성화 표시 */
+    .view-only-disabled { pointer-events: none; opacity: 0.7; }
+  `;
+  document.head.appendChild(style);
+  document.body.classList.add('view-only-mode');
+
+  // 동적으로 버튼 숨김 + 입력 필드 비활성화
+  function hideActionButtons() {
+    // 입력 필드 비활성화
+    document.querySelectorAll('input, textarea, select, [contenteditable="true"]').forEach(el => {
+      if (el.type !== 'hidden') {
+        el.setAttribute('readonly', true);
+        el.setAttribute('disabled', true);
+        el.style.pointerEvents = 'none';
+        el.style.opacity = '0.7';
+      }
+    });
+    document.querySelectorAll('button, .btn, [role="button"]').forEach(btn => {
+      const onclick = btn.getAttribute('onclick') || '';
+      const text = btn.textContent || '';
+      // onclick에 저장/삭제/수정 관련 함수가 있거나, 텍스트에 해당 단어가 있으면 숨김
+      if (/save|delete|삭제|저장|수정|추가|편집|사진|자동 입력/i.test(onclick + text)) {
+        // 단, 뒤로가기/닫기/취소 버튼은 제외
+        if (!/cancel|취소|닫기|back|뒤로/i.test(onclick + text)) {
+          btn.style.display = 'none';
+        }
+      }
+    });
+  }
+
+  // 초기 실행 + DOM 변경 감지
+  hideActionButtons();
+  const observer = new MutationObserver(() => hideActionButtons());
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+async function externalLogin(userId, deviceMode, opMode) {
+  try {
+    // 0. 이전 세션 완전 초기화 (항상 새로운 화면으로 시작)
+    localStorage.removeItem('cp_auth');
+    state._authUser = null;
+    state._authToken = '';
+    state._authRole = '';
+    state._authGroup = null;
+    state._authMentorGroups = [];
+    state._loginError = '';
+    state.currentScreen = 'login';
+    state.studentTab = 'home';
+    state.mode = 'student';
+    if (typeof _mentor !== 'undefined') {
+      _mentor.initialLoading = false;
+      _mentor.loading = false;
+      _mentor.selectedGroupId = null;
+      _mentor.selectedStudentId = null;
+    }
+
+    // 1. device_mode 적용
+    // op_mode 적용 (view=읽기전용)
+    console.log("[DEBUG] opMode:", opMode);
+    if (opMode === 'view') applyViewOnlyMode();
+    if (deviceMode) applyDeviceMode(deviceMode);
+
+    // 2. 원격 DB를 통해 사용자 정보 조회 및 자동 로그인
+    const res = await fetch(`/api/auth/external-login?user_id=${userId}`);
+    const data = await res.json();
+    if (!data.success) {
+      console.error('External login failed:', data.error);
+      state._loginError = data.error || '외부 로그인 실패';
+      renderScreen();
+      return;
+    }
+
+    // 3. 로그인 UI 숨김
+    hideAuthUI();
+
+    // 4. 인증 상태 설정
+    state._authUser = data.user;
+    state._authToken = data.token;
+    state._authRole = data.role;
+    state._externalUserId = data.externalUserId || null; // 원격 DB user_id
+    state._externalUserName = data.user?.name || '';      // 원격 DB name
+    state._loginError = '';
+    state.currentScreen = 'main';
+    state.studentTab = 'home';
+    // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
+    _screenHistory.length = 0;
+    _screenHistory.push('main');
+    try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+
+    // 5. 역할별 분기
+    if (data.role === 'student') {
+      state._authGroup = data.group;
+      state.mode = 'student';
+      // localStorage에 저장 (재방문 시 자동 로그인)
+      localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, group: data.group, externalUserId: data.externalUserId }));
+      // DB 로드 완료 후 렌더링 (시간표 등 데이터 반영)
+      _autoLoginDataLoading = true;
+      DB.loadAll().then(() => { _autoLoginDataLoading = false; refreshDataWidgets(); renderScreen(); });
+      startCommunityNotifPoll();
+      startClassEndChecker();
+      startAutoSync();
+    } else if (data.role === 'mentor') {
+      state._authMentorGroups = data.groups;
+      state.mode = 'mentor';
+      localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, groups: data.groups, externalUserId: data.externalUserId }));
+      _mentor.initialLoading = true;
+      renderScreen();
+      fetch('/api/migrate').catch(() => {});
+      // 학생 동기화를 비동기로 실행 (로그인 응답에 영향 없음)
+      if (data.user?.id && data.externalUserId) {
+        fetch(`/api/mentor/${data.user.id}/sync-students`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ externalUserId: data.externalUserId })
+        }).then(r => r.json()).then(r => {
+          if (r.synced > 0) console.log(`[SYNC] ${r.synced} students synced`);
+        }).catch(() => {});
+      }
+      mentorLoadGroups().then(() => mentorLoadGroupSummary()).catch(e => {
+        console.error('External mentor load:', e);
+        _mentor.initialLoading = false;
+        _mentor.loading = false;
+        renderScreen();
+      });
+    } else if (data.role === 'director') {
+      state.mode = 'director';
+      localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role }));
+      renderScreen();
+    }
+  } catch (e) {
+    console.error('External login error:', e);
+    state._loginError = '외부 로그인 중 오류가 발생했습니다';
+    renderScreen();
+  }
+}
+
+// 자동 로그인 시 데이터 로딩 중 플래그 — true면 renderScreen이 initial-loader를 유지
+let _autoLoginDataLoading = false;
+
+function autoLogin() {
+  try {
+    const saved = localStorage.getItem('cp_auth');
+    if (!saved) return;
+    const auth = JSON.parse(saved);
+    if (!auth.user || !auth.token) return;
+
+    state._authUser = auth.user;
+    state._authToken = auth.token;
+    state._authRole = auth.role;
+    state._externalUserId = auth.externalUserId || null; // 원격 DB user_id 복원
+    state._externalUserName = auth.user?.name || '';
+    state._loginError = '';
+    if (auth.role === 'student') {
+      state._authGroup = auth.group;
+      state.mode = 'student';
+    } else if (auth.role === 'mentor') {
+      state._authMentorGroups = auth.groups;
+      state.mode = 'mentor';
+    }
+    state.currentScreen = 'main';
+    state.studentTab = 'home';
+    // 히스토리 초기화 (뒤로가기 지원 - 2개 항목으로 가로채기)
+    _screenHistory.length = 0;
+    _screenHistory.push('main');
+    try { history.replaceState({ screen: 'base' }, '', ''); history.pushState({ screen: 'main', tab: 'home' }, '', ''); } catch(e) {}
+
+    // 서버에 프로필 검증 (비동기) - 실패 시 로그인 화면으로
+    if (auth.role === 'student' && auth.user.id) {
+      // 핵심 데이터 로딩 전까지 renderScreen 차단 → initial-loader 유지 (깜빡임 방지)
+      _autoLoginDataLoading = true;
+      // 학기 데이터 확인 + DB 전체 로드를 한 번에 실행 (API 중복 호출 제거)
+      Promise.all([
+        fetch(`/api/student/${auth.user.id}/semesters`).then(r => r.json()).catch(() => null),
+        DB.loadAll(),
+      ]).then(([semData]) => {
+        // 학기 없으면 시간표 온보딩
+        if (semData?.success && (!semData.data || semData.data.length === 0)) {
+          state.currentScreen = 'timetable-onboarding';
+          state._ttOnboardingStep = 'intro';
+          _autoLoginDataLoading = false;
+          renderScreen();
+          return;
+        }
+        refreshDataWidgets();
+        _autoLoginDataLoading = false;
+        renderScreen();
+        startClassEndChecker();
+        startAutoSync();
+        startCommunityNotifPoll();
+      }).catch(() => {
+        // DB 로드 실패 (profile 404 등) → 로그아웃
+        console.log('Auto-login data load failed, logging out');
+        localStorage.removeItem('cp_auth');
+        state._authUser = null;
+        state._authToken = null;
+        state._authRole = null;
+        state._authGroup = null;
+        state._loginError = '';
+        state.currentScreen = 'login';
+        _autoLoginDataLoading = false;
+        renderScreen();
+      });
+    } else if (auth.role === 'mentor') {
+      _mentor.initialLoading = true;
+      fetch('/api/migrate').catch(() => {});
+      // 학생 동기화를 비동기로 실행 (자동 로그인 시)
+      if (auth.user?.id && auth.externalUserId) {
+        fetch(`/api/mentor/${auth.user.id}/sync-students`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ externalUserId: auth.externalUserId })
+        }).then(r => r.json()).then(r => {
+          if (r.synced > 0) console.log(`[SYNC] ${r.synced} students synced`);
+        }).catch(() => {});
+      }
+      // 멘토 대시보드 데이터 비동기 로드
+      mentorLoadGroups().then(() => mentorLoadGroupSummary()).catch(e => { console.error('autoLogin mentor load:', e); _mentor.initialLoading = false; _mentor.loading = false; renderScreen(); });
+    }
+  } catch (e) {
+    localStorage.removeItem('cp_auth');
+  }
+}
+
+// === 부분 DOM 업데이트: DB 로드 후 전체 리렌더 없이 데이터 위젯만 갱신 ===
+function refreshDataWidgets() {
+  try {
+    // 이번 주 현황 위젯
+    const now = typeof kstNow === 'function' ? kstNow() : new Date();
+    const mon = new Date(now);
+    mon.setDate(mon.getDate() - mon.getDay() + 1);
+    const monStr = typeof kstDate === 'function' ? kstDate(mon) : mon.toISOString().slice(0, 10);
+
+    const wsRecords = document.getElementById('ws-records');
+    if (wsRecords) wsRecords.textContent = (state._dbClassRecords || []).filter(r => r.date >= monStr).length;
+
+    const wsQuestions = document.getElementById('ws-questions');
+    if (wsQuestions) wsQuestions.textContent = state.myQaStats?.weeklyQuestions || 0;
+
+    const wsTeach = document.getElementById('ws-teach');
+    if (wsTeach) wsTeach.textContent = (state._dbTeachRecords || []).filter(r => (r.created_at || '').slice(0, 10) >= monStr).length;
+
+    const wsUnanswered = document.getElementById('ws-unanswered');
+    if (wsUnanswered) wsUnanswered.textContent = state.myQaStats?.unanswered || 0;
+
+    // 크로켓 포인트 잔액
+    const croquetEl = document.getElementById('croquet-balance-display');
+    if (croquetEl && state._croquetBalance != null) {
+      croquetEl.textContent = (state._croquetBalance || 0).toLocaleString() + 'P';
+    }
+
+    // XP/레벨 갱신 - 헤더/사이드바/홈 모두
+    const xpVal = state.xp || 0;
+    const lvlVal = state.level || 1;
+    const nextLevelXp = 1500;
+    const xpPct = Math.min(xpVal / nextLevelXp * 100, 100).toFixed(0);
+
+    // 홈 위젯
+    const xpEl = document.getElementById('home-xp-display');
+    if (xpEl) xpEl.textContent = xpVal;
+    const lvlEl = document.getElementById('home-level-display');
+    if (lvlEl) lvlEl.textContent = 'Lv.' + lvlVal;
+
+    // 사이드바 레벨/XP 바
+    document.querySelectorAll('.sidebar-xp-level').forEach(el => el.textContent = 'Lv.' + lvlVal);
+    document.querySelectorAll('.sidebar-xp-fill').forEach(el => el.style.width = xpPct + '%');
+
+    // 헤더 XP 바
+    document.querySelectorAll('.xp-level').forEach(el => el.textContent = 'Lv.' + lvlVal);
+    document.querySelectorAll('.xp-bar-fill').forEach(el => el.style.width = xpPct + '%');
+    document.querySelectorAll('.xp-text').forEach(el => el.textContent = xpVal.toLocaleString() + '/' + nextLevelXp.toLocaleString());
+
+    // 주간 차트 바 갱신
+    const weekDays = ['월','화','수','목','금','토','일'];
+    const chartBars = document.querySelectorAll('.weekly-bar-col');
+    if (chartBars.length > 0) {
+      const records = state._dbClassRecords || [];
+      const questions = state._dbQuestionRecords || [];
+      for (let i = 0; i < 7 && i < chartBars.length; i++) {
+        const dayDate = new Date(mon);
+        dayDate.setDate(dayDate.getDate() + i);
+        const dayStr = typeof kstDate === 'function' ? kstDate(dayDate) : dayDate.toISOString().slice(0,10);
+        const dayRecCnt = records.filter(r => r.date === dayStr).length;
+        const dayQCnt = questions.filter(q => (q.created_at || '').slice(0,10) === dayStr).length;
+        const maxH = 60;
+        const recBar = chartBars[i].querySelector('.weekly-bar-record');
+        const qBar = chartBars[i].querySelector('.weekly-bar-question');
+        if (recBar) recBar.style.height = Math.min(dayRecCnt * 12, maxH) + 'px';
+        if (qBar) qBar.style.height = Math.min(dayQCnt * 12, maxH) + 'px';
+      }
+    }
+
+    // 미니 통계 (mini-stat-value) - 이번 주
+    const miniStats = document.querySelectorAll('.mini-stat-value');
+    if (miniStats.length >= 4) {
+      const weekRecords = (state._dbClassRecords || []).filter(r => r.date >= monStr);
+      const weekTeach = (state._dbTeachRecords || []).filter(r => (r.created_at || '').slice(0, 10) >= monStr);
+      miniStats[0].textContent = weekRecords.length;
+      // miniStats[1] = questions (myQaStats로 별도 갱신)
+      miniStats[2].textContent = weekTeach.length;
+    }
+
+    // 최근 아카이브 섹션 갱신 (태블릿 + 폰 모드)
+    const recentRecords = (state._dbClassRecords || []).slice(0, 4);
+    const archiveEl = document.getElementById('home-recent-archive');
+    if (archiveEl) {
+      if (recentRecords.length === 0) {
+        archiveEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+      } else {
+        archiveEl.innerHTML = '<div class="home-timeline">' + recentRecords.map(r =>
+          '<div class="home-timeline-item">' +
+            '<div class="home-timeline-dot" style="background:var(--primary)"></div>' +
+            '<div class="home-timeline-content">' +
+              '<div class="home-timeline-header">' +
+                '<span class="home-timeline-time">' + (r.date || '') + '</span>' +
+                '<span class="home-timeline-subject">' + (r.subject || '') + '</span>' +
+              '</div>' +
+              '<p class="home-timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+            '</div>' +
+          '</div>'
+        ).join('') + '</div>';
+      }
+    }
+    const archivePhoneEl = document.getElementById('home-recent-archive-phone');
+    if (archivePhoneEl) {
+      if (recentRecords.length === 0) {
+        archivePhoneEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+      } else {
+        archivePhoneEl.innerHTML = recentRecords.map(r =>
+          '<div class="timeline-item">' +
+            '<div class="timeline-dot" style="background:var(--primary)"></div>' +
+            '<div class="timeline-content">' +
+              '<div class="timeline-header">' +
+                '<span class="timeline-time">' + (r.date || '') + '</span>' +
+                '<span class="timeline-subject">' + (r.subject || '') + '</span>' +
+              '</div>' +
+              '<p class="timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+            '</div>' +
+          '</div>'
+        ).join('');
+      }
+    }
+  } catch (_) {}
+}
+
+// ==================== DB SYNC LAYER ====================
+
+const DB = {
+  // 학생 ID 가져오기
+  studentId() {
+    return state._authUser?.id;
+  },
+
+  // === 로그인 후 전체 데이터 로드 ===
+  async loadAll() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      // DB 마이그레이션은 배포 시 1회만 실행 (매 로딩마다 호출하면 40초+ 지연)
+      // 홈 화면에 필요한 데이터를 모두 한 번에 로딩 (시험 포함 — 홈에 시험 카드 표시)
+      await Promise.all([
+        this.loadProfile(),
+        this.loadClassRecords(),
+        this.loadAssignments(),
+        this.loadMentorFeedbacks(),
+        this.loadTimetable(),
+        this.loadExams(),
+      ]);
+      // 시간표 + DB 기록 모두 로드 완료 → done 상태 동기화
+      syncTodayRecords();
+      // 즉시 UI 갱신 (프로필 XP/레벨 + 수업기록 반영)
+      try { refreshDataWidgets(); } catch(_){}
+      // 나머지는 백그라운드에서 지연 로딩 (홈 화면에 직접 표시 안 되는 것들)
+      Promise.all([
+        this.loadQuestionRecords(),
+        this.loadTeachRecords(),
+        this.loadActivityRecords(),
+        this.loadReportRecords(),
+        this.loadCareerProfile(),
+      ]).then(() => {
+        try { refreshDataWidgets(); } catch(_){}
+      }).catch(e => console.error('DB lazy load error:', e));
+    } catch (e) {
+      console.error('DB loadAll error:', e);
+      try { showToast('데이터 로딩에 실패했어요. 새로고침해주세요.', 'error'); } catch(_){}
+    }
+  },
+
+  // === 시간표 ===
+  async loadTimetable() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/timetable`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.school && data.school.length > 0) state.timetable.school = data.school;
+        if (data.teachers) state.timetable.teachers = data.teachers;
+        if (data.periodTimes && data.periodTimes.length > 0) state.timetable.periodTimes = data.periodTimes;
+        if (data.subjectColors && Object.keys(data.subjectColors).length > 0) state.timetable.subjectColors = data.subjectColors;
+        if (data.academy) state.timetable.academy = data.academy;
+        syncTodayRecords();
+      }
+    } catch (e) { console.error('loadTimetable:', e); }
+  },
+
+  async saveTimetable() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      await fetch(`/api/student/${sid}/timetable`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          school: state.timetable.school,
+          teachers: state.timetable.teachers,
+          periodTimes: state.timetable.periodTimes,
+          subjectColors: state.timetable.subjectColors,
+          academy: state.timetable.academy,
+        })
+      });
+    } catch (e) { console.error('saveTimetable:', e); }
+  },
+
+  // === 프로필 ===
+  async loadProfile() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/profile`);
+      if (res.ok) {
+        const data = await res.json();
+        state.xp = data.xp || 0;
+        state.level = data.level || 1;
+      }
+    } catch (e) { console.error('loadProfile:', e); }
+  },
+
+  // === 시험 ===
+  async loadExams() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const [examsRes, resultsRes] = await Promise.all([
+        fetch(`/api/student/${sid}/exams`),
+        fetch(`/api/student/${sid}/exam-results`)
+      ]);
+      if (examsRes.ok) {
+        const examsData = await examsRes.json();
+        const resultsData = resultsRes.ok ? await resultsRes.json() : { results: [] };
+        
+        // DB 데이터를 state.exams 형식으로 변환
+        state.exams = (examsData.exams || []).map(ex => {
+          const subjects = (() => { try { return JSON.parse(ex.subjects || '[]'); } catch { return []; } })();
+          const result = (resultsData.results || []).find(r => r.exam_id === ex.id);
+          
+          const examObj = {
+            id: String(ex.id),
+            _dbId: ex.id,
+            name: ex.name,
+            type: ex.type,
+            startDate: ex.start_date,
+            subjects: subjects,
+            status: ex.status,
+            memo: ex.memo || '',
+            result: null,
+          };
+
+          if (result) {
+            const subjectsData = (() => { try { return JSON.parse(result.subjects_data || '[]'); } catch { return []; } })();
+            // 오답 데이터를 과목별로 매핑
+            const wrongAnswers = result.wrongAnswers || [];
+            subjectsData.forEach(sd => {
+              sd.wrongAnswers = wrongAnswers.filter(wa => wa.subject === sd.subject).map(wa => ({
+                number: wa.question_number,
+                topic: wa.topic,
+                type: wa.error_type,
+                myAnswer: wa.my_answer,
+                correctAnswer: wa.correct_answer,
+                reason: wa.reason,
+                reflection: wa.reflection,
+                images: wa.images || [],
+              }));
+            });
+
+            examObj.result = {
+              totalScore: result.total_score,
+              grade: result.grade,
+              subjects: subjectsData,
+              overallReflection: result.overall_reflection || '',
+              createdAt: result.created_at,
+            };
+          }
+          return examObj;
+        });
+      }
+    } catch (e) { console.error('loadExams:', e); }
+  },
+
+  async saveExam(examData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/exams`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(examData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.examId;
+      }
+    } catch (e) { console.error('saveExam:', e); }
+    return null;
+  },
+
+  async updateExam(examId, updates) {
+    try {
+      await fetch(`/api/student/exams/${examId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (e) { console.error('updateExam:', e); }
+  },
+
+  async saveExamResult(examDbId, resultData) {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      // wrongAnswers 평탄화
+      const wrongAnswers = [];
+      (resultData.subjects || []).forEach(sub => {
+        (sub.wrongAnswers || []).forEach(wa => {
+          wrongAnswers.push({
+            subject: sub.subject,
+            number: wa.number,
+            topic: wa.topic,
+            type: wa.type,
+            myAnswer: wa.myAnswer,
+            correctAnswer: wa.correctAnswer,
+            reason: wa.reason,
+            reflection: wa.reflection,
+            images: wa.images || [],
+          });
+        });
+      });
+
+      await fetch(`/api/student/${sid}/exam-results`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: examDbId,
+          totalScore: resultData.totalScore,
+          grade: resultData.grade,
+          subjectsData: resultData.subjects,
+          overallReflection: resultData.overallReflection,
+          wrongAnswers: wrongAnswers,
+        })
+      });
+    } catch (e) { console.error('saveExamResult:', e); }
+  },
+
+  // === 과제 ===
+  async loadAssignments() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/assignments`);
+      if (res.ok) {
+        const data = await res.json();
+        state.assignments = (data.assignments || []).map(a => ({
+          id: String(a.id),
+          _dbId: a.id,
+          subject: a.subject,
+          title: a.title,
+          desc: a.description || '',
+          type: '과제',
+          teacher: a.teacher_name || '',
+          dueDate: a.due_date,
+          createdDate: a.created_at ? a.created_at.slice(0,10) : '',
+          status: a.status,
+          progress: a.progress,
+          color: a.color,
+          plan: (() => { try { return JSON.parse(a.plan_data || '[]'); } catch { return []; } })(),
+        }));
+        // 과제를 플래너 타임라인에도 반영
+        state.assignments.forEach(a => {
+          if (a.status !== 'completed' && a.dueDate) {
+            addAssignmentToPlannerItems(a);
+          }
+        });
+      }
+    } catch (e) { console.error('loadAssignments:', e); }
+  },
+
+  async saveAssignment(assignmentData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/assignments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(assignmentData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.assignmentId;
+      }
+    } catch (e) { console.error('saveAssignment:', e); }
+    return null;
+  },
+
+  async updateAssignment(assignmentId, updates) {
+    try {
+      await fetch(`/api/student/assignments/${assignmentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (e) { console.error('updateAssignment:', e); }
+  },
+
+  // === 수업 기록 ===
+  async loadClassRecords() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/class-records`);
+      if (res.ok) {
+        const data = await res.json();
+        state._dbClassRecords = (data.records || []).map(r => ({
+          id: r.id,
+          subject: r.subject,
+          date: r.date,
+          content: r.content,
+          keywords: (() => { try { return JSON.parse(r.keywords || '[]'); } catch(e) { return []; } })(),
+          understanding: r.understanding,
+          memo: r.memo,
+          topic: r.topic || '',
+          pages: r.pages || '',
+          photos: (() => { try { return JSON.parse(r.photos || '[]'); } catch(e) { return []; } })(),
+          teacher_note: r.teacher_note || '',
+          created_at: r.created_at || '',
+          ai_credit_log: (() => { try { return r.ai_credit_log ? JSON.parse(r.ai_credit_log) : null; } catch(e) { return null; } })(),
+          photo_tags: (() => { try { return JSON.parse(r.photo_tags || '[]'); } catch(e) { return []; } })(),
+          photo_count: r.photo_count || 0,
+        }));
+      }
+    } catch (e) { console.error('loadClassRecords:', e); }
+  },
+
+  async saveClassRecord(recordData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      // photos 배열에서 base64 데이터를 분리 (photos 필드엔 ID 참조만 저장)
+      const photosRaw = recordData.photos || [];
+      const recordToSave = { ...recordData };
+      
+      const res = await fetch(`/api/student/${sid}/class-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recordToSave)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const recordId = data.recordId;
+        
+        // 사진이 있으면 별도 테이블에도 저장 (열람용)
+        if (photosRaw.length > 0) {
+          try {
+            await fetch(`/api/student/${sid}/class-record-photos`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ photos: photosRaw, classRecordId: recordId })
+            });
+          } catch (pe) { console.error('saveClassRecordPhotos:', pe); }
+        }
+        
+        // DB 기록 자동 리프레시 (다른 기기에서도 바로 열람 가능)
+        try { await this.loadClassRecords(); } catch (_) {}
+        
+        return recordId;
+      }
+    } catch (e) { console.error('saveClassRecord:', e); }
+    return null;
+  },
+
+  async updateClassRecord(recordId, updates) {
+    try {
+      await fetch(`/api/student/class-records/${recordId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      // 수정 후 DB 기록 자동 리프레시
+      try { await this.loadClassRecords(); } catch (_) {}
+    } catch (e) { console.error('updateClassRecord:', e); }
+  },
+
+  // === 질문 코칭 기록 ===
+  async loadQuestionRecords() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/question-records`);
+      if (res.ok) {
+        const data = await res.json();
+        state._dbQuestionRecords = (data.records || []).map(r => ({
+          ...r,
+          coachingMessages: (() => { try { return JSON.parse(r.coaching_messages || '[]'); } catch { return []; } })(),
+        }));
+      }
+    } catch (e) { console.error('loadQuestionRecords:', e); }
+  },
+
+  async saveQuestionRecord(recordData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/question-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recordData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.recordId;
+      }
+    } catch (e) { console.error('saveQuestionRecord:', e); }
+    return null;
+  },
+
+  // === 교학상장 (가르치기) ===
+  async saveTeachRecord(recordData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/teach-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recordData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.recordId;
+      }
+    } catch (e) { console.error('saveTeachRecord:', e); }
+    return null;
+  },
+
+  async loadTeachRecords() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/teach-records`);
+      if (res.ok) {
+        const data = await res.json();
+        state._dbTeachRecords = data.records || [];
+      }
+    } catch (e) { console.error('loadTeachRecords:', e); }
+  },
+
+  // === 창의적 체험활동 ===
+  async saveActivityRecord(recordData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/activity-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recordData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.recordId;
+      }
+    } catch (e) { console.error('saveActivityRecord:', e); }
+    return null;
+  },
+
+  async updateActivityRecord(recordId, updates) {
+    try {
+      await fetch(`/api/student/activity-records/${recordId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (e) { console.error('updateActivityRecord:', e); }
+  },
+
+  // === 활동 로그 (날짜별 기록) ===
+  async saveActivityLog(activityRecordId, logData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/activity-logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activityRecordId, ...logData })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.logId;
+      }
+    } catch (e) { console.error('saveActivityLog:', e); }
+    return null;
+  },
+
+  async loadActivityLogs(activityId) {
+    const sid = this.studentId();
+    if (!sid) return [];
+    try {
+      const url = activityId 
+        ? `/api/student/${sid}/activity-logs?activityId=${activityId}`
+        : `/api/student/${sid}/activity-logs`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        return data.logs || [];
+      }
+    } catch (e) { console.error('loadActivityLogs:', e); }
+    return [];
+  },
+
+  // === 탐구보고서 ===
+  async saveReportRecord(reportData) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/report-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reportData)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.reportId;
+      }
+    } catch (e) { console.error('saveReportRecord:', e); }
+    return null;
+  },
+
+  async updateReportRecord(reportId, updates) {
+    try {
+      await fetch(`/api/student/report-records/${reportId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (e) { console.error('updateReportRecord:', e); }
+  },
+
+  async loadReportRecords() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/report-records`);
+      if (res.ok) {
+        const data = await res.json();
+        state._dbReportRecords = (data.records || []).map(r => ({
+          ...r,
+          timeline: (() => { try { return JSON.parse(r.timeline || '[]'); } catch { return []; } })(),
+          questions: (() => { try { return JSON.parse(r.questions || '[]'); } catch { return []; } })(),
+        }));
+      }
+    } catch (e) { console.error('loadReportRecords:', e); }
+  },
+
+  // === 진로 프로파일 ===
+  async loadCareerProfile() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/career-profile`);
+      if (res.ok) {
+        const data = await res.json();
+        state._careerProfile = data.data || null;
+      }
+    } catch (e) { console.error('loadCareerProfile:', e); }
+  },
+
+  // === 시험 삭제 ===
+  async deleteExam(examId) {
+    try {
+      await fetch(`/api/student/exams/${examId}`, { method: 'DELETE' });
+    } catch (e) { console.error('deleteExam:', e); }
+  },
+
+  async loadActivityRecords() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/activity-records`);
+      if (res.ok) {
+        const data = await res.json();
+        state._dbActivityRecords = data.records || [];
+      }
+    } catch (e) { console.error('loadActivityRecords:', e); }
+  },
+
+  async loadMentorFeedbacks() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/feedbacks`);
+      if (res.ok) {
+        const data = await res.json();
+        state._mentorFeedbacks = data.feedbacks || [];
+        state._mentorFeedbackUnread = data.unreadCount || 0;
+      }
+    } catch (e) { console.error('loadMentorFeedbacks:', e); }
+  },
+
+  async markFeedbackRead(feedbackId) {
+    try {
+      await fetch(`/api/student/feedback/${feedbackId}/read`, { method: 'PUT' });
+    } catch (e) { console.error('markFeedbackRead:', e); }
+  },
+
+  // ==================== Community API Methods ====================
+  _communityUserType() {
+    return state.mode === 'mentor' ? 'mentor' : 'student';
+  },
+  _communityUserId() {
+    return state._authUser?.id;
+  },
+
+  async loadCommunityBoards() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/boards?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) { state._communityBoards = data.data?.boards || []; renderScreen(); }
+    } catch (e) { console.error('loadCommunityBoards:', e); }
+  },
+
+  async loadCommunityPosts(boardId, page = 1) {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/boards/${boardId}/posts?page=${page}&limit=20&user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const posts = (data.data?.posts || []).map(p => ({
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+        }));
+        if (page === 1) {
+          state._communityPosts = posts;
+        } else {
+          state._communityPosts = [...state._communityPosts, ...posts];
+        }
+        state._communityPage = page;
+        state._communityHasMore = posts.length >= 20;
+        renderScreen();
+      }
+    } catch (e) { console.error('loadCommunityPosts:', e); }
+  },
+
+  async loadPostDetail(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const p = data.data?.post || data.data;
+        state._communityCurrentPost = {
+          ...p,
+          like_count: p.likeCount ?? p.like_count ?? 0,
+          comment_count: p.commentCount ?? p.comment_count ?? 0,
+          created_at: p.createdAt || p.created_at || '',
+          author_type: p.authorType || p.author_type || '',
+          author_id: p.authorId || p.author_id || 0,
+          board_id: p.boardId || p.board_id || 0,
+        };
+        renderScreen();
+      }
+    } catch (e) { console.error('loadPostDetail:', e); }
+  },
+
+  async savePost(boardId, postData) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/boards/${boardId}/posts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...postData, author_type: this._communityUserType(), author_id: uid }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('savePost:', e); return null; }
+  },
+
+  async updatePost(postId, postData) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...postData, user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('updatePost:', e); return false; }
+  },
+
+  async deletePost(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('deletePost:', e); return false; }
+  },
+
+  async loadComments(postId, page = 1) {
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments?page=${page}&limit=20`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityComments = (data.data?.comments || []).map(c => ({
+          ...c,
+          author_type: c.authorType || c.author_type || '',
+          author_id: c.authorId || c.author_id || 0,
+          created_at: c.createdAt || c.created_at || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadComments:', e); }
+  },
+
+  async saveComment(postId, content) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author_type: this._communityUserType(), author_id: uid, content }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('saveComment:', e); return null; }
+  },
+
+  async deleteComment(commentId) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch(`/api/community/comments/${commentId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('deleteComment:', e); return false; }
+  },
+
+  async toggleLike(postId) {
+    const uid = this._communityUserId();
+    if (!uid) return null;
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('toggleLike:', e); return null; }
+  },
+
+  async reportContent(targetType, targetId, reason) {
+    const uid = this._communityUserId();
+    if (!uid) return false;
+    try {
+      const res = await fetch('/api/community/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reporter_type: this._communityUserType(), reporter_id: uid, target_type: targetType, target_id: targetId, reason }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('reportContent:', e); return false; }
+  },
+
+  async loadFriends() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityFriends = (data.data?.friends || []).map(f => ({
+          ...f,
+          friendId: f.studentId || f.friendId || 0,
+          school: f.schoolName || f.school || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadFriends:', e); }
+  },
+
+  async generateFriendInviteCode() {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/invite-code`, { method: 'POST' });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('generateFriendInviteCode:', e); return null; }
+  },
+
+  async acceptFriendCode(code) {
+    const sid = this.studentId();
+    if (!sid) return null;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/accept-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      return data;
+    } catch (e) { console.error('acceptFriendCode:', e); return { success: false, error: '네트워크 오류' }; }
+  },
+
+  async removeFriend(friendshipId) {
+    const sid = this.studentId();
+    if (!sid) return false;
+    try {
+      const res = await fetch(`/api/student/${sid}/friends/${friendshipId}`, { method: 'DELETE' });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('removeFriend:', e); return false; }
+  },
+
+  async loadShareSettings() {
+    const sid = this.studentId();
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/student/${sid}/share-settings`);
+      const data = await res.json();
+      if (data.success) { state._communityShareSettings = data.data; renderScreen(); }
+    } catch (e) { console.error('loadShareSettings:', e); }
+  },
+
+  async updateShareSettings(settings) {
+    const sid = this.studentId();
+    if (!sid) return false;
+    try {
+      const res = await fetch(`/api/student/${sid}/share-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('updateShareSettings:', e); return false; }
+  },
+
+  async loadFriendProfile(studentId) {
+    const myId = this.studentId();
+    if (!myId) return null;
+    try {
+      const res = await fetch(`/api/student/${studentId}/learning-profile?viewer_id=${myId}`);
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (e) { console.error('loadFriendProfile:', e); return null; }
+  },
+
+  async setNickname(nickname) {
+    const uid = this._communityUserId();
+    if (!uid) return { success: false, error: '로그인 필요' };
+    try {
+      const endpoint = this._communityUserType() === 'mentor'
+        ? `/api/mentor/${uid}/nickname`
+        : `/api/student/${uid}/nickname`;
+      const res = await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname }),
+      });
+      const data = await res.json();
+      if (data.success && state._authUser) {
+        state._authUser.nickname = nickname;
+      }
+      return data;
+    } catch (e) { console.error('setNickname:', e); return { success: false, error: '네트워크 오류' }; }
+  },
+
+  async loadNotifications() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/notifications?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        state._communityNotifications = (data.data?.notifications || []).map(n => ({
+          ...n,
+          post_id: n.postId || n.post_id || 0,
+          post_title: n.postTitle || n.post_title || '',
+          actor_nickname: n.actorNickname || n.actor_nickname || '익명',
+          is_read: n.isRead ?? n.is_read ?? 0,
+          created_at: n.createdAt || n.created_at || '',
+        }));
+        renderScreen();
+      }
+    } catch (e) { console.error('loadNotifications:', e); }
+  },
+
+  async getUnreadNotificationCount() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      const res = await fetch(`/api/community/notifications/unread-count?user_type=${this._communityUserType()}&user_id=${uid}`);
+      const data = await res.json();
+      if (data.success) {
+        const prev = state._communityUnreadCount;
+        state._communityUnreadCount = data.data?.unreadCount || 0;
+        if (prev !== state._communityUnreadCount) {
+          try { initMobileBottomTab(); } catch(_) {}
+        }
+      }
+    } catch (e) { console.error('getUnreadNotificationCount:', e); }
+  },
+
+  async markNotificationsRead() {
+    const uid = this._communityUserId();
+    if (!uid) return;
+    try {
+      await fetch('/api/community/notifications/read-all', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_type: this._communityUserType(), user_id: uid }),
+      });
+      state._communityUnreadCount = 0;
+    } catch (e) { console.error('markNotificationsRead:', e); }
+  },
+
+  // ==================== Mentor Community API Methods ====================
+  async loadMentorReports() {
+    const mid = state._authUser?.id;
+    if (!mid || state.mode !== 'mentor') return;
+    try {
+      const res = await fetch(`/api/mentor/${mid}/community-reports`);
+      const data = await res.json();
+      return data.success ? data.data?.reports || [] : [];
+    } catch (e) { console.error('loadMentorReports:', e); return []; }
+  },
+
+  async resolveReport(reportId, status, deleteContent = false) {
+    const mid = state._authUser?.id;
+    if (!mid) return false;
+    try {
+      const res = await fetch(`/api/community/reports/${reportId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, resolved_by: mid, delete_content: deleteContent }),
+      });
+      const data = await res.json();
+      return data.success;
+    } catch (e) { console.error('resolveReport:', e); return false; }
+  },
+};
+
+
+// ==================== 시간표 스마트 오토스크롤 ====================
+function smartScrollTimetable() {
+  const scrollArea = document.getElementById('tt-scroll-area');
+  if (!scrollArea) return;
+  
+  const rows = scrollArea.querySelectorAll('.tt-row[data-tt-start]');
+  if (rows.length <= 3) return; // 3개 이하면 스크롤 불필요
+  
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  
+  let targetRow = null;
+  
+  // 1순위: 현재 진행 중인 수업 (start <= now < end)
+  for (const row of rows) {
+    const start = row.dataset.ttStart;
+    const end = row.dataset.ttEnd;
+    const done = row.dataset.ttDone === '1';
+    if (!start || !end) continue;
+    
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = eh * 60 + em;
+    
+    if (nowMinutes >= startMin && nowMinutes < endMin) {
+      targetRow = row;
+      break;
+    }
+  }
+  
+  // 2순위: 다음 수업 (아직 안 끝난 첫 번째 수업)
+  if (!targetRow) {
+    for (const row of rows) {
+      const start = row.dataset.ttStart;
+      const done = row.dataset.ttDone === '1';
+      if (!start || done) continue;
+      
+      const [sh, sm] = start.split(':').map(Number);
+      const startMin = sh * 60 + sm;
+      
+      if (nowMinutes < startMin + 30) { // 시작 30분 이내까지 포함
+        targetRow = row;
+        break;
+      }
+    }
+  }
+  
+  // 3순위: 마지막으로 끝난 미기록 수업
+  if (!targetRow) {
+    for (const row of rows) {
+      const done = row.dataset.ttDone === '1';
+      if (!done) {
+        targetRow = row;
+        break;
+      }
+    }
+  }
+  
+  // 스크롤 실행
+  if (targetRow) {
+    // 한 행 앞을 보여줘서 맥락 유지
+    const prevRow = targetRow.previousElementSibling;
+    const scrollTarget = prevRow && prevRow.classList.contains('tt-row') ? prevRow : targetRow;
+    
+    scrollArea.scrollTo({
+      top: Math.max(0, scrollTarget.offsetTop - 4),
+      behavior: 'smooth'
+    });
+  }
+  
+  // 그라데이션 페이드 업데이트
+  updateTtScrollFades(scrollArea);
+  scrollArea.addEventListener('scroll', () => updateTtScrollFades(scrollArea), { passive: true });
+}
+
+function updateTtScrollFades(el) {
+  const wrapper = el.closest('.tt-scroll-wrapper');
+  if (!wrapper) return;
+  const fadeTop = wrapper.querySelector('.tt-scroll-fade-top');
+  const fadeBottom = wrapper.querySelector('.tt-scroll-fade-bottom');
+  const { scrollTop, scrollHeight, clientHeight } = el;
+  
+  if (fadeTop) fadeTop.style.opacity = scrollTop > 8 ? '1' : '0';
+  if (fadeBottom) fadeBottom.style.opacity = (scrollTop + clientHeight < scrollHeight - 8) ? '1' : '0';
+}
+
+// ==================== 학원 수업 오늘 일정 자동 생성 ====================
+
+function initTodayAcademy() {
+  if (state.todayAcademyRecords) return; // 이미 초기화됨
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const todayDay = dayNames[new Date().getDay()];
+  const academy = state.timetable?.academy || [];
+  const subjectColors = state.timetable?.subjectColors || {};
+  
+  state.todayAcademyRecords = academy
+    .filter(a => a.day === todayDay)
+    .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''))
+    .map((a, idx) => ({
+      _academyId: a.id,
+      _isAcademy: true,
+      period: 'ac' + (idx + 1),
+      subject: a.subject || a.name,
+      teacher: a.academy || '',  // 학원명을 teacher 자리에
+      academyName: a.academy,
+      className: a.name,
+      done: false,
+      question: null,
+      summary: '',
+      color: a.color || subjectColors[a.subject] || '#636e72',
+      startTime: a.startTime,
+      endTime: a.endTime,
+      memo: a.memo || '',
+      _dbRecordId: null,
+      _topic: '',
+      _pages: '',
+      _keywords: [],
+      _photos: [],
+      _teacherNote: ''
+    }));
+}
+
+// ==================== 시간 기반 수업종료 자동 감지 ====================
+
+// 교시별 수업 종료 시간 기준으로 상태 판단
+function getClassEndStatus(record) {
+  if (!record.endTime || record.done) return 'none';
+  const now = new Date();
+  const [h, m] = record.endTime.split(':').map(Number);
+  const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+  const diffMin = (now - endToday) / 60000;
+  // 수업 종료 후 0~30분 이내 → 'just-ended' (강조)
+  if (diffMin >= 0 && diffMin <= 30) return 'just-ended';
+  // 수업 종료 후 30분 초과 → 'ended' (미기록 경고)
+  if (diffMin > 30) return 'ended';
+  return 'none'; // 아직 수업 중이거나 미래
+}
+
+// 미기록 + 수업 끝난 교시가 있는지 (학교 + 학원)
+function hasUnrecordedEndedClass() {
+  const schoolEnded = state.todayRecords.some(r => !r.done && getClassEndStatus(r) !== 'none');
+  const academyEnded = (state.todayAcademyRecords || []).some(r => !r.done && getClassEndStatus(r) !== 'none');
+  return schoolEnded || academyEnded;
+}
+
+function countUnrecordedEndedClasses() {
+  const schoolCount = state.todayRecords.filter(r => !r.done && getClassEndStatus(r) !== 'none').length;
+  const academyCount = (state.todayAcademyRecords || []).filter(r => !r.done && getClassEndStatus(r) !== 'none').length;
+  return schoolCount + academyCount;
+}
+
+// 저녁 시간대인지 (19시~23시)
+function isEveningTime() {
+  const h = new Date().getHours();
+  return h >= 19 && h <= 23;
+}
+
+// ==================== DAILY TODOS (DB 연동) ====================
+async function loadDailyTodos() {
+  const sid = state._authUser?.id;
+  if (!sid) return;
+  try {
+    const res = await fetch('/api/student/' + sid + '/daily-todos?date=' + kstToday());
+    const d = await res.json();
+    if (d.success) {
+      state.dailyTodos = d.data || [];
+      state.dailyTodosLoaded = true;
+      renderScreen();
+    }
+  } catch(e) { console.error('투두 로딩 실패:', e); }
+}
+
+async function addDailyTodo() {
+  const sid = state._authUser?.id;
+  const input = document.getElementById('daily-todo-input');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text || !sid) return;
+  input.value = '';
+  try {
+    const res = await fetch('/api/student/' + sid + '/daily-todos', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ content: text, date: kstToday() })
+    });
+    const d = await res.json();
+    if (d.success && d.data) {
+      state.dailyTodos.push(d.data);
+      renderScreen();
+    }
+  } catch(e) { console.error('투두 추가 실패:', e); }
+}
+
+async function toggleDailyTodo(todoId) {
+  const sid = state._authUser?.id;
+  const todo = state.dailyTodos.find(t => t.id == todoId);
+  if (!todo || !sid) return;
+  const newVal = todo.is_completed ? 0 : 1;
+  todo.is_completed = newVal;
+  renderScreen();
+  try {
+    await fetch('/api/student/' + sid + '/daily-todos/' + todoId, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ is_completed: newVal })
+    });
+  } catch(e) { console.error('투두 토글 실패:', e); }
+}
+
+function startEditDailyTodo(todoId) {
+  state._editingTodoId = todoId;
+  renderScreen();
+  setTimeout(() => {
+    const inp = document.getElementById('edit-todo-' + todoId);
+    if (inp) { inp.focus(); inp.select(); }
+  }, 50);
+}
+
+async function saveDailyTodoEdit(todoId) {
+  const sid = state._authUser?.id;
+  const inp = document.getElementById('edit-todo-' + todoId);
+  if (!inp || !sid) return;
+  const newText = inp.value.trim();
+  if (!newText) { deleteDailyTodo(todoId); return; }
+  const todo = state.dailyTodos.find(t => t.id == todoId);
+  if (todo) todo.content = newText;
+  state._editingTodoId = null;
+  renderScreen();
+  try {
+    await fetch('/api/student/' + sid + '/daily-todos/' + todoId, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ content: newText })
+    });
+  } catch(e) { console.error('투두 편집 실패:', e); }
+}
+
+async function deleteDailyTodo(todoId) {
+  const sid = state._authUser?.id;
+  if (!sid) return;
+  state.dailyTodos = state.dailyTodos.filter(t => t.id != todoId);
+  renderScreen();
+  try {
+    await fetch('/api/student/' + sid + '/daily-todos/' + todoId, { method: 'DELETE' });
+  } catch(e) { console.error('투두 삭제 실패:', e); }
+}
+
+// ==================== QUICK TODO FUNCTIONS ====================
+function addQuickTodo() {
+  const input = document.getElementById('quick-todo-input');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+  if (!state.quickTodos) state.quickTodos = [];
+  state.quickTodos.push({ text, done: false });
+  input.value = '';
+  // 로컬 스토리지에 저장
+  try { localStorage.setItem('quickTodos', JSON.stringify(state.quickTodos)); } catch(e) {}
+  renderScreen();
+}
+
+function toggleQuickTodo(index) {
+  if (!state.quickTodos || !state.quickTodos[index]) return;
+  state.quickTodos[index].done = !state.quickTodos[index].done;
+  try { localStorage.setItem('quickTodos', JSON.stringify(state.quickTodos)); } catch(e) {}
+  renderScreen();
+}
+
+function deleteQuickTodo(index) {
+  if (!state.quickTodos) return;
+  state.quickTodos.splice(index, 1);
+  try { localStorage.setItem('quickTodos', JSON.stringify(state.quickTodos)); } catch(e) {}
+  renderScreen();
+}
+
+// 앱 시작 시 로컬 스토리지에서 투두 복원
+try {
+  const saved = localStorage.getItem('quickTodos');
+  if (saved) state.quickTodos = JSON.parse(saved);
+} catch(e) {}
+
+// 1분마다 체크 → 수업 끝났으면 화면 갱신 + 선택적 자동 팝업
+let _classCheckTimer = null;
+let _lastAutoPopupPeriod = 0;
+
+function startClassEndChecker() {
+  if (_classCheckTimer) clearInterval(_classCheckTimer);
+  _classCheckTimer = setInterval(() => {
+    // 미기록 수업 중 방금 끝난 것 감지
+    const justEnded = state.todayRecords.find(r => !r.done && getClassEndStatus(r) === 'just-ended');
+    if (justEnded && justEnded.period !== _lastAutoPopupPeriod) {
+      _lastAutoPopupPeriod = justEnded.period;
+      // 홈 화면이면 알림 배너 표시 + 화면 갱신
+      if (state.currentScreen === 'main' && state.studentTab === 'home') {
+        renderScreen(true);  // force: 수업 종료 시 시간표 갱신 필요
+        // 자동 팝업 (홈에 있을 때만)
+        showClassEndNotification(justEnded);
+      }
+    }
+    // 매분 홈이면 갱신 (시간 표시 업데이트)
+    if (state.currentScreen === 'main' && state.studentTab === 'home') {
+      // 버튼 glow 상태만 업데이트 (전체 렌더링은 부담)
+      document.querySelectorAll('.qa-glow').forEach(el => el.classList.toggle('qa-pulse'));
+    }
+  }, 60000); // 1분마다
+}
+
+// ==================== 자동 동기화 (멀티디바이스 지원) ====================
+let _syncTimer = null;
+let _syncInProgress = false;
+const SYNC_INTERVAL = 45000; // 45초
+
+function startAutoSync() {
+  if (_syncTimer) clearInterval(_syncTimer);
+  console.log('[SYNC] Auto-sync started (every 45s)');
+  _syncTimer = setInterval(async () => {
+    // 동기화 조건: 학생 모드, 로그인 상태, 메인 화면, 이전 동기화 완료
+    if (_syncInProgress) return;
+    if (!state._authUser?.id) return;
+    if (state._authRole !== 'student' && state.mode !== 'student') return;
+    // 기록 작성 중(record-class, record-question 등)이면 동기화 스킵
+    const recordScreens = ['record-class','record-question','record-teach','record-activity','record-assignment','class-end-popup','academy-record-popup','evening-routine'];
+    if (recordScreens.includes(state.currentScreen)) return;
+    
+    _syncInProgress = true;
+    try {
+      const sid = state._authUser.id;
+      const [crRes, qrRes, trRes, assignRes, profileRes] = await Promise.all([
+        fetch(`/api/student/${sid}/class-records`).catch(() => null),
+        fetch(`/api/student/${sid}/question-records`).catch(() => null),
+        fetch(`/api/student/${sid}/teach-records`).catch(() => null),
+        fetch(`/api/student/${sid}/assignments`).catch(() => null),
+        fetch(`/api/student/${sid}/profile`).catch(() => null),
+      ]);
+      
+      let changed = false;
+      
+      if (crRes?.ok) {
+        const data = await crRes.json();
+        const newRecords = (data.records || []).map(r => ({ ...r, _source: 'db', id: r.id, _dbId: r.id }));
+        if (newRecords.length !== (state._dbClassRecords || []).length) {
+          state._dbClassRecords = newRecords;
+          changed = true;
+        }
+      }
+      if (qrRes?.ok) {
+        const data = await qrRes.json();
+        const newRecords = (data.records || []).map(r => ({ ...r, _source: 'db', id: r.id, _dbId: r.id }));
+        if (newRecords.length !== (state._dbQuestionRecords || []).length) {
+          state._dbQuestionRecords = newRecords;
+          changed = true;
+        }
+      }
+      if (trRes?.ok) {
+        const data = await trRes.json();
+        const newRecords = data.records || [];
+        if (newRecords.length !== (state._dbTeachRecords || []).length) {
+          state._dbTeachRecords = newRecords;
+          changed = true;
+        }
+      }
+      if (assignRes?.ok) {
+        const data = await assignRes.json();
+        const newAssignments = data.assignments || [];
+        if (newAssignments.length !== (state._dbAssignments || []).length) {
+          state._dbAssignments = newAssignments;
+          changed = true;
+        }
+      }
+      if (profileRes?.ok) {
+        const data = await profileRes.json();
+        if (data.xp !== state.xp || data.level !== state.level) {
+          state.xp = data.xp || 0;
+          state.level = data.level || 1;
+          changed = true;
+        }
+      }
+      
+      if (changed) {
+        console.log('[SYNC] Data changed, refreshing UI');
+        // todayRecords도 갱신
+        if (typeof syncTodayRecords === 'function') syncTodayRecords();
+        refreshDataWidgets();
+      }
+    } catch (e) {
+      console.error('[SYNC] Auto-sync error:', e);
+    } finally {
+      _syncInProgress = false;
+    }
+  }, SYNC_INTERVAL);
+}
+
+function stopAutoSync() {
+  if (_syncTimer) {
+    clearInterval(_syncTimer);
+    _syncTimer = null;
+    console.log('[SYNC] Auto-sync stopped');
+  }
+}
+
+// 탭 전환 시 동기화 관리 (배터리 절약)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // 탭 비활성 → 동기화 일시 정지
+    stopAutoSync();
+  } else {
+    // 탭 활성화 → 즉시 1회 동기화 + 타이머 재시작
+    if (state._authRole === 'student' && state._authUser?.id) {
+      console.log('[SYNC] Tab visible, resuming sync');
+      DB.loadAll().then(() => {
+        if (typeof syncTodayRecords === 'function') syncTodayRecords();
+        renderScreen();
+      });
+      startAutoSync();
+    }
+  }
+});
+
+// 수업 종료 인앱 알림 배너
+function showClassEndNotification(record) {
+  const banner = document.createElement('div');
+  banner.className = 'class-end-banner animate-in';
+  banner.innerHTML = `
+    <div class="ceb-icon">🔔</div>
+    <div class="ceb-text">
+      <strong>${record.period}교시 ${record.subject}</strong> 수업 끝!
+      <span>지금 바로 기록해보세요</span>
+    </div>
+    <button class="ceb-btn" onclick="this.closest('.class-end-banner').remove();openArchivePeriodSelect()">기록하기</button>
+    <button class="ceb-close" onclick="this.closest('.class-end-banner').remove()">✕</button>
+  `;
+  // 기존 배너 제거
+  document.querySelectorAll('.class-end-banner').forEach(el => el.remove());
+  document.body.appendChild(banner);
+  // 10초 후 자동 닫기
+  setTimeout(() => { if (document.body.contains(banner)) banner.remove(); }, 10000);
+}
+
+// ==================== 수업 기록 열람 ====================
+
+// 오늘 기록 상세 보기 (todayRecords 기반)
+function viewTodayRecord(idx) {
+  state._viewingTodayRecordIdx = idx;
+  goScreen('class-record-detail');
+}
+
+// ==================== 기록 관리 & 누락 체크 (주간 캘린더 뷰) ====================
+function renderRecordStatus() {
+  const school = state.timetable?.school || [];
+  const teachers = state.timetable?.teachers || {};
+  const subjectColors = state.timetable?.subjectColors || {};
+  const dbRecords = state._dbClassRecords || [];
+  const todayRecords = state.todayRecords || [];
+  const today = kstNow();
+  const todayStr = today.toISOString().slice(0,10);
+  
+  // 이번 주 월~금 날짜 구하기
+  const dayOfWeek = today.getDay(); // 0=일, 1=월...
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  
+  const weekDays = [];
+  const dayNames = ['월','화','수','목','금'];
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    weekDays.push({
+      date: d.toISOString().slice(0,10),
+      dayName: dayNames[i],
+      dayNum: d.getDate(),
+      month: d.getMonth() + 1,
+      isToday: d.toISOString().slice(0,10) === todayStr,
+      isFuture: d > today
+    });
+  }
+  
+  // 각 날짜+교시별 기록 여부 계산
+  const periodCount = school.length || 7;
+  let totalSlots = 0, recordedSlots = 0;
+  
+  const weekData = weekDays.map((day, dayIdx) => {
+    const periods = [];
+    for (let p = 0; p < periodCount; p++) {
+      const subject = school[p] ? (school[p][dayIdx] || '') : '';
+      if (!subject) continue; // 빈 교시 스킵
+      
+      const isRecorded = checkRecordExists(day.date, subject, p + 1, dbRecords, todayRecords, todayStr);
+      
+      if (!day.isFuture) {
+        totalSlots++;
+        if (isRecorded) recordedSlots++;
+      }
+      
+      periods.push({
+        period: p + 1,
+        subject,
+        color: subjectColors[subject] || '#636e72',
+        teacher: teachers[subject] || '',
+        recorded: isRecorded,
+        isFuture: day.isFuture
+      });
+    }
+    return { ...day, periods };
+  });
+  
+  const completionRate = totalSlots > 0 ? Math.round((recordedSlots / totalSlots) * 100) : 0;
+  const missedCount = totalSlots - recordedSlots;
+  
+  // 진행률 색상
+  const rateColor = completionRate >= 80 ? '#00B894' : completionRate >= 50 ? '#FDCB6E' : '#FF6B6B';
+  
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+        <h1>📊 기록 관리 & 누락 체크</h1>
+      </div>
+      <div class="form-body">
+        <!-- 주간 진행률 카드 -->
+        <div class="rs-progress-card">
+          <div class="rs-progress-header">
+            <div>
+              <div class="rs-progress-title">이번 주 기록 현황</div>
+              <div class="rs-progress-subtitle">${weekDays[0].month}/${weekDays[0].dayNum} ~ ${weekDays[4].month}/${weekDays[4].dayNum}</div>
+            </div>
+            <div class="rs-progress-circle" style="--rate:${completionRate};--rate-color:${rateColor}">
+              <svg viewBox="0 0 36 36" class="rs-circle-svg">
+                <path class="rs-circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                <path class="rs-circle-fill" stroke="${rateColor}" stroke-dasharray="${completionRate}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+              </svg>
+              <div class="rs-circle-text">
+                <span class="rs-circle-num" style="color:${rateColor}">${completionRate}</span>
+                <span class="rs-circle-pct">%</span>
+              </div>
+            </div>
+          </div>
+          <div class="rs-progress-stats">
+            <div class="rs-stat"><span class="rs-stat-num" style="color:var(--primary-light)">${recordedSlots}</span><span class="rs-stat-label">기록 완료</span></div>
+            <div class="rs-stat"><span class="rs-stat-num" style="color:${missedCount > 0 ? '#FF6B6B' : '#00B894'}">${missedCount}</span><span class="rs-stat-label">누락</span></div>
+            <div class="rs-stat"><span class="rs-stat-num" style="color:var(--text-secondary)">${totalSlots}</span><span class="rs-stat-label">전체 수업</span></div>
+          </div>
+        </div>
+        
+        <!-- 주간 캘린더 그리드 -->
+        <div class="rs-calendar">
+          ${weekData.map(day => `
+            <div class="rs-day-column ${day.isToday ? 'today' : ''} ${day.isFuture ? 'future' : ''}">
+              <div class="rs-day-header ${day.isToday ? 'today' : ''}">
+                <span class="rs-day-name">${day.dayName}</span>
+                <span class="rs-day-num">${day.dayNum}</span>
+              </div>
+              <div class="rs-period-list">
+                ${day.periods.map(p => `
+                  <div class="rs-period-cell ${p.recorded ? 'recorded' : ''} ${p.isFuture ? 'future' : ''} ${!p.recorded && !p.isFuture ? 'missed' : ''}"
+                       data-backfill-date="${day.date}" data-backfill-period="${p.period}" data-backfill-subject="${escapeHtml(p.subject)}"
+                       onclick="${!p.isFuture && !p.recorded ? 'startBackfillRecordFromData(this)' : ''}"
+                       title="${p.period}교시 ${escapeHtml(p.subject)}${p.teacher ? ' (' + escapeHtml(p.teacher) + ')' : ''}">
+                    <div class="rs-period-num">${p.period}</div>
+                    <div class="rs-period-subject" style="color:${p.color}">${p.subject}</div>
+                    <div class="rs-period-status">
+                      ${p.isFuture ? '<i class="fas fa-clock" style="color:var(--text-muted);font-size:12px"></i>' 
+                        : p.recorded ? '<i class="fas fa-check-circle" style="color:#00B894;font-size:16px"></i>' 
+                        : '<div class="rs-missed-box"><i class="fas fa-plus" style="font-size:10px"></i></div>'}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        
+        ${missedCount > 0 ? `
+        <div class="rs-hint">
+          <i class="fas fa-info-circle" style="margin-right:6px;color:var(--primary-light)"></i>
+          빈 박스를 탭하면 누락된 수업을 소급 기록할 수 있어요
+        </div>
+        ` : `
+        <div class="rs-hint" style="color:#00B894">
+          <i class="fas fa-trophy" style="margin-right:6px"></i>
+          이번 주 모든 수업을 기록했어요! 완벽해요! 🎉
+        </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// 특정 날짜+과목+교시의 기록 존재 여부 확인
+function checkRecordExists(date, subject, period, dbRecords, todayRecords, todayStr) {
+  // DB 기록 확인
+  const inDb = dbRecords.some(r => {
+    if (r.date !== date || r.subject !== subject) return false;
+    const memo = (() => { try { return JSON.parse(r.memo || '{}'); } catch(e) { return {}; } })();
+    return !period || memo.period == period || !memo.period;
+  });
+  if (inDb) return true;
+  
+  // 오늘 todayRecords 확인
+  if (date === todayStr) {
+    return todayRecords.some(r => r.subject === subject && r.period === period && r.done);
+  }
+  return false;
+}
+
+// 누락 기록 소급 입력 시작
+function startBackfillRecord(date, period, subject) {
+  // 해당 날짜의 시간표에서 period 정보 가져오기
+  const dayIdx = new Date(date).getDay() - 1; // 0=월
+  if (dayIdx < 0 || dayIdx > 4) return;
+  
+  const periodTimes = state.timetable?.periodTimes || [];
+  const teachers = state.timetable?.teachers || {};
+  const time = periodTimes[period - 1] || {};
+  
+  // todayRecords에 가상으로 해당 교시를 세팅하고 기록 화면으로 이동
+  state._backfillDate = date;
+  state._backfillPeriod = period;
+  state._backfillSubject = subject;
+  state._backfillTeacher = teachers[subject] || '';
+  state._backfillTime = time;
+  
+  // 기존 record-class 화면으로 이동 (소급 모드)
+  goScreen('record-class');
+}
+
+// 수업 기록 히스토리 (DB 기반 + 오늘 기록 통합)
+function renderPhotoAlbum() {
+  const dbRecords = (state._dbClassRecords || []);
+  const photosWithMeta = [];
+  dbRecords.forEach(r => {
+    if (r.photos && Array.isArray(r.photos)) {
+      r.photos.forEach(p => {
+        photosWithMeta.push({ url: p.url || p, tag: p.tag || '', subject: r.subject || '', date: r.date || '', recordId: r.id });
+      });
+    }
+  });
+
+  return `
+    <div class="tab-content animate-in">
+      <div class="screen-header" style="display:flex;align-items:center;gap:12px">
+        <button class="back-btn" onclick="state.studentTab='record';goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📷 사진 앨범</h1>
+      </div>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">수업 중 찍은 필기·프린트 사진을 모아봅니다</p>
+      ${photosWithMeta.length === 0 ? `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px">📷</div>
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">아직 사진이 없습니다</div>
+          <div style="font-size:13px">수업 기록 시 사진을 첨부하면 여기에 모입니다</div>
+        </div>
+      ` : `
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+          ${photosWithMeta.map(p => `
+            <div style="border-radius:10px;overflow:hidden;background:var(--bg-card);border:1px solid var(--border);cursor:pointer" data-record-id="${p.recordId}" onclick="viewRecordFromData(this)">
+              <img src="${p.url}" style="width:100%;height:120px;object-fit:cover" onerror="this.style.display='none'" />
+              <div style="padding:6px 8px">
+                <div style="font-size:11px;font-weight:600;color:var(--text-primary)">${p.subject}</div>
+                <div style="font-size:10px;color:var(--text-muted)">${p.date}${p.tag ? ' · ' + p.tag : ''}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderClassRecordHistory() {
+  const dbRecords = (state._dbClassRecords || []).map(r => ({ ...r, _source: 'db' }));
+  
+  // 오늘 todayRecords 중 done인 항목도 통합 (DB에 아직 없을 수 있음)
+  const today = kstToday();
+  const todayDone = (state.todayRecords || []).filter(r => r.done).map((r, idx) => {
+    // DB에 이미 있는지 확인 (subject + date + topic 기준)
+    const topic = r._topic || '';
+    const alreadyInDb = dbRecords.some(db => db.date === today && db.subject === r.subject && (db.topic === topic || db.content === topic));
+    if (alreadyInDb) return null;
+    return {
+      id: 'today-' + idx,
+      subject: r.subject || '미지정',
+      date: today,
+      topic: r._topic || '',
+      pages: r._pages || '',
+      keywords: r._keywords || (r.summary ? r.summary.split(', ').filter(k => k) : []),
+      photos: r._photos || [],
+      teacher_note: r._teacherNote || '',
+      memo: JSON.stringify({ period: r.period }),
+      _source: 'today',
+      _todayIdx: idx
+    };
+  }).filter(Boolean);
+  
+  const allRecords = [...todayDone, ...dbRecords];
+  
+  // 과목별 필터링
+  const currentFilter = state._recordGalleryFilter || '전체';
+  const filteredRecords = currentFilter === '전체' ? allRecords : allRecords.filter(r => r.subject === currentFilter);
+  
+  // 날짜별 그룹핑 (통계용)
+  const grouped = {};
+  allRecords.forEach(r => {
+    if (!grouped[r.date]) grouped[r.date] = [];
+    grouped[r.date].push(r);
+  });
+  const dates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+  
+  // 전체 통계
+  const totalCount = allRecords.length;
+  const totalPhotos = allRecords.reduce((sum, r) => sum + (Array.isArray(r.photos) ? r.photos.length : 0), 0);
+  const subjectSet = new Set(allRecords.map(r => r.subject));
+  
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '사회':'#74B9FF','한국사':'#E056A0','제2외국어':'#A29BFE','기술가정':'#FF9F43',
+    '음악':'#fd79a8','미술':'#00cec9','체육':'#e17055','정보':'#0984e3',
+  };
+
+  // 필터 칩에 표시할 과목 목록 (기록이 있는 과목만)
+  const filterSubjects = ['전체', ...Array.from(subjectSet).sort()];
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📚 나의 수업 기록</h1>
+      </div>
+      <div class="form-body">
+        <!-- 통계 요약 -->
+        <div class="card" style="margin-bottom:16px;padding:14px;background:linear-gradient(135deg,rgba(108,92,231,0.08),rgba(162,155,254,0.08))">
+          <div style="display:flex;justify-content:space-around;text-align:center">
+            <div>
+              <div style="font-size:22px;font-weight:800;color:var(--primary-light)">${totalCount}</div>
+              <div style="font-size:11px;color:var(--text-muted)">총 기록</div>
+            </div>
+            <div>
+              <div style="font-size:22px;font-weight:800;color:#FF9F43">${totalPhotos}</div>
+              <div style="font-size:11px;color:var(--text-muted)">첨부 사진</div>
+            </div>
+            <div>
+              <div style="font-size:22px;font-weight:800;color:#00B894">${subjectSet.size}</div>
+              <div style="font-size:11px;color:var(--text-muted)">과목</div>
+            </div>
+            <div>
+              <div style="font-size:22px;font-weight:800;color:#FF6B6B">${dates.length}</div>
+              <div style="font-size:11px;color:var(--text-muted)">기록일</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 과목 필터 칩 -->
+        ${allRecords.length > 0 ? `
+        <div class="record-filter-bar">
+          ${filterSubjects.map(sub => {
+            const isActive = sub === currentFilter;
+            const chipColor = sub === '전체' ? 'var(--primary-light)' : (subjectColors[sub] || '#636e72');
+            return '<button class="record-filter-chip' + (isActive ? ' active' : '') + '" style="' + (isActive ? 'background:' + chipColor + ';color:#fff;border-color:' + chipColor : 'border-color:' + chipColor + '40;color:' + chipColor) + '" data-gallery-filter="' + escapeHtml(sub) + '" onclick="setRecordGalleryFilter(this)">' + sub + (sub !== '전체' ? ' <span class="record-filter-count">' + allRecords.filter(r => r.subject === sub).length + '</span>' : '') + '</button>';
+          }).join('')}
+        </div>
+        ` : ''}
+        
+        ${filteredRecords.length === 0 && allRecords.length === 0 ? `
+          <div style="text-align:center;padding:60px 0;color:var(--text-muted)">
+            <span style="font-size:48px;display:block;margin-bottom:16px">📝</span>
+            <p style="font-size:16px;font-weight:600;margin:0 0 8px">아직 기록이 없어요</p>
+            <p style="font-size:13px;margin:0">수업 시간에 기록을 시작해보세요!</p>
+            <button class="btn-primary" style="margin-top:16px;padding:10px 24px" onclick="goScreen('record-class')">
+              <i class="fas fa-pen" style="margin-right:6px"></i>수업 기록하러 가기
+            </button>
+          </div>
+        ` : filteredRecords.length === 0 ? `
+          <div style="text-align:center;padding:40px 0;color:var(--text-muted)">
+            <span style="font-size:36px;display:block;margin-bottom:12px">🔍</span>
+            <p style="font-size:14px;font-weight:600;margin:0">'${currentFilter}' 과목의 기록이 없습니다</p>
+          </div>
+        ` : `
+          <div class="record-gallery-grid">
+            ${filteredRecords.map((r, cardIdx) => {
+              const color = subjectColors[r.subject] || '#636e72';
+              const keywords = Array.isArray(r.keywords) ? r.keywords : [];
+              const photos = Array.isArray(r.photos) ? r.photos : [];
+              const photoCount = photos.length;
+              const memo = (() => { try { return JSON.parse(r.memo || '{}'); } catch(e) { return {}; } })();
+              const d = new Date(r.date);
+              const dayNames = ['일','월','화','수','목','금','토'];
+              const dateStr = (r.date || '').slice(5).replace('-','/') + ' (' + dayNames[d.getDay()] + ')';
+              const recordDataAttrs = r._source === 'today'
+                ? `data-record-source="today" data-record-today-idx="${r._todayIdx}"`
+                : `data-record-source="db" data-record-id="${String(r.id)}"`;
+              const carouselId = 'rc-carousel-' + cardIdx;
+              return `
+              <div class="record-gallery-card">
+                <div class="record-gallery-thumb" style="border-bottom:3px solid ${color}" ${recordDataAttrs} onclick="viewRecordFromGallery(this)">
+                  ${photoCount > 1 ? `
+                    <div class="rc-carousel" id="${carouselId}" data-idx="0" data-total="${photoCount}">
+                      <div class="rc-carousel-track" style="width:${photoCount * 100}%;transform:translateX(0%)">
+                        ${photos.map(p => '<div class="rc-carousel-slide" style="width:' + (100/photoCount) + '%"><img src="' + p + '" alt="필기" class="record-gallery-img" /></div>').join('')}
+                      </div>
+                      <div class="rc-carousel-dots">
+                        ${photos.map((_,i) => '<span class="rc-dot' + (i===0?' active':'') + '"></span>').join('')}
+                      </div>
+                      ${photoCount > 1 ? '<span class="record-gallery-badge">' + photoCount + '장</span>' : ''}
+                    </div>
+                  ` : photoCount === 1 ? `
+                    <img src="${photos[0]}" alt="필기 사진" class="record-gallery-img" />
+                  ` : `
+                    <div class="record-gallery-placeholder"><span style="font-size:36px">📝</span><span style="font-size:12px;color:var(--text-muted);margin-top:4px">사진 없음</span></div>
+                  `}
+                </div>
+                <div class="record-gallery-info" ${recordDataAttrs} onclick="viewRecordFromGallery(this)">
+                  <div class="record-gallery-subject">
+                    <span class="record-gallery-subject-tag" style="background:${color}18;color:${color};border:1px solid ${color}35">${r.subject}</span>
+                    ${memo.period ? '<span class="record-gallery-period">' + memo.period + '교시</span>' : ''}
+                  </div>
+                  ${r.topic ? '<div class="record-gallery-topic">' + r.topic + '</div>' : '<div class="record-gallery-topic" style="color:var(--text-muted);font-style:italic">단원 미입력</div>'}
+                  <div class="record-gallery-date"><i class="far fa-calendar-alt" style="margin-right:4px"></i>${dateStr}</div>
+                  ${keywords.length > 0 ? '<div class="record-gallery-keywords">' + keywords.slice(0,3).map(k => '<span class="record-gallery-kw" style="background:' + color + '10;color:' + color + ';border:1px solid ' + color + '25">' + k + '</span>').join('') + '</div>' : ''}
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ===== 카드 내 사진 캐러셀 스와이프 핸들러 =====
+(function initRecordCarousel() {
+  let startX = 0, startY = 0, isDragging = false, currentCarousel = null;
+  
+  document.addEventListener('touchstart', function(e) {
+    const carousel = e.target.closest('.rc-carousel');
+    if (!carousel) return;
+    e.stopPropagation();
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    isDragging = true;
+    currentCarousel = carousel;
+  }, { passive: true });
+  
+  document.addEventListener('touchend', function(e) {
+    if (!isDragging || !currentCarousel) return;
+    const endX = e.changedTouches[0].clientX;
+    const endY = e.changedTouches[0].clientY;
+    const diffX = endX - startX;
+    const diffY = endY - startY;
+    isDragging = false;
+    
+    // 가로 스와이프만 처리 (세로 스크롤 무시)
+    if (Math.abs(diffX) < 30 || Math.abs(diffY) > Math.abs(diffX)) { currentCarousel = null; return; }
+    
+    const total = parseInt(currentCarousel.dataset.total) || 1;
+    let idx = parseInt(currentCarousel.dataset.idx) || 0;
+    
+    if (diffX < -30 && idx < total - 1) idx++;
+    else if (diffX > 30 && idx > 0) idx--;
+    else { currentCarousel = null; return; }
+    
+    currentCarousel.dataset.idx = idx;
+    const track = currentCarousel.querySelector('.rc-carousel-track');
+    if (track) track.style.transform = 'translateX(-' + (idx * (100 / total)) + '%)';
+    
+    // 인디케이터 업데이트
+    const dots = currentCarousel.querySelectorAll('.rc-dot');
+    dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+    
+    // 배지 업데이트
+    const badge = currentCarousel.querySelector('.record-gallery-badge');
+    if (badge) badge.textContent = (idx + 1) + '/' + total;
+    
+    currentCarousel = null;
+  }, { passive: true });
+  
+  // 마우스 드래그 지원 (데스크탑)
+  document.addEventListener('mousedown', function(e) {
+    const carousel = e.target.closest('.rc-carousel');
+    if (!carousel) return;
+    e.preventDefault();
+    startX = e.clientX;
+    isDragging = true;
+    currentCarousel = carousel;
+  });
+  
+  document.addEventListener('mouseup', function(e) {
+    if (!isDragging || !currentCarousel) return;
+    const diffX = e.clientX - startX;
+    isDragging = false;
+    
+    if (Math.abs(diffX) < 30) { currentCarousel = null; return; }
+    
+    const total = parseInt(currentCarousel.dataset.total) || 1;
+    let idx = parseInt(currentCarousel.dataset.idx) || 0;
+    
+    if (diffX < -30 && idx < total - 1) idx++;
+    else if (diffX > 30 && idx > 0) idx--;
+    else { currentCarousel = null; return; }
+    
+    currentCarousel.dataset.idx = idx;
+    const track = currentCarousel.querySelector('.rc-carousel-track');
+    if (track) track.style.transform = 'translateX(-' + (idx * (100 / total)) + '%)';
+    
+    const dots = currentCarousel.querySelectorAll('.rc-dot');
+    dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+    
+    const badge = currentCarousel.querySelector('.record-gallery-badge');
+    if (badge) badge.textContent = (idx + 1) + '/' + total;
+    
+    currentCarousel = null;
+  });
+})();
+
+// 수업 기록 상세 열람
+function renderClassRecordDetail() {
+  // todayRecords 기반 또는 DB 기반
+  let record = null;
+  let fromToday = false;
+  
+  if (state._viewingTodayRecordIdx !== undefined && state._viewingTodayRecordIdx !== null) {
+    const idx = state._viewingTodayRecordIdx;
+    const r = state.todayRecords[idx];
+    if (r && r.done) {
+      record = {
+        subject: r.subject,
+        date: kstToday(),
+        topic: r._topic || '',
+        pages: r._pages || '',
+        keywords: r._keywords || (r.summary ? r.summary.split(', ').filter(k => k) : []),
+        photos: r._photos || [],
+        teacher_note: r._teacherNote || '',
+        memo: JSON.stringify({ period: r.period }),
+        teacher: r.teacher || '',
+        color: r.color || '#636e72',
+        period: r.period,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        question: r.question,
+        _assignmentText: r._assignmentText || '',
+        _assignmentDue: r._assignmentDue || '',
+        _todayIdx: idx,
+      };
+      fromToday = true;
+    }
+  }
+  
+  // 학원 기록 보기
+  if (!record && state._viewingAcademyRecord) {
+    const r = state._viewingAcademyRecord;
+    if (r && r.done) {
+      const memo = { period: r.period, isAcademy: true, academyName: r.academyName, className: r.className };
+      record = {
+        subject: r.subject,
+        date: kstToday(),
+        topic: r._topic || '',
+        pages: r._pages || '',
+        keywords: r._keywords || (r.summary ? r.summary.split(', ').filter(k => k) : []),
+        photos: r._photos || [],
+        teacher_note: r._teacherNote || '',
+        memo: JSON.stringify(memo),
+        teacher: r.academyName || '',
+        color: r.color || '#636e72',
+        period: r.period,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        question: r.question,
+        _assignmentText: r._assignmentText || '',
+        _assignmentDue: r._assignmentDue || '',
+        _isAcademy: true,
+        _academyIdx: r._academyIdx,
+      };
+      fromToday = true;
+    }
+  }
+  
+  if (!record && state._viewingDbRecord) {
+    const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(state._viewingDbRecord));
+    if (dbRec) {
+      const memo = (() => { try { return JSON.parse(dbRec.memo || '{}'); } catch(e) { return {}; } })();
+      record = {
+        subject: dbRec.subject,
+        date: dbRec.date,
+        topic: dbRec.topic || dbRec.content || '',
+        pages: dbRec.pages || memo.pages || '',
+        keywords: Array.isArray(dbRec.keywords) ? dbRec.keywords : [],
+        photos: Array.isArray(dbRec.photos) ? dbRec.photos : [],
+        teacher_note: dbRec.teacher_note || memo.teacherNote || '',
+        memo: dbRec.memo,
+        period: memo.period || '',
+        color: '#636e72',
+        _dbId: dbRec.id,
+      };
+    }
+  }
+  
+  if (!record) { 
+    state._viewingTodayRecordIdx = null;
+    state._viewingDbRecord = null;
+    state._viewingAcademyRecord = null;
+    goScreen('main'); 
+    return ''; 
+  }
+  
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '사회':'#74B9FF','한국사':'#E056A0','제2외국어':'#A29BFE','기술가정':'#FF9F43',
+    '음악':'#fd79a8','미술':'#00cec9','체육':'#e17055','정보':'#0984e3',
+  };
+  const color = record.color !== '#636e72' ? record.color : (subjectColors[record.subject] || '#636e72');
+  const keywords = record.keywords || [];
+  const photos = record.photos || [];
+  
+  const backAction = fromToday 
+    ? "state._viewingTodayRecordIdx=null;goScreen('main')" 
+    : "state._viewingDbRecord=null;goScreen('class-record-history')";
+  
+  const editAction = fromToday 
+    ? `state._viewingTodayRecordIdx=null;openClassRecordEdit(${record._todayIdx})` 
+    : "goScreen('class-record-history')";
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="${backAction}"><i class="fas fa-arrow-left"></i></button>
+        <h1>📖 수업 기록</h1>
+        ${fromToday ? '<button class="header-action-btn" onclick="' + editAction + '" style="color:var(--primary-light)"><i class="fas fa-edit"></i></button>' : ''}
+      </div>
+      <div class="form-body">
+        <!-- 과목 헤더 -->
+        <div class="card" style="margin-bottom:16px;border-left:4px solid ${color}">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="width:44px;height:44px;border-radius:12px;background:${color}15;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:${color}">
+              ${record.period || '📖'}
+            </div>
+            <div style="flex:1">
+              <div style="font-size:18px;font-weight:700;color:${color}">${record.subject}</div>
+              <div style="font-size:12px;color:var(--text-muted)">
+                ${record.date}${record.period ? ' · ' + record.period + '교시' : ''}${record.teacher ? ' · ' + record.teacher + ' 선생님' : ''}${record.startTime ? ' · ' + record.startTime + '~' + record.endTime : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 단원/주제 -->
+        ${record.topic ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label class="field-label" style="font-size:11px;color:var(--text-muted)">📖 단원/주제</label>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);padding:8px 0">${record.topic}</div>
+        </div>
+        ` : ''}
+
+        <!-- 교과서 쪽수 -->
+        ${record.pages ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label class="field-label" style="font-size:11px;color:var(--text-muted)">📄 교과서 쪽수</label>
+          <div style="font-size:14px;color:var(--text-primary);padding:8px 0">${record.pages}</div>
+        </div>
+        ` : ''}
+
+        <!-- 핵심 키워드 -->
+        ${keywords.length > 0 ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label class="field-label" style="font-size:11px;color:var(--text-muted)">📝 핵심 키워드</label>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 0">
+            ${keywords.map(k => `<span style="font-size:13px;padding:4px 12px;border-radius:16px;background:${color}12;color:${color};border:1px solid ${color}30;font-weight:500">${k}</span>`).join('')}
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 필기 사진 대형 가로 스크롤 갤러리 -->
+        ${photos.length > 0 ? `
+        <div class="detail-photo-section">
+          <div class="detail-photo-header">
+            <span class="detail-photo-label">📸 필기 사진</span>
+            <span class="detail-photo-count">${photos.length}장</span>
+          </div>
+          <div class="detail-gallery-wrap">
+            <div class="detail-gallery-scroll" id="detailGalleryScroll">
+              ${photos.map((p, i) => `
+                <div class="detail-gallery-item" data-idx="${i}" ondblclick="openPhotoZoom(${i})">
+                  <img src="${p}" alt="필기 ${i+1}" class="detail-gallery-img" loading="lazy" draggable="false">
+                </div>
+              `).join('')}
+            </div>
+            <div class="detail-gallery-indicator" id="detailGalleryIndicator">
+              <span class="detail-gallery-current">1</span> / <span class="detail-gallery-total">${photos.length}</span>
+            </div>
+          </div>
+          <div class="detail-gallery-hint">
+            <i class="fas fa-hand-point-up" style="margin-right:4px"></i>좌우 스와이프로 넘기기 · 더블탭으로 확대
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 선생님 강조 -->
+        ${record.teacher_note ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label class="field-label" style="font-size:11px;color:var(--text-muted)">⭐ 선생님 강조</label>
+          <div style="font-size:14px;color:var(--accent);padding:10px 14px;background:rgba(255,107,107,0.08);border-radius:10px;border:1px solid rgba(255,107,107,0.15);font-weight:500">
+            <i class="fas fa-exclamation-circle" style="margin-right:6px"></i>${record.teacher_note}
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 과제 -->
+        ${record._assignmentText ? `
+        <div class="field-group" style="margin-bottom:14px">
+          <label class="field-label" style="font-size:11px;color:var(--text-muted)">📋 과제</label>
+          <div style="font-size:14px;color:var(--text-primary);padding:10px 14px;background:var(--bg-input);border-radius:10px;border:1px solid var(--border)">
+            ${record._assignmentText}
+            ${record._assignmentDue ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">📅 마감: ' + record._assignmentDue + '</div>' : ''}
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 질문 기록 -->
+        ${record.question ? `
+        <div class="card" style="margin-top:4px;background:var(--bg-input);border-color:var(--primary)22">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span class="tt-q-badge">${record.question.level}</span>
+            <span style="font-size:13px;font-weight:600">질문 기록</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin:0">"${record.question.text}"</p>
+        </div>
+        ` : ''}
+
+        <!-- 수정 버튼 -->
+        ${fromToday ? `
+        <button class="btn-secondary" style="width:100%;margin-top:16px" onclick="${editAction}">
+          <i class="fas fa-edit" style="margin-right:6px"></i> 수정하기
+        </button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// 사진 전체 화면 보기 (핀치줌 + 더블탭 확대 지원)
+function openPhotoZoom(photoIdx) {
+  let photos = [];
+  if (state._viewingTodayRecordIdx !== undefined && state._viewingTodayRecordIdx !== null) {
+    const r = state.todayRecords[state._viewingTodayRecordIdx];
+    photos = r ? (r._photos || []) : [];
+  } else if (state._viewingDbRecord) {
+    const dbRec = (state._dbClassRecords || []).find(r => String(r.id) === String(state._viewingDbRecord));
+    photos = dbRec ? (Array.isArray(dbRec.photos) ? dbRec.photos : []) : [];
+  }
+  if (photos.length === 0) return;
+  
+  const overlay = document.createElement('div');
+  overlay.className = 'photo-zoom-overlay';
+  
+  let currentIdx = photoIdx;
+  let scale = 1, posX = 0, posY = 0;
+  let lastTap = 0;
+  
+  function renderZoom() {
+    scale = 1; posX = 0; posY = 0;
+    overlay.innerHTML = `
+      <button class="photo-zoom-close" onclick="this.closest('.photo-zoom-overlay').remove()">&times;</button>
+      <div class="photo-zoom-counter">${currentIdx + 1} / ${photos.length}</div>
+      <div class="photo-zoom-container" id="photoZoomContainer">
+        <img src="${photos[currentIdx]}" class="photo-zoom-img" id="photoZoomImg" draggable="false">
+      </div>
+      ${photos.length > 1 ? `
+        <div class="photo-zoom-nav">
+          <button class="photo-zoom-btn" id="pzPrev"><i class="fas fa-chevron-left"></i></button>
+          <button class="photo-zoom-btn" id="pzNext"><i class="fas fa-chevron-right"></i></button>
+        </div>
+      ` : ''}
+      <div class="photo-zoom-hint">핀치/더블탭으로 확대 · 좌우 스와이프</div>
+    `;
+    
+    const prev = overlay.querySelector('#pzPrev');
+    const next = overlay.querySelector('#pzNext');
+    if (prev) prev.addEventListener('click', (e) => { e.stopPropagation(); currentIdx = (currentIdx - 1 + photos.length) % photos.length; renderZoom(); });
+    if (next) next.addEventListener('click', (e) => { e.stopPropagation(); currentIdx = (currentIdx + 1) % photos.length; renderZoom(); });
+    
+    // 더블탭 확대/축소
+    const container = overlay.querySelector('#photoZoomContainer');
+    const img = overlay.querySelector('#photoZoomImg');
+    if (!container || !img) return;
+    
+    container.addEventListener('click', (e) => {
+      const now = Date.now();
+      if (now - lastTap < 350) {
+        // 더블탭 → 토글 확대
+        if (scale > 1) { scale = 1; posX = 0; posY = 0; }
+        else { scale = 2.5; }
+        img.style.transform = 'translate(' + posX + 'px,' + posY + 'px) scale(' + scale + ')';
+      }
+      lastTap = now;
+    });
+    
+    // 핀치줌
+    let initDist = 0, initScale = 1;
+    container.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        initDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        initScale = scale;
+      }
+    }, { passive: true });
+    container.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2) {
+        const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        scale = Math.max(0.5, Math.min(5, initScale * (dist / initDist)));
+        img.style.transform = 'translate(' + posX + 'px,' + posY + 'px) scale(' + scale + ')';
+      }
+    }, { passive: true });
+    
+    // 패닝 (확대 시 드래그 이동)
+    let panStartX = 0, panStartY = 0, panPosX = 0, panPosY = 0, isPanning = false;
+    container.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1 && scale > 1) {
+        isPanning = true;
+        panStartX = e.touches[0].clientX - posX;
+        panStartY = e.touches[0].clientY - posY;
+      }
+    }, { passive: true });
+    container.addEventListener('touchmove', (e) => {
+      if (isPanning && e.touches.length === 1 && scale > 1) {
+        posX = e.touches[0].clientX - panStartX;
+        posY = e.touches[0].clientY - panStartY;
+        img.style.transform = 'translate(' + posX + 'px,' + posY + 'px) scale(' + scale + ')';
+      }
+    }, { passive: true });
+    container.addEventListener('touchend', () => { isPanning = false; }, { passive: true });
+    
+    // 스와이프로 다음/이전 (scale === 1 일 때만)
+    let swStartX = 0;
+    container.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1 && scale <= 1) swStartX = e.touches[0].clientX;
+    }, { passive: true });
+    container.addEventListener('touchend', (e) => {
+      if (scale > 1 || e.changedTouches.length !== 1) return;
+      const diff = e.changedTouches[0].clientX - swStartX;
+      if (Math.abs(diff) > 60) {
+        if (diff < 0 && currentIdx < photos.length - 1) { currentIdx++; renderZoom(); }
+        else if (diff > 0 && currentIdx > 0) { currentIdx--; renderZoom(); }
+      }
+    }, { passive: true });
+  }
+  
+  renderZoom();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function escHandler(e) {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+  });
+  document.body.appendChild(overlay);
+}
+
+// 레거시 호환
+function openPhotoViewer(idx) { openPhotoZoom(idx); }
+
+// 상세 갤러리 스크롤 인디케이터 업데이트
+(function initDetailGalleryScroll() {
+  document.addEventListener('scroll', function(e) {
+    const scroll = e.target;
+    if (!scroll || !scroll.classList || !scroll.classList.contains('detail-gallery-scroll')) return;
+    const items = scroll.querySelectorAll('.detail-gallery-item');
+    if (items.length === 0) return;
+    const scrollLeft = scroll.scrollLeft;
+    const itemWidth = items[0].offsetWidth;
+    const gap = 12; // CSS gap
+    const idx = Math.round(scrollLeft / (itemWidth + gap));
+    const indicator = scroll.closest('.detail-gallery-wrap')?.querySelector('.detail-gallery-current');
+    if (indicator) indicator.textContent = Math.min(idx + 1, items.length);
+  }, true);
+})();
+
+// 수업 기록 수정 화면 열기
+function openClassRecordEdit(idx) {
+  state._editingClassRecordIdx = idx;
+  goScreen('class-record-edit');
+}
+
+// 수업 기록 수정 화면 렌더링
+function renderClassRecordEdit() {
+  const idx = state._editingClassRecordIdx;
+  const r = state.todayRecords[idx];
+  if (!r) { goScreen('main'); return ''; }
+
+  const topic = r._topic || '';
+  const pages = r._pages || '';
+  const keywords = r._keywords || (r.summary ? r.summary.split(', ').filter(k => k) : []);
+  const teacherNote = r._teacherNote || '';
+  const photos = r._photos || [];
+  const assignmentText = r._assignmentText || '';
+  const assignmentDue = r._assignmentDue || '';
+
+  const photoThumbs = photos.map((p, i) => `
+    <div class="class-photo-thumb" style="position:relative;width:72px;height:72px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+      <img src="${p}" style="width:100%;height:100%;object-fit:cover" onclick="viewClassPhoto(${i})">
+      <button onclick="removeEditPhoto(${i})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.6);color:#fff;border:none;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer">&times;</button>
+    </div>
+  `).join('');
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>✏️ 수업 기록 수정</h1>
+        <button class="header-action-btn" onclick="saveClassRecordEdit(${idx})" style="color:var(--primary-light)"><i class="fas fa-save"></i></button>
+      </div>
+
+      <div class="form-body">
+        <div class="card" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="tt-period-badge done" style="width:36px;height:36px;font-size:14px">${r.period}</div>
+            <div>
+              <div style="font-size:17px;font-weight:700;color:${r.color}">${r.subject}</div>
+              <div style="font-size:12px;color:var(--text-muted)">${r.teacher} 선생님 · ${r.startTime||''}~${r.endTime||''}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📖 단원/주제</label>
+          <input class="input-field" id="edit-cr-topic" value="${topic}" placeholder="예: 3단원 세포 분열">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📄 교과서 쪽수</label>
+          <input class="input-field" id="edit-cr-pages" value="${pages}" placeholder="예: p.84~89">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📝 핵심 키워드 <span style="color:var(--accent)">*필수</span></label>
+          <textarea class="input-field" id="edit-cr-keywords" rows="2" placeholder="예: 감수분열, 상동염색체, 2가 염색체">${keywords.join(', ')}</textarea>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📸 필기 사진</label>
+          <div class="edit-photos-container" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            ${photoThumbs}
+            <label style="width:72px;height:72px;flex-shrink:0;border-radius:8px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted);font-size:11px;gap:2px">
+              <i class="fas fa-plus" style="font-size:16px"></i>
+              <span>추가</span>
+              <input type="file" accept="image/*" multiple style="display:none" onchange="handleEditPhotoUpload(this)">
+            </label>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">⭐ 선생님 강조</label>
+          <input class="input-field" id="edit-cr-teacher-note" value="${teacherNote}" placeholder='예: "서술형 나옴"'>
+        </div>
+
+        <div class="field-group" style="background:var(--bg-input);border-radius:12px;padding:14px;border:1px solid var(--border)">
+          <label class="field-label" style="margin-bottom:8px">📋 과제 <span style="color:var(--text-muted)">(있으면 적어줘!)</span></label>
+          <input class="input-field" id="edit-cr-assignment" value="${assignmentText}" placeholder="예: 워크북 p.30~32 풀어오기" oninput="toggleEditDeadline()">
+          <div class="edit-deadline-section" style="display:${assignmentText ? 'block' : 'none'};margin-top:12px">
+            <label class="field-label" style="margin-bottom:8px">📅 마감일</label>
+            <input type="date" class="input-field" id="edit-cr-due" value="${assignmentDue}" style="font-size:13px">
+          </div>
+        </div>
+
+        ${r.question ? `
+        <div class="card" style="margin-top:12px;background:var(--bg-input);border-color:var(--primary)22">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span class="tt-q-badge">${r.question.level}</span>
+            <span style="font-size:13px;font-weight:600">질문 기록</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.5">"${r.question.text}"</p>
+        </div>
+        ` : ''}
+
+        <button class="btn-primary" style="width:100%;margin-top:20px" onclick="saveClassRecordEdit(${idx})">
+          <i class="fas fa-save" style="margin-right:6px"></i> 수정 완료
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// 수정 화면 사진 업로드
+function handleEditPhotoUpload(input) {
+  if (!input.files || input.files.length === 0) return;
+  const idx = state._editingClassRecordIdx;
+  const r = state.todayRecords[idx];
+  if (!r) return;
+  if (!r._photos) r._photos = [];
+
+  const files = Array.from(input.files).slice(0, 20 - r._photos.length);
+  let loaded = 0;
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      r._photos.push(e.target.result);
+      loaded++;
+      if (loaded === files.length) renderScreen();
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+
+// 수정 화면 사진 삭제
+function removeEditPhoto(photoIdx) {
+  const idx = state._editingClassRecordIdx;
+  const r = state.todayRecords[idx];
+  if (!r || !r._photos) return;
+  r._photos.splice(photoIdx, 1);
+  renderScreen();
+}
+
+// 수정 화면 과제 입력시 마감일 토글
+function toggleEditDeadline() {
+  const input = document.getElementById('edit-cr-assignment');
+  const section = document.querySelector('.edit-deadline-section');
+  if (input && section) {
+    section.style.display = input.value.trim().length > 0 ? 'block' : 'none';
+  }
+}
+
+// 수업 기록 수정 저장
+function saveClassRecordEdit(idx) {
+  const r = state.todayRecords[idx];
+  if (!r) return;
+
+  const topic = document.getElementById('edit-cr-topic')?.value?.trim() || '';
+  const pages = document.getElementById('edit-cr-pages')?.value?.trim() || '';
+  const keywordsInput = document.getElementById('edit-cr-keywords')?.value || '';
+  const teacherNote = document.getElementById('edit-cr-teacher-note')?.value?.trim() || '';
+  const keywords = keywordsInput.split(/[,，、\n]+/).map(k => k.trim()).filter(k => k);
+  const photos = r._photos || [];
+  
+  // 과제 정보
+  const assignmentText = document.getElementById('edit-cr-assignment')?.value?.trim() || '';
+  const assignmentDue = document.getElementById('edit-cr-due')?.value || '';
+
+  // state 업데이트
+  r.summary = topic || keywords.join(', ') || r.summary;
+  r._topic = topic;
+  r._pages = pages;
+  r._keywords = keywords;
+  r._teacherNote = teacherNote;
+  r._assignmentText = assignmentText;
+  r._assignmentDue = assignmentDue;
+
+  // DB 업데이트
+  if (r._dbRecordId && DB.studentId()) {
+    DB.updateClassRecord(r._dbRecordId, {
+      content: topic,
+      keywords,
+      memo: JSON.stringify({ period: r.period || '', pages: pages, teacherNote: teacherNote, photoCount: photos.length }),
+      topic,
+      pages,
+      photos,
+      teacher_note: teacherNote,
+    });
+  }
+  
+  // 과제가 새로 추가되었으면 플래너에 등록
+  if (assignmentText && !r._assignmentRegistered) {
+    state._classAssignmentDue = assignmentDue;
+    const assignInput = { value: assignmentText };
+    // 임시로 DOM에 의존하지 않고 직접 등록
+    const dueDate = assignmentDue || kstDateOffset(7);
+    const subjectColors = {
+      '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+      '사회':'#74B9FF','한국사':'#E056A0','제2외국어':'#A29BFE','기술가정':'#FF9F43',
+    };
+    const newAssignment = {
+      id: 'auto-' + Date.now(),
+      subject: r.subject || '미지정',
+      title: assignmentText,
+      desc: `${r.period || ''}교시 수업 중 등록 (수정에서 추가)`,
+      type: '과제',
+      teacher: '',
+      dueDate: dueDate,
+      createdDate: kstToday(),
+      color: subjectColors[r.subject] || '#636e72',
+      status: 'pending',
+      progress: 0,
+      plan: []
+    };
+    if (!state.assignments) state.assignments = [];
+    state.assignments.push(newAssignment);
+    if (DB.studentId()) {
+      DB.saveAssignment({
+        subject: r.subject || '미지정',
+        title: assignmentText,
+        description: `${r.period || ''}교시 수업 중 등록`,
+        teacherName: '',
+        dueDate: dueDate,
+        color: subjectColors[r.subject] || '#636e72',
+        planData: [],
+      });
+    }
+    // 플래너 일간 뷰에도 마감일 항목 추가
+    addAssignmentToPlannerItems(newAssignment);
+    r._assignmentRegistered = true;
+  }
+
+  goScreen('main');
+  showXpPopup(0, '수업 기록이 수정되었어요! ✏️');
+}
+
+// ==================== 릴레이단어장 (학생) ====================
+
+// 릴레이 상태 초기화
+if (!state._relay) state._relay = { classId: null, className: '', checked: false, wordbook: null, myEntry: null, finishedStudents: [], loading: false };
+
+// 학생의 릴레이 자격 확인 (영어 클래스 + 학생 15명 이상)
+async function _studentCheckRelay() {
+  if (state._relay.checked) return;
+  state._relay.checked = true;
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  if (!extUserId) return;
+  try {
+    const res = await fetch(`/api/relay/classes?user_id=${extUserId}`);
+    const data = await res.json();
+    if (data.success && data.classes && data.classes.length > 0) {
+      state._relay.classId = Number(data.classes[0].class_id);
+      state._relay.className = data.classes[0].class_name;
+      await _studentLoadRelayWordbook();
+    }
+  } catch (e) { console.error('studentCheckRelay:', e); }
+}
+
+// 학생의 오늘 단어장 로드
+async function _studentLoadRelayWordbook() {
+  if (!state._relay.classId) return;
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  if (!extUserId) return;
+  try {
+    const res = await fetch(`/api/relay/student-wordbook?class_id=${state._relay.classId}&student_user_id=${extUserId}`);
+    const data = await res.json();
+    state._relay.wordbook = data.wordbook || null;
+    state._relay.myEntry = data.myEntry || null;
+    state._relay.finishedStudents = data.finishedStudents || [];
+  } catch (e) { console.error('studentLoadRelayWordbook:', e); }
+}
+
+// 릴레이단어장 위젯 (홈 화면)
+function renderRelayWordbookWidget() {
+  // 비동기 자격 확인 시작
+  if (!state._relay.checked) {
+    _studentCheckRelay().then(() => { if (state._relay.classId) refreshDataWidgets(); });
+    return '';
+  }
+  if (!state._relay.classId) return '';
+
+  const wb = state._relay.wordbook;
+  const myEntry = state._relay.myEntry;
+  const finished = state._relay.finishedStudents || [];
+
+  // 상태 판별
+  let statusLabel, statusColor, statusIcon, clickAction;
+  if (!wb) {
+    statusLabel = '단어장 준비중';
+    statusColor = 'var(--text-muted)';
+    statusIcon = '⏳';
+    clickAction = '';
+  } else if (myEntry && myEntry.is_finished) {
+    statusLabel = '제출 완료';
+    statusColor = 'var(--success)';
+    statusIcon = '✅';
+    clickAction = "goScreen('relay-wordbook')";
+  } else {
+    statusLabel = '단어장 입력';
+    statusColor = 'var(--primary-light)';
+    statusIcon = '✍️';
+    clickAction = "goScreen('relay-wordbook')";
+  }
+
+  return `
+    <div class="card stagger-3b animate-in" ${clickAction ? `onclick="${clickAction}" style="cursor:pointer"` : ''}>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:24px">📚</span>
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-main)">릴레이단어장</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${state._relay.className}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:16px">${statusIcon}</span>
+          <span style="font-size:13px;font-weight:700;color:${statusColor}">${statusLabel}</span>
+          ${wb && finished.length > 0 ? `<span style="font-size:11px;color:var(--text-muted);margin-left:4px">(${finished.length}명 완료)</span>` : ''}
+          ${clickAction ? '<i class="fas fa-chevron-right" style="font-size:11px;color:var(--text-muted);margin-left:4px"></i>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 릴레이단어장 전체 화면 (학생)
+function renderRelayWordbookScreen() {
+  const wb = state._relay.wordbook;
+  const myEntry = state._relay.myEntry;
+  const finished = state._relay.finishedStudents || [];
+
+  if (!wb) {
+    return `
+      <div class="tab-content animate-in">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+          <button onclick="goScreen('main')" style="background:none;border:none;color:var(--text-secondary);font-size:18px;cursor:pointer;padding:8px"><i class="fas fa-arrow-left"></i></button>
+          <h1 style="font-size:20px;font-weight:800;margin:0">📚 릴레이단어장</h1>
+        </div>
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px;opacity:0.3">⏳</div>
+          <p style="font-size:16px">오늘은 단어장이 없습니다</p>
+          <p style="font-size:13px;margin-top:8px">선생님이 단어장을 등록하면 여기에 나타납니다</p>
+        </div>
+      </div>`;
+  }
+
+  const words = typeof wb.words === 'string' ? JSON.parse(wb.words) : wb.words;
+  const myEntries = myEntry ? (typeof myEntry.entries === 'string' ? JSON.parse(myEntry.entries) : myEntry.entries) : [];
+  const isFinished = myEntry && myEntry.is_finished;
+
+  let html = `
+    <div class="tab-content animate-in">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <button onclick="goScreen('main')" style="background:none;border:none;color:var(--text-secondary);font-size:18px;cursor:pointer;padding:8px"><i class="fas fa-arrow-left"></i></button>
+        <div>
+          <h1 style="font-size:20px;font-weight:800;margin:0">📚 릴레이단어장</h1>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:2px">${state._relay.className} · ${wb.date}</p>
+        </div>
+      </div>
+  `;
+
+  // 제출 완료 학생 목록
+  if (finished.length > 0) {
+    html += `
+      <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:var(--radius-md);padding:12px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--success);margin-bottom:8px">
+          <i class="fas fa-check-circle" style="margin-right:4px"></i>완료한 친구들 (${finished.length}명)
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${finished.map((s, i) => `
+            <span style="padding:4px 8px;background:rgba(34,197,94,0.12);border-radius:6px;font-size:12px;color:var(--text-main)">
+              ${i+1}. ${s.student_name}
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // 단어장 입력 영역
+  html += `<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:var(--text-main)">
+    ${isFinished ? '✅ 나의 제출 내용' : '✍️ 한글 뜻을 입력하세요'}
+  </div>`;
+
+  html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  words.forEach((w, i) => {
+    const val = myEntries[i] || '';
+    html += `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg-input);border-radius:8px">
+        <span style="font-size:11px;color:var(--text-muted);min-width:24px;text-align:right;font-weight:600">${i+1}</span>
+        <span style="font-size:14px;font-weight:600;color:var(--primary-light);min-width:120px">${w}</span>
+        <input class="relay-meaning-input" type="text" value="${val.replace(/"/g, '&quot;')}" placeholder="한글 뜻" 
+          ${isFinished ? 'disabled' : ''}
+          style="flex:1;background:${isFinished ? 'transparent' : 'var(--bg-card)'};border:${isFinished ? 'none' : '1px solid var(--border-color)'};color:var(--text-main);font-size:13px;outline:none;padding:6px 8px;border-radius:6px">
+      </div>
+    `;
+  });
+  html += '</div>';
+
+  // 제출 버튼
+  if (!isFinished) {
+    html += `
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button onclick="_studentSaveRelay(false)" class="btn-secondary" style="flex:1;padding:12px;font-size:14px;border-radius:10px">
+          <i class="fas fa-save" style="margin-right:4px"></i>임시저장
+        </button>
+        <button onclick="_studentSaveRelay(true)" class="btn-primary" style="flex:1;padding:12px;font-size:14px;border-radius:10px">
+          <i class="fas fa-paper-plane" style="margin-right:4px"></i>제출하기
+        </button>
+      </div>
+    `;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// 학생 단어 뜻 저장
+async function _studentSaveRelay(isFinished) {
+  const inputs = document.querySelectorAll('.relay-meaning-input');
+  const entries = [];
+  inputs.forEach(inp => entries.push(inp.value.trim()));
+
+  if (isFinished) {
+    const emptyCount = entries.filter(e => !e).length;
+    if (emptyCount > 0) {
+      if (!confirm(`아직 비어있는 항목이 ${emptyCount}개 있습니다. 그래도 제출하시겠습니까?`)) return;
+    }
+  }
+
+  const extUserId = state._externalUserId || state._authUser?.external_user_id;
+  const extUserName = state._externalUserName || state._authUser?.name || '';
+  
+  try {
+    const res = await fetch('/api/relay/student-entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wordbook_id: state._relay.wordbook.id,
+        student_user_id: extUserId,
+        student_name: extUserName,
+        entries: entries,
+        is_finished: isFinished
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (isFinished) {
+        showXpPopup(0, '릴레이단어장 제출 완료! 📚');
+      }
+      await _studentLoadRelayWordbook();
+      renderScreen(true);
+    } else {
+      alert('저장 실패: ' + (data.error || ''));
+    }
+  } catch (e) { alert('저장 실패: ' + e.message); }
+}
+
+// ==================== HOME TAB (H-01~H-05) ====================
+
+function renderHomeTab() {
+  // 오늘 할 일 로딩 (최초 1회)
+  if (!state.dailyTodosLoaded && state._authUser?.id) { loadDailyTodos(); }
+  // 학원 수업 초기화
+  initTodayAcademy();
+  const acRecords = state.todayAcademyRecords || [];
+  
+  const schoolDone = state.todayRecords.filter(r => r.done).length;
+  const acDone = acRecords.filter(r => r.done).length;
+  const doneCount = schoolDone + acDone;
+  const total = state.todayRecords.length + acRecords.length;
+  const recordPct = total > 0 ? Math.round(doneCount / total * 100) : 0;
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? '좋은 아침' : hour < 18 ? '좋은 오후' : '좋은 저녁';
+  
+  const userName = state._authUser?.name || '학생';
+  const now = new Date();
+  const dayNames = ['일','월','화','수','목','금','토'];
+  
+  // 투두리스트 데이터 (state에 없으면 초기화)
+  if (!state.quickTodos) state.quickTodos = [];
+  
+  // 질문 통계 비동기 로드 (주간 현황 표시용)
+  if (state._authUser?.id && !state._myQaStatsLoaded) {
+    state._myQaStatsLoaded = true;
+    setTimeout(() => {
+      fetch(`/api/my-questions/stats?studentId=${state._authUser.id}`)
+        .then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); })
+        .then(data => { state.myQaStats = data; refreshDataWidgets(); })
+        .catch(() => {});
+    }, 200);
+  }
+
+  // 크로켓 포인트 잔액 비동기 로드
+  if (state._authUser?.id && !state._croquetLoaded) {
+    state._croquetLoaded = true;
+    fetch(`/api/student/${state._authUser.id}/croquet-points`)
+      .then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); })
+      .then(data => {
+        const prev = state._croquetBalance || 0;
+        const next = data.balance || 0;
+        state._croquetBalance = next;
+        // 카운팅 애니메이션 (값이 변했을 때만)
+        if (prev !== next) {
+          const el = document.getElementById('croquet-balance-display');
+          if (el) {
+            const duration = 800;
+            const startTime = Date.now();
+            const animate = () => {
+              const elapsed = Date.now() - startTime;
+              const progress = Math.min(elapsed / duration, 1);
+              const eased = 1 - Math.pow(1 - progress, 3);
+              const current = Math.round(prev + (next - prev) * eased);
+              el.textContent = current.toLocaleString() + 'P';
+              if (progress < 1) requestAnimationFrame(animate);
+            };
+            requestAnimationFrame(animate);
+          }
+        }
+      })
+      .catch(() => {});
+  }
+  
+  return `
+    <div class="tab-content animate-in">
+      <!-- Greeting Row -->
+      <div class="home-top-row">
+        <div class="home-greeting">
+          <div>
+            <h2>${greeting}, ${userName}! 👋</h2>
+            <p>오늘도 호기심 사다리를 올라가볼까요? 🪜</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="croquet-point-card" onclick="goScreen('croquet-history')" style="cursor:pointer;padding:8px 14px;background:linear-gradient(135deg,rgba(255,159,67,0.15),rgba(253,203,110,0.1));border:1px solid rgba(255,159,67,0.3);border-radius:var(--radius-md);display:flex;align-items:center;gap:8px;white-space:nowrap;transition:all 0.2s" onmouseenter="this.style.transform='scale(1.05)'" onmouseleave="this.style.transform='scale(1)'">
+            <span style="font-size:18px">🍩</span>
+            <div>
+              <div style="font-size:10px;color:var(--text-muted);font-weight:600">크로켓 포인트</div>
+              <div style="font-size:16px;font-weight:800;color:#FF9F43" id="croquet-balance-display">${(state._croquetBalance || 0).toLocaleString()}P</div>
+            </div>
+          </div>
+          <div class="home-date" onclick="goScreen('notifications')" style="cursor:pointer;position:relative">
+            <span class="date-day">${now.getDate()}</span>
+            <span class="date-month">${now.getMonth()+1}월 (${dayNames[now.getDay()]})</span>
+            ${state.notifications.filter(n=>n.unread).length > 0 ? `<span style="position:absolute;top:-4px;right:-4px;width:8px;height:8px;background:var(--accent);border-radius:50%;border:2px solid var(--bg-dark)"></span>` : ''}
+          </div>
+        </div>
+      </div>
+
+      ${hasUnrecordedEndedClass() ? `
+      <!-- 미기록 수업 경고 배너 -->
+      <div class="unrecorded-warn-banner stagger-1 animate-in" onclick="openArchivePeriodSelect()" style="margin:0 16px 12px">
+        <span style="font-size:20px">🔔</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700;color:var(--accent)">미기록 수업 ${countUnrecordedEndedClasses()}개!</div>
+          <div style="font-size:11px;color:var(--text-secondary)">끝난 수업이 있어요. 탭하여 바로 기록하세요</div>
+        </div>
+        <i class="fas fa-chevron-right" style="color:var(--accent);font-size:12px"></i>
+      </div>
+      ` : ''}
+
+      ${state._mentorFeedbackUnread > 0 ? `
+      <!-- 멘토 피드백 알림 배너 -->
+      <div class="animate-in stagger-1" onclick="goScreen('mentor-feedback')" style="margin:0 16px 12px;padding:12px 16px;background:linear-gradient(135deg,rgba(108,92,231,0.15),rgba(0,184,148,0.1));border:1px solid rgba(108,92,231,0.3);border-radius:var(--radius-md);display:flex;align-items:center;gap:10px;cursor:pointer">
+        <span style="font-size:20px">💬</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700;color:var(--primary-light)">멘토 피드백 ${state._mentorFeedbackUnread}건</div>
+          <div style="font-size:11px;color:var(--text-secondary)">선생님이 보낸 피드백이 있어요!</div>
+        </div>
+        <i class="fas fa-chevron-right" style="color:var(--primary-light);font-size:12px"></i>
+      </div>
+      ` : ''}
+
+      <!-- 1행: 좌(루틴+투두) / 우(시간표) -->
+      <div class="home-row-top">
+        <div class="home-col-left">
+          <!-- Morning Routine Card -->
+          <div class="card card-gradient-purple stagger-1 animate-in home-card-routine">
+            <div class="card-header-row">
+              <span class="card-title">☀️ 아침 루틴</span>
+              <span class="xp-badge-sm">+10 XP</span>
+            </div>
+            <div class="routine-checklist">
+              <div class="routine-item done">
+                <i class="fas fa-check-circle"></i>
+                <span>오늘 시간표 확인</span>
+              </div>
+              <div class="routine-item ${state.mood?'done':''}">
+                <i class="fas ${state.mood?'fa-check-circle':'fa-circle'}"></i>
+                <span>무드 체크</span>
+              </div>
+            </div>
+            <div class="mood-selector">
+              ${[
+                {emoji:'😄', label:'최고'},
+                {emoji:'🙂', label:'좋음'},
+                {emoji:'😐', label:'보통'},
+                {emoji:'😔', label:'별로'},
+                {emoji:'😫', label:'힘듦'}
+              ].map(m => `
+                <button class="mood-btn ${state.mood===m.emoji?'active':''}" data-mood="${m.emoji}">
+                  <span class="mood-emoji">${m.emoji}</span>
+                  <span class="mood-label">${m.label}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- 오늘 할 일 -->
+          <div class="card stagger-2 animate-in home-card-todo">
+            <div class="card-header-row">
+              <span class="card-title">📅 오늘 일정</span>
+              <span class="card-subtitle" onclick="state.studentTab='planner';state.plannerView='daily';renderScreen()" style="cursor:pointer;color:var(--primary-light)">전체보기 →</span>
+            </div>
+            ${(() => {
+              const todos = state.dailyTodos || [];
+              const incomplete = todos.filter(t => !t.is_completed);
+              const completed = todos.filter(t => t.is_completed);
+              const sorted = [...incomplete, ...completed];
+              let html = '<div class="home-todo-list">';
+              if (sorted.length === 0) {
+                html += '<div style="text-align:center;padding:12px 0;color:var(--text-muted);font-size:12px">할 일을 추가해보세요</div>';
+              }
+              sorted.forEach(t => {
+                const done = t.is_completed ? 1 : 0;
+                const isEditing = state._editingTodoId == t.id;
+                html += '<div class="home-todo-item' + (done ? ' done' : '') + '">';
+                html += '<div class="home-todo-check" onclick="toggleDailyTodo(' + t.id + ')">' +
+                  (done ? '<i class="fas fa-check-circle" style="color:var(--success)"></i>' : '<i class="far fa-circle" style="color:var(--text-muted)"></i>') +
+                '</div>';
+                if (isEditing) {
+                  html += '<input type="text" id="edit-todo-' + t.id + '" class="home-todo-input" value="' + t.content.replace(/"/g, '&quot;') + '" style="flex:1;padding:4px 8px;font-size:13px" ' +
+                    'onkeydown="if(event.key===\'Enter\')saveDailyTodoEdit(' + t.id + ');if(event.key===\'Escape\'){state._editingTodoId=null;renderScreen()}" ' +
+                    'onblur="saveDailyTodoEdit(' + t.id + ')">';
+                } else {
+                  html += '<span class="home-todo-text" onclick="startEditDailyTodo(' + t.id + ')">' + t.content + '</span>';
+                }
+                html += '<button class="home-todo-del" onclick="deleteDailyTodo(' + t.id + ')"><i class="fas fa-times"></i></button>';
+                html += '</div>';
+              });
+              html += '</div>';
+              // 입력창
+              html += '<div class="home-todo-input-row">' +
+                '<input type="text" id="daily-todo-input" class="home-todo-input" placeholder="할 일 추가..." maxlength="100" onkeydown="if(event.key===\'Enter\')addDailyTodo()">' +
+                '<button class="home-todo-add-btn" onclick="addDailyTodo()"><i class="fas fa-plus"></i></button>' +
+              '</div>';
+              return html;
+            })()}
+          </div>
+        </div>
+
+        <!-- Today Timetable (우측) -->
+        <div class="card stagger-2 animate-in home-card-timetable">
+          <div class="card-header-row">
+            <span class="card-title">📋 오늘 시간표</span>
+            <span class="card-subtitle">${doneCount}/${total} 기록완료</span>
+          </div>
+          <div class="timetable-progress">
+            <div class="timetable-progress-fill" style="width:${recordPct}%"></div>
+          </div>
+          <div class="tt-scroll-wrapper">
+            <div class="tt-scroll-fade tt-scroll-fade-top"></div>
+            <div class="timetable-list" id="tt-scroll-area">
+            ${state.todayRecords.length === 0 && acRecords.length === 0 ? `
+              <div style="text-align:center;padding:20px 0;color:var(--text-muted)">
+                <div style="font-size:28px;margin-bottom:8px">😴</div>
+                <div style="font-size:13px;font-weight:600">오늘은 수업이 없어요</div>
+                <div style="font-size:11px;margin-top:4px">쉬는 날에도 복습하면 +XP!</div>
+              </div>
+            ` : ''}
+            ${state.todayRecords.map((r, idx) => `
+              <div class="tt-row ${r.done?'done':''} ${idx === schoolDone && !r.done?'current':''} ${getClassEndStatus(r)==='just-ended'?'tt-just-ended':''}" data-tt-idx="${idx}" data-tt-start="${r.startTime||''}" data-tt-end="${r.endTime||''}" data-tt-done="${r.done?1:0}" ${r.done ? `onclick="viewRecordViaArchive(${idx})" style="cursor:pointer"` : ''}>
+                <div class="tt-period-badge ${r.done?'done':idx===schoolDone?'current':''}" style="${r.done?'':''}">
+                  ${r.done ? '<i class="fas fa-check" style="font-size:10px"></i>' : r.period}
+                </div>
+                <div class="tt-info">
+                  <span class="tt-subject-name" style="color:${r.color}">${r.subject}</span>
+                  ${r.done ? `<span class="tt-summary">${r.summary} <i class="fas fa-pencil-alt" style="font-size:9px;opacity:0.4;margin-left:4px"></i></span>` : `<span class="tt-summary" style="opacity:0.4">${r.teacher} 선생님 · ${r.startTime||''}~${r.endTime||''}</span>`}
+                </div>
+                <div class="tt-action">
+                  ${r.done
+                    ? `<div style="display:flex;align-items:center;gap:4px">
+                        <button class="tt-q-btn" onclick="event.stopPropagation();openQuestionFromTimetable('${r.subject}', ${idx})" title="질문 등록">
+                          ❓
+                        </button>
+                        <span class="tt-done-badge">✅</span>
+                      </div>`
+                    : `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();openArchiveRecord(${idx})">기록하기</button>`
+                  }
+                </div>
+              </div>
+            `).join('')}
+            
+            ${acRecords.length > 0 ? `
+            <!-- 학원 수업 구분선 -->
+            <div class="tt-academy-divider">
+              <span class="tt-academy-label">📚 학원</span>
+              <div class="tt-academy-line"></div>
+            </div>
+            ${acRecords.map((r, idx) => `
+              <div class="tt-row tt-academy-row ${r.done?'done':''} ${idx === acDone && !r.done?'current':''} ${getClassEndStatus(r)==='just-ended'?'tt-just-ended':''}" data-tt-start="${r.startTime||''}" data-tt-end="${r.endTime||''}" data-tt-done="${r.done?1:0}" ${r.done ? `onclick="viewAcademyRecord(${idx})" style="cursor:pointer"` : ''}>
+                <div class="tt-period-badge academy ${r.done?'done':idx===acDone?'current':''}" style="font-size:9px">
+                  ${r.done ? '<i class="fas fa-check" style="font-size:10px"></i>' : '<i class="fas fa-graduation-cap" style="font-size:10px"></i>'}
+                </div>
+                <div class="tt-info">
+                  <span class="tt-subject-name" style="color:${r.color}">${r.subject}</span>
+                  ${r.done 
+                    ? `<span class="tt-summary">${r.summary} <i class="fas fa-pencil-alt" style="font-size:9px;opacity:0.4;margin-left:4px"></i></span>` 
+                    : `<span class="tt-summary" style="opacity:0.4">${r.academyName} · ${r.startTime||''}~${r.endTime||''}</span>`}
+                </div>
+                <div class="tt-action">
+                  ${r.done
+                    ? `<div style="display:flex;align-items:center;gap:4px">
+                        <button class="tt-q-btn" onclick="event.stopPropagation();openQuestionFromTimetable('${r.subject}', ${idx}, true)" title="질문 등록">
+                          ❓
+                        </button>
+                        <span class="tt-done-badge">✅</span>
+                      </div>`
+                    : `<button class="tt-record-btn ${getClassEndStatus(r)==='just-ended'?'tt-btn-glow':''}" onclick="event.stopPropagation();openAcademyRecordPopup(${idx})">기록하기</button>`
+                  }
+                </div>
+              </div>
+            `).join('')}
+            ` : ''}
+          </div>
+            <div class="tt-scroll-fade tt-scroll-fade-bottom"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2행: 미션+최근기록 | 주간현황 | 과제 (3등분) -->
+      <div class="home-row-bottom">
+        <!-- 왼쪽 컬럼: 미션 + 최근 아카이브 -->
+        <div class="home-bottom-col-left">
+          <!-- Daily Missions -->
+          <div class="card stagger-3 animate-in">
+            <div class="card-header-row">
+              <span class="card-title">🎯 오늘의 미션</span>
+              <span class="xp-badge-sm">완료 시 +30 XP</span>
+            </div>
+            ${state.missions.map((m,i) => `
+              <div class="mission-row ${m.done?'done':''}">
+                <div class="mission-icon">${m.icon}</div>
+                <div class="mission-info">
+                  <span class="mission-text">${m.text}</span>
+                  <div class="mission-bar">
+                    <div class="mission-bar-fill" style="width:${Math.min(m.current/m.target*100,100)}%"></div>
+                  </div>
+                </div>
+                <span class="mission-count">${m.current}/${m.target}</span>
+                ${m.done ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:18px"></i>' : ''}
+              </div>
+            `).join('')}
+          </div>
+
+          <!-- 최근 아카이브 -->
+          <div class="card stagger-6 animate-in">
+            <div class="card-header-row">
+              <span class="card-title">📜 최근 아카이브</span>
+              <button class="card-link" onclick="state.studentTab='archive';state.currentScreen='main';renderScreen()">전체보기 →</button>
+            </div>
+            <div id="home-recent-archive">
+            ${(() => {
+              const records = (state._dbClassRecords || []).slice(0, 4);
+              if (records.length === 0) {
+                return '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>';
+              }
+              return '<div class="home-timeline">' + records.map(r =>
+                '<div class="home-timeline-item">' +
+                  '<div class="home-timeline-dot" style="background:var(--primary)"></div>' +
+                  '<div class="home-timeline-content">' +
+                    '<div class="home-timeline-header">' +
+                      '<span class="home-timeline-time">' + (r.date || '') + '</span>' +
+                      '<span class="home-timeline-subject">' + (r.subject || '') + '</span>' +
+                    '</div>' +
+                    '<p class="home-timeline-text">' + (r.content || r.topic || '수업 기록') + '</p>' +
+                  '</div>' +
+                '</div>'
+              ).join('') + '</div>';
+            })()}
+            </div>
+          </div>
+        </div>
+
+        <!-- 릴레이단어장 위젯 (영어 클래스 + 학생 15명 이상일 때만 표시) -->
+        ${renderRelayWordbookWidget()}
+
+        <!-- Weekly Mini Chart -->
+        <div class="card stagger-4 animate-in">
+          <div class="card-header-row">
+            <span class="card-title">📊 이번 주 현황</span>
+            <button class="card-link" onclick="goScreen('weekly-report')">자세히 →</button>
+          </div>
+          <div class="weekly-mini-stats">
+            <div class="mini-stat">
+              <span class="mini-stat-value" id="ws-records" style="color:var(--primary-light)">${(() => { const now = kstNow(); const mon = new Date(now); mon.setDate(mon.getDate()-mon.getDay()+1); const monStr = kstDate(mon); return (state._dbClassRecords||[]).filter(r => r.date >= monStr).length; })()}</span>
+              <span class="mini-stat-label">기록</span>
+            </div>
+            <div class="mini-stat-divider"></div>
+            <div class="mini-stat">
+              <span class="mini-stat-value" id="ws-questions" style="color:var(--accent)">${state.myQaStats?.weeklyQuestions || 0}</span>
+              <span class="mini-stat-label">질문</span>
+            </div>
+            <div class="mini-stat-divider"></div>
+            <div class="mini-stat">
+              <span class="mini-stat-value" id="ws-teach" style="color:var(--teach-green)">${(() => { const now = kstNow(); const mon = new Date(now); mon.setDate(mon.getDate()-mon.getDay()+1); const monStr = kstDate(mon); return (state._dbTeachRecords||[]).filter(r => (r.created_at||'').slice(0,10) >= monStr).length; })()}</span>
+              <span class="mini-stat-label">교학상장</span>
+            </div>
+            <div class="mini-stat-divider"></div>
+            <div class="mini-stat">
+              <span class="mini-stat-value" id="ws-unanswered" style="color:var(--question-b)">${state.myQaStats?.unanswered || 0}</span>
+              <span class="mini-stat-label">미답변</span>
+            </div>
+          </div>
+          <div class="weekly-bar-chart">
+            ${state.weeklyData.days.map((d, i) => `
+              <div class="weekly-bar-col">
+                <div class="weekly-bar-stack">
+                  <div class="weekly-bar-q" style="height:${state.weeklyData.questions[i]*12}px"></div>
+                  <div class="weekly-bar-r" style="height:${state.weeklyData.records[i]*8}px"></div>
+                </div>
+                <span class="weekly-bar-label ${i===4?'style="color:var(--primary-light);font-weight:700"':''}">${d}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:var(--primary)"></span>기록</span>
+            <span><span class="legend-dot" style="background:var(--accent)"></span>질문</span>
+          </div>
+        </div>
+
+        <!-- Upcoming Assignments -->
+        ${state.assignments.filter(a => a.status !== 'completed').length > 0 ? `
+        <div class="card stagger-5 animate-in">
+          <div class="card-header-row">
+            <span class="card-title">📋 다가오는 과제</span>
+            <button class="card-link" onclick="goScreen('assignment-list')">전체보기 →</button>
+          </div>
+          <div class="upcoming-assignments">
+            ${state.assignments.filter(a => a.status !== 'completed').sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate)).map(a => {
+              const dDay = getDday(a.dueDate);
+              const dDayText = dDay == null ? '미정' : dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+              const urgency = dDay == null ? 'normal' : dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+              return `
+              <div class="upcoming-assignment-card ${urgency}" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
+                <div class="ua-left">
+                  <div class="ua-dday-badge ${urgency}">${dDayText}</div>
+                </div>
+                <div class="ua-center">
+                  <div class="ua-subject-row">
+                    <span class="ua-subject-dot" style="background:${a.color}"></span>
+                    <span class="ua-subject">${a.subject}</span>
+                    <span class="ua-type">${a.type || ''}</span>
+                  </div>
+                  <div class="ua-title">${a.title}</div>
+                  <div class="ua-progress-row">
+                    <div class="ua-progress-bar"><div class="ua-progress-fill" style="width:${a.progress}%;background:${a.color}"></div></div>
+                    <span class="ua-progress-text">${a.progress}%</span>
+                  </div>
+                </div>
+                <div class="ua-right">
+                  <i class="fas fa-chevron-right"></i>
+                </div>
+              </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+        ` : ''}
+      </div>
+
+      <!-- 하단 Quick Actions 바 -->
+      <div class="home-bottom-actions">
+        <button class="home-bottom-btn ${isEveningTime()?'active':''}" onclick="goScreen('evening-routine')">
+          <i class="fas fa-moon"></i>
+          <span>저녁 루틴</span>
+        </button>
+        <button class="home-bottom-btn ${hasUnrecordedEndedClass()?'active':''}" onclick="openArchivePeriodSelect()">
+          <i class="fas fa-bell"></i>
+          <span>수업종료 팝업</span>
+          ${hasUnrecordedEndedClass()?`<span class="home-bottom-badge">${countUnrecordedEndedClasses()}</span>`:''}
+        </button>
+        <button class="home-bottom-btn" onclick="goScreen('assignment-list')">
+          <i class="fas fa-clipboard-list"></i>
+          <span>과제 관리</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 아하 리포트 ====================
+
+if (!state._ahaReport) state._ahaReport = { step: 1, subject: '', unit: '', photos: [], submitted: false, analyzing: false, error: null, result: null, editing: {}, croquetGiven: false, savedReportId: null };
+
+function renderAhaReport() {
+  const aha = state._ahaReport;
+
+  // 분석 중 로딩 화면
+  if (aha.analyzing) {
+    return `
+      <div class="full-screen animate-slide">
+        <div class="screen-header">
+          <button class="back-btn" onclick="state._ahaReport.analyzing=false;state._ahaReport.step=3;renderScreen()"><i class="fas fa-arrow-left"></i></button>
+          <h1>💡 아하 리포트</h1>
+        </div>
+        <div class="form-body">
+          <div class="card" style="margin-bottom:16px;padding:16px;background:linear-gradient(135deg,rgba(255,159,67,0.1),rgba(253,203,110,0.06))">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+              <span style="font-size:24px">💡</span>
+              <div>
+                <div style="font-size:15px;font-weight:700;color:var(--text-main)">아하 리포트 제출 완료</div>
+                <div style="font-size:12px;color:var(--text-muted)">${aha.subject || '과목 미선택'} ${aha.unit ? '· ' + aha.unit : ''} · 사진 ${aha.photos.length}장</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+              ${aha.photos.map(p => `<img src="${p}" style="width:80px;height:80px;object-fit:cover;border-radius:10px;flex-shrink:0;border:1px solid var(--border)" />`).join('')}
+            </div>
+          </div>
+          <div style="text-align:center;padding:24px;margin-bottom:20px">
+            <div class="aha-loading-spinner" style="width:48px;height:48px;border:4px solid var(--border);border-top:4px solid #FF9F43;border-radius:50%;animation:ahaSpin 1s linear infinite;margin:0 auto 16px"></div>
+            <div style="font-size:15px;font-weight:700;color:var(--text-main)">분석 중...</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:4px">AI가 사진을 분석하고 있습니다 (5~15초)</div>
+          </div>
+          <style>@keyframes ahaSpin { 0% { transform:rotate(0deg) } 100% { transform:rotate(360deg) } }</style>
+          ${[
+            { icon: '📌', title: '문제 상황' },
+            { icon: '🎯', title: '주제 설정' },
+            { icon: '🔍', title: '탐구 과정 및 결론 도출' },
+            { icon: '💡', title: '자가 피드백' },
+          ].map(sec => `
+            <div class="card" style="margin-bottom:10px;padding:16px;opacity:0.4">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="font-size:18px">${sec.icon}</span>
+                <span style="font-size:14px;font-weight:700;color:var(--text-main)">${sec.title}</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted);background:var(--bg-input);padding:2px 8px;border-radius:8px">분석 중...</span>
+              </div>
+              <div style="height:48px;background:var(--bg-input);border-radius:8px;display:flex;align-items:center;justify-content:center">
+                <div style="width:60%;height:10px;background:var(--border);border-radius:5px;opacity:0.3;animation:ahaPulse 1.5s ease-in-out infinite"></div>
+              </div>
+            </div>
+          `).join('')}
+          <style>@keyframes ahaPulse { 0%,100% { opacity:0.3 } 50% { opacity:0.7 } }</style>
+          <div class="card" style="margin-bottom:10px;padding:16px;opacity:0.4;border-left:3px solid var(--primary-light)">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-size:18px">🤖</span>
+              <span style="font-size:14px;font-weight:700;color:var(--text-main)">AHA 리포트 피드백</span>
+              <span style="margin-left:auto;font-size:11px;color:var(--text-muted);background:var(--bg-input);padding:2px 8px;border-radius:8px">분석 예정</span>
+            </div>
+            <div style="height:64px;background:var(--bg-input);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <div style="width:80%;height:10px;background:var(--border);border-radius:5px;opacity:0.3"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 에러 화면
+  if (aha.error) {
+    return `
+      <div class="full-screen animate-slide">
+        <div class="screen-header">
+          <button class="back-btn" onclick="state._ahaReport.error=null;state._ahaReport.step=3;renderScreen()"><i class="fas fa-arrow-left"></i></button>
+          <h1>💡 아하 리포트</h1>
+        </div>
+        <div class="form-body">
+          <div style="text-align:center;padding:40px 20px">
+            <div style="font-size:48px;margin-bottom:16px">😥</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-main);margin-bottom:8px">${aha.error}</div>
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:24px">사진이 잘 보이는지 확인하고 다시 시도해주세요</div>
+            <button onclick="ahaRetryAnalyze()" class="btn-primary" style="padding:14px 32px;font-size:15px;margin-bottom:12px">🔄 재시도</button>
+            <br/>
+            <button onclick="state._ahaReport.error=null;state._ahaReport.step=2;renderScreen()" class="btn-secondary" style="padding:12px 24px;font-size:13px;margin-top:8px">📸 사진 다시 찍기</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 분석 결과 표시 화면
+  if (aha.submitted && aha.result) {
+    const r = aha.result;
+    const sectionDefs = [
+      { key: 'problem', icon: '📌', title: '문제 상황' },
+      { key: 'topic', icon: '🎯', title: '주제 설정' },
+      { key: 'research', icon: '🔍', title: '탐구 과정 및 결론 도출' },
+      { key: 'self_feedback', icon: '💡', title: '자가 피드백' },
+    ];
+    return `
+      <div class="full-screen animate-slide">
+        <div class="screen-header">
+          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+          <h1>💡 아하 리포트</h1>
+        </div>
+        <div class="form-body">
+          <div class="card" style="margin-bottom:16px;padding:16px;background:linear-gradient(135deg,rgba(255,159,67,0.1),rgba(253,203,110,0.06))">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+              <span style="font-size:24px">💡</span>
+              <div>
+                <div style="font-size:15px;font-weight:700;color:var(--text-main)">아하 리포트 분석 완료</div>
+                <div style="font-size:12px;color:var(--text-muted)">${r.subject_detected || aha.subject || '과목 미선택'} ${r.unit_detected || aha.unit ? '· ' + (r.unit_detected || aha.unit) : ''} · 사진 ${aha.photos.length}장${r.student_name ? ' · ' + r.student_name : ''}</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+              ${aha.photos.map(p => `<img src="${p}" style="width:80px;height:80px;object-fit:cover;border-radius:10px;flex-shrink:0;border:1px solid var(--border)" />`).join('')}
+            </div>
+          </div>
+
+          ${sectionDefs.map(sec => {
+            const content = r.sections[sec.key] || '[판독 불가]';
+            const isEditing = aha.editing[sec.key];
+            return `
+            <div class="card" style="margin-bottom:10px;padding:16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <span style="font-size:18px">${sec.icon}</span>
+                <span style="font-size:14px;font-weight:700;color:var(--text-main)">${sec.title}</span>
+                <span style="margin-left:auto;font-size:11px;color:#00B894;background:rgba(0,184,148,0.1);padding:2px 8px;border-radius:8px">✓ 분석 완료</span>
+              </div>
+              ${isEditing ? `
+                <textarea id="aha-edit-${sec.key}" style="width:100%;min-height:100px;padding:12px;background:var(--bg-input);border:1px solid #FF9F43;border-radius:var(--radius-md);color:var(--text-main);font-size:13px;line-height:1.7;resize:vertical;font-family:inherit">${content}</textarea>
+                <div style="display:flex;gap:8px;margin-top:8px">
+                  <button onclick="ahaSaveEdit('${sec.key}')" style="flex:1;padding:10px;background:#FF9F43;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">저장</button>
+                  <button onclick="state._ahaReport.editing['${sec.key}']=false;renderScreen()" style="flex:1;padding:10px;background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;font-size:13px;cursor:pointer">취소</button>
+                </div>
+              ` : `
+                <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;white-space:pre-wrap;padding:10px;background:var(--bg-input);border-radius:8px">${content}</div>
+                <button onclick="state._ahaReport.editing['${sec.key}']=true;renderScreen()" style="margin-top:8px;padding:6px 12px;background:transparent;border:1px solid var(--border);border-radius:6px;font-size:11px;color:var(--text-muted);cursor:pointer">원본과 다른가요? 수정하기</button>
+              `}
+            </div>`;
+          }).join('')}
+
+          <!-- AI 피드백 카드 -->
+          ${r.ai_feedback ? `
+          <div class="card" style="margin-bottom:10px;padding:16px;border-left:3px solid var(--primary-light);background:linear-gradient(135deg,rgba(108,92,231,0.06),rgba(0,184,148,0.04))">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span style="font-size:18px">🤖</span>
+              <span style="font-size:14px;font-weight:700;color:var(--text-main)">AHA 리포트 피드백</span>
+              <span style="margin-left:auto;font-size:11px;color:#00B894;background:rgba(0,184,148,0.1);padding:2px 8px;border-radius:8px">✓ 완료</span>
+            </div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;white-space:pre-wrap;padding:12px;background:var(--bg-input);border-radius:8px">${r.ai_feedback}</div>
+          </div>
+          ` : `
+          <div class="card" style="margin-bottom:10px;padding:16px;opacity:0.6;border-left:3px solid var(--primary-light)">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-size:18px">🤖</span>
+              <span style="font-size:14px;font-weight:700;color:var(--text-main)">AHA 리포트 피드백</span>
+              <span style="margin-left:auto;font-size:11px;color:var(--text-muted);background:var(--bg-input);padding:2px 8px;border-radius:8px">피드백 생성 실패</span>
+            </div>
+            <div style="height:64px;background:var(--bg-input);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <div style="font-size:12px;color:var(--text-muted)">피드백을 불러올 수 없었습니다</div>
+            </div>
+          </div>
+          `}
+
+          <!-- 크로켓 포인트 적립 애니메이션 -->
+          <div id="aha-croquet-anim" style="text-align:center;padding:16px;margin-bottom:8px">
+            ${aha.croquetGiven ? `
+              <div style="font-size:14px;color:#FF9F43;font-weight:700">🍩 +3 크로켓 포인트 적립 완료!</div>
+            ` : `
+              <div class="aha-croquet-badge" style="display:inline-block;padding:10px 20px;background:linear-gradient(135deg,rgba(255,159,67,0.15),rgba(253,203,110,0.1));border:1px solid rgba(255,159,67,0.3);border-radius:12px;animation:ahaCroquetPop 0.6s ease-out">
+                <span style="font-size:20px;font-weight:800;color:#FF9F43" id="aha-croquet-counter">0</span>
+                <span style="font-size:14px;color:#FF9F43;font-weight:600"> 🍩 크로켓 포인트 적립!</span>
+              </div>
+              <style>
+                @keyframes ahaCroquetPop { 0% { transform:scale(0.5);opacity:0 } 50% { transform:scale(1.1) } 100% { transform:scale(1);opacity:1 } }
+              </style>
+            `}
+          </div>
+
+          <button onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'" class="btn-primary" style="width:100%;margin-top:8px">아카이브로 돌아가기</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // 제출 완료이나 결과 없음 (fallback)
+  if (aha.submitted) {
+    return `
+      <div class="full-screen animate-slide">
+        <div class="screen-header">
+          <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+          <h1>💡 아하 리포트</h1>
+        </div>
+        <div class="form-body">
+          <div style="text-align:center;padding:40px 20px">
+            <div style="font-size:48px;margin-bottom:16px">😥</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-main);margin-bottom:8px">분석에 실패했어요. 다시 시도해주세요.</div>
+            <button onclick="ahaRetryAnalyze()" class="btn-primary" style="padding:14px 32px;font-size:15px;margin-bottom:12px">🔄 재시도</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 작성 화면
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+        <h1>💡 아하 리포트</h1>
+      </div>
+      <div class="form-body">
+        <!-- 스텝 인디케이터 -->
+        <div style="display:flex;gap:8px;margin-bottom:20px">
+          ${[{n:1,label:'기본 정보'},{n:2,label:'사진 업로드'},{n:3,label:'제출'}].map(s => `
+            <div style="flex:1;text-align:center;padding:8px 0;border-radius:8px;font-size:12px;font-weight:600;transition:all 0.3s;${aha.step >= s.n ? 'background:rgba(255,159,67,0.15);color:#FF9F43;border:1px solid rgba(255,159,67,0.3)' : 'background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border)'}">
+              <div style="font-size:16px;font-weight:800">${s.n}</div>
+              <div>${s.label}</div>
+            </div>
+          `).join('')}
+        </div>
+
+        ${aha.step === 1 ? `
+        <!-- Step 1: 기본 정보 -->
+        <div class="card" style="padding:20px;margin-bottom:16px">
+          <div style="font-size:15px;font-weight:700;margin-bottom:16px;color:var(--text-main)">📋 기본 정보</div>
+          
+          <div style="margin-bottom:16px">
+            <label style="font-size:13px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">과목 선택 *</label>
+            <select id="aha-subject" style="width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-main);font-size:14px">
+              <option value="">과목을 선택하세요</option>
+              ${['국어','영어','수학','과학','사회','기타'].map(s => `<option value="${s}" ${aha.subject === s ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div style="margin-bottom:16px">
+            <label style="font-size:13px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">수업 단원 및 내용 <span style="font-size:11px;color:var(--text-muted)">(생략 가능)</span></label>
+            <input type="text" id="aha-unit" value="${aha.unit || ''}" placeholder="예: 3단원 세포 분열, 미적분 극한" style="width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-main);font-size:14px" />
+          </div>
+
+          <button onclick="ahaStep1Next()" class="btn-primary" style="width:100%;padding:14px;font-size:15px">다음 →</button>
+        </div>
+        ` : aha.step === 2 ? `
+        <!-- Step 2: 사진 업로드 -->
+        <div class="card" style="padding:20px;margin-bottom:16px">
+          <div style="font-size:15px;font-weight:700;margin-bottom:4px;color:var(--text-main)">📸 사진 업로드</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">수업 필기, 실험 결과, 자료 사진 등을 올려주세요 (최소 1장, 최대 3장)</div>
+          
+          <!-- 업로드된 사진 미리보기 -->
+          <div id="aha-photos-preview" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+            ${aha.photos.map((p, i) => `
+              <div style="position:relative;width:100px;height:100px;border-radius:12px;overflow:hidden;border:2px solid var(--border)">
+                <img src="${p}" style="width:100%;height:100%;object-fit:cover" />
+                <button onclick="ahaRemovePhoto(${i})" style="position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,0.7);border:none;color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+              </div>
+            `).join('')}
+            ${aha.photos.length < 3 ? `
+              <div style="width:100px;height:100px;border-radius:12px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;transition:all 0.2s" onclick="document.getElementById('aha-photo-input').click()">
+                <i class="fas fa-plus" style="font-size:20px;color:var(--text-muted)"></i>
+                <span style="font-size:10px;color:var(--text-muted)">${aha.photos.length}/3</span>
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- 촬영/갤러리 버튼 -->
+          <div style="display:flex;gap:10px;margin-bottom:16px">
+            <button onclick="document.getElementById('aha-camera-input').click()" style="flex:1;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-main);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+              <i class="fas fa-camera" style="color:var(--primary-light)"></i> 카메라 촬영
+            </button>
+            <button onclick="document.getElementById('aha-photo-input').click()" style="flex:1;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-main);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+              <i class="fas fa-images" style="color:#FF9F43"></i> 갤러리 선택
+            </button>
+          </div>
+
+          <!-- 숨겨진 파일 입력 -->
+          <input type="file" id="aha-camera-input" accept="image/*" style="display:none" onchange="ahaHandlePhotos(this)" />
+          <input type="file" id="aha-photo-input" accept="image/*" multiple style="display:none" onchange="ahaHandlePhotos(this)" />
+
+          <div id="aha-photo-error" style="display:none;padding:10px;background:rgba(214,48,49,0.1);border:1px solid rgba(214,48,49,0.3);border-radius:8px;font-size:12px;color:var(--danger);margin-bottom:12px;text-align:center"></div>
+
+          <div style="display:flex;gap:10px">
+            <button onclick="state._ahaReport.step=1;renderScreen()" class="btn-secondary" style="flex:1;padding:14px;font-size:14px">← 이전</button>
+            <button onclick="ahaStep2Next()" class="btn-primary" style="flex:2;padding:14px;font-size:15px">다음 →</button>
+          </div>
+        </div>
+        ` : `
+        <!-- Step 3: 확인 및 제출 -->
+        <div class="card" style="padding:20px;margin-bottom:16px">
+          <div style="font-size:15px;font-weight:700;margin-bottom:12px;color:var(--text-main)">✅ 제출 확인</div>
+          
+          <div style="padding:14px;background:var(--bg-input);border-radius:12px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:12px;color:var(--text-muted)">과목</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text-main)">${aha.subject || '-'}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:12px;color:var(--text-muted)">단원/내용</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text-main)">${aha.unit || '(미입력)'}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="font-size:12px;color:var(--text-muted)">사진</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text-main)">${aha.photos.length}장</span>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:16px;padding-bottom:4px">
+            ${aha.photos.map(p => `<img src="${p}" style="width:80px;height:80px;object-fit:cover;border-radius:10px;flex-shrink:0;border:1px solid var(--border)" />`).join('')}
+          </div>
+
+          <div style="padding:10px;background:rgba(255,159,67,0.08);border-radius:8px;font-size:12px;color:#FF9F43;text-align:center;margin-bottom:16px">
+            🍩 제출 시 크로켓 포인트 +3P 적립 예정
+          </div>
+
+          <div style="display:flex;gap:10px">
+            <button onclick="state._ahaReport.step=2;renderScreen()" class="btn-secondary" style="flex:1;padding:14px;font-size:14px">← 이전</button>
+            <button id="aha-submit-btn" onclick="ahaSubmit()" class="btn-primary" style="flex:2;padding:14px;font-size:15px;background:linear-gradient(135deg,#FF9F43,#FDCB6E)">💡 제출하기</button>
+          </div>
+        </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function ahaStep1Next() {
+  const subject = document.getElementById('aha-subject')?.value;
+  const unit = document.getElementById('aha-unit')?.value || '';
+  if (!subject) { alert('과목을 선택해주세요'); return; }
+  state._ahaReport.subject = subject;
+  state._ahaReport.unit = unit;
+  state._ahaReport.step = 2;
+  renderScreen();
+}
+
+function ahaHandlePhotos(input) {
+  const files = Array.from(input.files || []);
+  const maxSlots = 3 - (state._ahaReport.photos || []).length;
+  const toProcess = files.slice(0, maxSlots);
+  const errEl = document.getElementById('aha-photo-error');
+
+  if (toProcess.length === 0) {
+    if (errEl) { errEl.textContent = '사진은 최대 3장까지 업로드 가능합니다.'; errEl.style.display = 'block'; }
+    input.value = '';
+    return;
+  }
+
+  let processed = 0;
+  toProcess.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        // 흐림 필터링: 너무 작은 이미지 (극단적 흐림 대용)
+        if (img.width < 50 || img.height < 50) {
+          if (errEl) { errEl.textContent = '사진이 너무 흐려요. 다시 찍어주세요.'; errEl.style.display = 'block'; }
+          processed++;
+          if (processed === toProcess.length) { input.value = ''; renderScreen(); }
+          return;
+        }
+        // 리사이징 (최대 1200px)
+        const maxDim = 1200;
+        let w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // 흐림 감지: Laplacian variance (극단적 흐림만)
+        try {
+          const imageData = ctx.getImageData(0, 0, w, h);
+          const data = imageData.data;
+          let sum = 0, sumSq = 0, count = 0;
+          for (let y = 1; y < h - 1; y += 3) {
+            for (let x = 1; x < w - 1; x += 3) {
+              const idx = (y * w + x) * 4;
+              const gray = data[idx] * 0.299 + data[idx+1] * 0.587 + data[idx+2] * 0.114;
+              const grayT = data[((y-1)*w+x)*4] * 0.299 + data[((y-1)*w+x)*4+1] * 0.587 + data[((y-1)*w+x)*4+2] * 0.114;
+              const grayB = data[((y+1)*w+x)*4] * 0.299 + data[((y+1)*w+x)*4+1] * 0.587 + data[((y+1)*w+x)*4+2] * 0.114;
+              const grayL = data[(y*w+x-1)*4] * 0.299 + data[(y*w+x-1)*4+1] * 0.587 + data[(y*w+x-1)*4+2] * 0.114;
+              const grayR = data[(y*w+x+1)*4] * 0.299 + data[(y*w+x+1)*4+1] * 0.587 + data[(y*w+x+1)*4+2] * 0.114;
+              const lap = grayT + grayB + grayL + grayR - 4 * gray;
+              sum += lap; sumSq += lap * lap; count++;
+            }
+          }
+          const variance = count > 0 ? (sumSq / count) - Math.pow(sum / count, 2) : 999;
+          if (variance < 15) {
+            if (errEl) { errEl.textContent = '사진이 너무 흐려요. 다시 찍어주세요.'; errEl.style.display = 'block'; }
+            processed++;
+            if (processed === toProcess.length) { input.value = ''; renderScreen(); }
+            return;
+          }
+        } catch(_) {}
+
+        if (errEl) errEl.style.display = 'none';
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        state._ahaReport.photos.push(dataUrl);
+        processed++;
+        if (processed === toProcess.length) { input.value = ''; renderScreen(); }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function ahaRemovePhoto(idx) {
+  state._ahaReport.photos.splice(idx, 1);
+  renderScreen();
+}
+
+function ahaStep2Next() {
+  if ((state._ahaReport.photos || []).length === 0) {
+    const errEl = document.getElementById('aha-photo-error');
+    if (errEl) { errEl.textContent = '사진을 최소 1장 업로드해주세요.'; errEl.style.display = 'block'; }
+    return;
+  }
+  state._ahaReport.step = 3;
+  renderScreen();
+}
+
+async function ahaSubmit() {
+  const btn = document.getElementById('aha-submit-btn');
+  if (btn) { btn.textContent = '제출 중...'; btn.disabled = true; }
+
+  const aha = state._ahaReport;
+  aha.submitted = true;
+  aha.analyzing = true;
+  aha.error = null;
+  aha.result = null;
+  renderScreen();
+
+  try {
+    const res = await fetch(`${AI_API_BASE}/api/aha-report/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        photos: aha.photos,
+        subject: aha.subject,
+        unit: aha.unit,
+        studentId: state.studentId
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+      aha.analyzing = false;
+      aha.error = data.error || '분석에 실패했어요. 다시 시도해주세요.';
+      renderScreen();
+      return;
+    }
+
+    aha.analyzing = false;
+    aha.result = data;
+    aha.croquetGiven = false;
+    renderScreen();
+
+    // DB에 리포트 저장
+    if (state._authUser?.id) {
+      try {
+        // 이전 형식(sections) → 새 형식(section_sa/pa/da/poa/ppa) 매핑
+        const sec = data.sections || {};
+        const saveRes = await fetch('/api/aha-report/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentId: state._authUser.id,
+            subject: aha.subject,
+            unit: aha.unit,
+            photos: aha.photos,
+            sections: sec,
+            // 새 형식 필드로도 매핑 (목록/상세 조회 호환)
+            section_sa: data.sa || sec.problem || '',
+            section_pa: JSON.stringify(data.pa || []),
+            section_da: data.da || sec.research || '',
+            section_poa: data.poa || '',
+            section_ppa: JSON.stringify(data.ppa || {}),
+            ai_feedback: data.ai_feedback || '',
+            ai_source: data.ai_source || 'gemini',
+            student_name_detected: data.student_name || '',
+            subject_detected: data.subject_detected || '',
+            unit_detected: data.unit_detected || '',
+            croquet_given: 0
+          })
+        });
+        const saveData = await saveRes.json();
+        if (saveData.reportId) {
+          aha.savedReportId = saveData.reportId;
+          // 목록 캐시 무효화
+          state._ahaReportList = null;
+        }
+      } catch (saveErr) {
+        console.error('AHA report save error:', saveErr);
+      }
+    }
+
+    // 피드백 표시 후 크로켓 포인트 자동 지급
+    if (data.ai_feedback && state._authUser?.id) {
+      setTimeout(() => ahaCroquetAutoGive(), 500);
+    }
+  } catch (e) {
+    console.error('AHA report analyze error:', e);
+    aha.analyzing = false;
+    aha.error = '네트워크 오류가 발생했어요. 다시 시도해주세요.';
+    renderScreen();
+  }
+}
+
+function ahaRetryAnalyze() {
+  state._ahaReport.error = null;
+  state._ahaReport.analyzing = false;
+  state._ahaReport.submitted = false;
+  state._ahaReport.result = null;
+  ahaSubmit();
+}
+
+function ahaSaveEdit(sectionKey) {
+  const textarea = document.getElementById('aha-edit-' + sectionKey);
+  if (textarea && state._ahaReport.result?.sections) {
+    state._ahaReport.result.sections[sectionKey] = textarea.value;
+  }
+  state._ahaReport.editing[sectionKey] = false;
+  renderScreen();
+}
+
+async function ahaCroquetAutoGive() {
+  const aha = state._ahaReport;
+  if (aha.croquetGiven) return;
+
+  try {
+    const res = await fetch(`${AI_API_BASE}/api/aha-report/give-croquet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId: state._authUser.id,
+        subject: aha.subject
+      })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      aha.croquetGiven = true;
+      // 홈 화면 크로켓 잔액 업데이트
+      if (state._croquetBalance !== undefined) {
+        state._croquetBalance = data.newBalance;
+      }
+      // 카운팅 애니메이션 시작
+      ahaCroquetCountAnimation();
+    }
+  } catch (e) {
+    console.error('AHA croquet auto give error:', e);
+  }
+}
+
+function ahaCroquetCountAnimation() {
+  const counter = document.getElementById('aha-croquet-counter');
+  if (!counter) return;
+  let current = 0;
+  const target = 3;
+  const duration = 800; // ms
+  const stepTime = duration / target;
+
+  const interval = setInterval(() => {
+    current++;
+    counter.textContent = '+' + current;
+    if (current >= target) {
+      clearInterval(interval);
+      counter.textContent = '+' + target;
+      // 완료 후 잠시 뒤 상태 업데이트
+      setTimeout(() => {
+        state._ahaReport.croquetGiven = true;
+        renderScreen();
+      }, 2000);
+    }
+  }, stepTime);
+}
+
+// ==================== 아하 리포트 옵션 오버레이 / 리스트 / 상세 ====================
+
+function showAhaOptionsOverlay() {
+  // 기존 오버레이 제거
+  const existing = document.getElementById('aha-options-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'aha-options-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,0.5);animation:fadeIn .2s ease';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div style="width:100%;max-width:500px;background:var(--bg-card);border-radius:20px 20px 0 0;padding:24px 20px 40px;animation:slideUp .3s ease">
+      <div style="width:36px;height:4px;background:var(--border);border-radius:2px;margin:0 auto 20px"></div>
+      <h3 style="color:var(--text-main);font-size:18px;font-weight:700;margin-bottom:16px;text-align:center">💡 아하 리포트</h3>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <button onclick="document.getElementById('aha-options-overlay').remove();state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('aha-report')" 
+          style="display:flex;align-items:center;gap:14px;padding:18px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:14px;cursor:pointer;text-align:left">
+          <span style="font-size:28px">📝</span>
+          <div>
+            <div style="color:var(--text-main);font-weight:600;font-size:15px">새 리포트 작성</div>
+            <div style="color:var(--text-muted);font-size:12px;margin-top:2px">사진 촬영 → AI 분석 → 리포트 생성</div>
+          </div>
+          <span style="margin-left:auto;background:rgba(255,159,67,0.2);color:#ff9f43;padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700">🍩+3</span>
+        </button>
+        <button onclick="document.getElementById('aha-options-overlay').remove();goScreen('aha-report-list')" 
+          style="display:flex;align-items:center;gap:14px;padding:18px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:14px;cursor:pointer;text-align:left">
+          <span style="font-size:28px">📚</span>
+          <div>
+            <div style="color:var(--text-main);font-weight:600;font-size:15px">내 리포트 보기</div>
+            <div style="color:var(--text-muted);font-size:12px;margin-top:2px">과거 리포트 열람 · 인쇄용 양식 · PDF 저장</div>
+          </div>
+          <span style="margin-left:auto;color:var(--primary-light);font-size:16px"><i class="fas fa-chevron-right"></i></span>
+        </button>
+      </div>
+      <button onclick="document.getElementById('aha-options-overlay').remove()" 
+        style="width:100%;margin-top:16px;padding:14px;background:transparent;border:1px solid var(--border);border-radius:12px;color:var(--text-muted);font-size:14px;cursor:pointer">닫기</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+// 아하 리포트 목록 화면
+function renderAhaReportList() {
+  const sid = state._authUser?.id;
+  if (!state._ahaReportList) state._ahaReportList = { reports: [], loaded: false, filter: '', sort: 'newest' };
+
+  if (sid && !state._ahaReportList.loaded) {
+    state._ahaReportList.loaded = true;
+    const filterQ = state._ahaReportList.filter ? `?subject=${encodeURIComponent(state._ahaReportList.filter)}` : '';
+    fetch(`/api/student/${sid}/aha-reports${filterQ}`)
+      .then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); })
+      .then(data => {
+        state._ahaReportList.reports = data.reports || [];
+        renderScreen();
+      })
+      .catch(() => {});
+  }
+
+  let reports = [...(state._ahaReportList.reports || [])];
+  const filter = state._ahaReportList.filter || '';
+  const sort = state._ahaReportList.sort || 'newest';
+  const subjects = ['', '국어', '영어', '수학', '과학', '사회', '기타'];
+
+  // 과목별 썸네일 배경색
+  const thumbColors = {
+    '국어': { bg: '#EF4444', bgGrad: 'linear-gradient(135deg,#EF4444,#DC2626)' },
+    '영어': { bg: '#3B82F6', bgGrad: 'linear-gradient(135deg,#3B82F6,#2563EB)' },
+    '수학': { bg: '#22C55E', bgGrad: 'linear-gradient(135deg,#22C55E,#16A34A)' },
+    '과학': { bg: '#8B5CF6', bgGrad: 'linear-gradient(135deg,#8B5CF6,#7C3AED)' },
+    '사회': { bg: '#F59E0B', bgGrad: 'linear-gradient(135deg,#F59E0B,#D97706)' },
+    '기타': { bg: '#6B7280', bgGrad: 'linear-gradient(135deg,#6B7280,#4B5563)' }
+  };
+
+  // 정렬
+  if (sort === 'oldest') {
+    reports.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  }
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._ahaReportList=null;goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+        <h1>📚 내 아하 리포트</h1>
+      </div>
+      
+      <!-- 필터 + 정렬 -->
+      <div style="padding:0 16px 12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="display:flex;gap:6px;flex:1;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch">
+            ${subjects.map(s => `
+              <button onclick="state._ahaReportList.filter='${s}';state._ahaReportList.loaded=false;renderScreen()" 
+                style="flex-shrink:0;padding:7px 14px;border-radius:20px;font-size:11px;font-weight:600;border:1px solid ${filter === s ? 'var(--primary)' : 'var(--border)'};background:${filter === s ? 'var(--primary)' : 'var(--bg-input)'};color:${filter === s ? '#fff' : 'var(--text-muted)'};cursor:pointer;white-space:nowrap">
+                ${s || '전체'}
+              </button>
+            `).join('')}
+          </div>
+          <select onchange="state._ahaReportList.sort=this.value;renderScreen()" 
+            style="flex-shrink:0;padding:7px 10px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid var(--border);background:var(--bg-input);color:var(--text-muted);cursor:pointer;appearance:auto">
+            <option value="newest" ${sort === 'newest' ? 'selected' : ''}>최신순</option>
+            <option value="oldest" ${sort === 'oldest' ? 'selected' : ''}>오래된순</option>
+          </select>
+        </div>
+        <div style="color:var(--text-muted);font-size:11px">${reports.length}개 리포트</div>
+      </div>
+      
+      <div style="padding:0 16px 120px">
+        ${reports.length === 0 ? `
+          <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+            <div style="font-size:48px;margin-bottom:16px">📝</div>
+            <p style="font-size:15px;font-weight:600;margin-bottom:8px">아직 작성한 리포트가 없어요</p>
+            <p style="font-size:13px">아하 리포트를 작성하면 여기에 표시됩니다</p>
+            <button onclick="state._ahaReport={step:1,subject:'',unit:'',photos:[],submitted:false,analyzing:false,error:null,result:null,editing:{},croquetGiven:false,savedReportId:null};goScreen('aha-report')" 
+              class="btn-primary" style="margin-top:20px;padding:12px 28px;font-size:14px">새 리포트 작성하기</button>
+          </div>
+        ` : `
+          <div class="aha-grid">
+            ${reports.map(r => {
+              const tc = thumbColors[r.subject] || thumbColors['기타'];
+              const unitText = r.unit_detected || r.unit || '';
+              // 이전 형식(section_topic/problem) + 새 형식(section_sa) 모두 지원
+              const rawPreview = r.section_sa || r.section_problem || r.section_topic || '';
+              const topicPreview = rawPreview.substring(0, 50) + (rawPreview.length > 50 ? '...' : '');
+              const dateObj = r.created_at ? new Date(r.created_at) : null;
+              const dateShort = dateObj ? `${dateObj.getMonth()+1}/${String(dateObj.getDate()).padStart(2,'0')}` : '';
+              return `
+                <div class="aha-card" onclick="openAhaReportDetail(${r.id})">
+                  <!-- 썸네일 -->
+                  <div style="background:${tc.bgGrad};aspect-ratio:4/3;border-radius:12px 12px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px 12px;position:relative;overflow:hidden">
+                    <div style="position:absolute;top:0;left:0;right:0;bottom:0;background:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 200%22><circle cx=%2240%22 cy=%22160%22 r=%2280%22 fill=%22rgba(255,255,255,0.06)%22/><circle cx=%22170%22 cy=%2250%22 r=%2260%22 fill=%22rgba(255,255,255,0.04)%22/></svg>') center/cover"></div>
+                    <div style="color:#fff;font-size:22px;font-weight:800;text-align:center;position:relative;z-index:1;text-shadow:0 1px 4px rgba(0,0,0,0.15)">${r.subject}</div>
+                    ${unitText ? `<div style="color:rgba(255,255,255,0.85);font-size:12px;font-weight:500;text-align:center;margin-top:4px;position:relative;z-index:1;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${unitText}</div>` : ''}
+                    <div style="position:absolute;bottom:8px;right:10px;color:rgba(255,255,255,0.4);font-size:9px;font-weight:700;letter-spacing:1px;z-index:1">AHA-Report</div>
+                  </div>
+                  <!-- 정보 영역 -->
+                  <div style="padding:12px">
+                    <div style="color:var(--text-main);font-size:14px;font-weight:700;line-height:1.4;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${r.subject}${unitText ? ' · ' + unitText : ''}</div>
+                    ${topicPreview ? `<div style="color:var(--text-muted);font-size:12px;line-height:1.5;margin-bottom:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${topicPreview}</div>` : '<div style="height:8px"></div>'}
+                    <div style="display:flex;align-items:center;justify-content:space-between">
+                      <span style="background:rgba(255,159,67,0.15);color:#ff9f43;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700">🍩+3</span>
+                      <span style="color:var(--text-muted);font-size:11px">${dateShort}</span>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+    <style>
+      .aha-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+      .aha-card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;cursor:pointer;overflow:hidden;transition:transform .15s,box-shadow .15s}
+      .aha-card:active{transform:scale(0.97);box-shadow:0 0 0 2px var(--primary)}
+      @media(max-width:820px){.aha-grid{grid-template-columns:repeat(2,1fr)}}
+      @media(max-width:480px){.aha-grid{grid-template-columns:repeat(1,1fr)}}
+    </style>
+  `;
+}
+
+function openAhaReportDetail(reportId) {
+  state._ahaDetailId = reportId;
+  state._ahaDetail = null;
+  state._ahaDetailTab = 'report'; // default tab: 리포트 양식
+  goScreen('aha-report-detail');
+}
+
+// 아하 리포트 상세 화면
+function renderAhaReportDetail() {
+  const reportId = state._ahaDetailId;
+  const detail = state._ahaDetail;
+  const tab = state._ahaDetailTab || 'report';
+
+  if (!detail) {
+    // 로딩
+    fetch(`/api/aha-report/${reportId}`)
+      .then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); })
+      .then(data => {
+        state._ahaDetail = data.report;
+        renderScreen();
+      })
+      .catch(() => {});
+
+    return `
+      <div class="full-screen animate-slide">
+        <div class="screen-header">
+          <button class="back-btn" onclick="goScreen('aha-report-list')"><i class="fas fa-arrow-left"></i></button>
+          <h1>💡 아하 리포트</h1>
+        </div>
+        <div style="text-align:center;padding:80px 20px;color:var(--text-muted)">
+          <div class="loading-spinner" style="width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div>
+          <p>리포트를 불러오는 중...</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const d = detail;
+  const subjectColors = { '국어': '#ff6b6b', '영어': '#4ecdc4', '수학': '#6c5ce7', '과학': '#00b894', '사회': '#fdcb6e', '기타': '#a29bfe' };
+  const sc = subjectColors[d.subject] || '#a29bfe';
+  const date = d.created_at ? new Date(d.created_at).toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric'}) : '';
+  const photos = Array.isArray(d.photos) ? d.photos : [];
+
+  const sections = [
+    { key: 'section_problem', title: '1. 문제 상황', icon: '📌' },
+    { key: 'section_topic', title: '2. 주제 설정', icon: '🎯' },
+    { key: 'section_research', title: '3. 탐구 과정 및 결론 도출', icon: '🔍' },
+    { key: 'section_self_feedback', title: '4. 자가 피드백', icon: '💡' }
+  ];
+
+  // Tab content
+  let tabContent = '';
+
+  if (tab === 'photo') {
+    // 원본 사진 탭
+    tabContent = photos.length > 0 ? `
+      <div style="padding:16px">
+        ${photos.map((p, i) => `
+          <div style="margin-bottom:16px;border-radius:12px;overflow:hidden;border:1px solid var(--border)">
+            <img src="${p}" style="width:100%;display:block;cursor:pointer" onclick="ahaZoomPhoto('${p.replace(/'/g, "\\'")}')" />
+            <div style="padding:8px 12px;background:var(--bg-input);font-size:11px;color:var(--text-muted)">사진 ${i+1} · 탭하여 확대</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : `<div style="text-align:center;padding:40px;color:var(--text-muted)">저장된 사진이 없습니다</div>`;
+  } else if (tab === 'feedback') {
+    // AI 피드백 탭
+    tabContent = `
+      <div style="padding:16px">
+        <div style="background:linear-gradient(135deg,rgba(108,92,231,0.12),rgba(162,155,254,0.12));border:1px solid rgba(108,92,231,0.2);border-radius:14px;padding:20px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+            <span style="font-size:20px">🤖</span>
+            <span style="color:var(--primary-light);font-weight:700;font-size:15px">AI 피드백</span>
+          </div>
+          <div style="color:var(--text-main);font-size:14px;line-height:1.8;white-space:pre-wrap">${d.ai_feedback || '피드백 정보가 없습니다.'}</div>
+        </div>
+        <div style="margin-top:16px;text-align:center;color:var(--text-muted);font-size:11px">
+          분석 엔진: ${d.ai_source === 'openai' ? 'GPT-4o' : 'Gemini Flash'} · ${date}
+        </div>
+      </div>
+    `;
+  } else {
+    // 리포트 양식 탭 (default) - 인쇄용 클린 레이아웃
+    tabContent = `
+      <div id="aha-report-printable" style="padding:20px 16px;display:flex;flex-direction:column;align-items:center">
+        <div style="width:100%;max-width:720px">
+          
+          <!-- 리포트 헤더 카드 -->
+          <div style="background:#ffffff;border:1px solid #e2e0d8;border-radius:16px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.06);margin-bottom:20px">
+            <div style="background:linear-gradient(135deg,#2d3436,#4a5568);padding:24px 28px;text-align:center">
+              <div style="color:#ffeaa7;font-size:13px;font-weight:600;letter-spacing:3px;margin-bottom:4px">AHA-Report</div>
+              <div style="color:#fff;font-size:20px;font-weight:800">📚 영역 탐구 보고서</div>
+            </div>
+            <div style="padding:24px 28px;background:#fdfcf8">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px 32px">
+                <div>
+                  <div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px;letter-spacing:0.5px">과목</div>
+                  <div style="font-size:16px;color:#1f2937;font-weight:700">${d.subject_detected || d.subject || '-'}</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px;letter-spacing:0.5px">이름</div>
+                  <div style="font-size:16px;color:#1f2937;font-weight:700">${d.student_name_detected || state._authUser?.name || '-'}</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px;letter-spacing:0.5px">단원</div>
+                  <div style="font-size:16px;color:#1f2937;font-weight:700">${d.unit_detected || d.unit || '-'}</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9ca3af;font-weight:600;margin-bottom:4px;letter-spacing:0.5px">날짜</div>
+                  <div style="font-size:16px;color:#1f2937;font-weight:700">${date}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 4개 섹션 카드 (각각 분리) -->
+          ${sections.map(sec => `
+            <div style="background:#ffffff;border:1px solid #e2e0d8;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.04);margin-bottom:20px">
+              <div style="padding:16px 24px;background:#f8f6f0;border-bottom:1px solid #e8e4d8;display:flex;align-items:center;gap:10px">
+                <span style="font-size:20px">${sec.icon}</span>
+                <span style="font-size:18px;font-weight:700;color:#1f2937">${sec.title}</span>
+              </div>
+              <div style="padding:20px 24px;color:#374151;font-size:16px;line-height:1.8;min-height:60px;background:#ffffff;white-space:pre-wrap;word-break:keep-all;overflow-wrap:break-word">${d[sec.key] || '(내용 없음)'}</div>
+            </div>
+          `).join('')}
+          
+          <!-- 5. AI 피드백 카드 (배경색 차별화) -->
+          <div style="background:linear-gradient(135deg,#f0f4ff,#f5f0ff);border:1px solid #d4d0f0;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(108,92,231,0.08);margin-bottom:20px">
+            <div style="padding:16px 24px;background:linear-gradient(135deg,#e8eaff,#ede8ff);border-bottom:1px solid #d4d0f0;display:flex;align-items:center;gap:10px">
+              <span style="font-size:20px">🤖</span>
+              <span style="font-size:18px;font-weight:700;color:#4338ca">5. AI 피드백</span>
+            </div>
+            <div style="padding:20px 24px;color:#374151;font-size:16px;line-height:1.8;background:transparent;white-space:pre-wrap;word-break:keep-all;overflow-wrap:break-word">${d.ai_feedback || '(피드백 정보가 없습니다)'}</div>
+          </div>
+          
+          <!-- PDF 저장 / 공유 버튼 -->
+          <div style="display:flex;gap:10px;margin-top:4px">
+            <button onclick="ahaExportPDF()" style="flex:1;padding:14px;background:var(--primary);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+              <i class="fas fa-file-pdf"></i> PDF 저장
+            </button>
+            <button onclick="ahaShareReport()" style="flex:1;padding:14px;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border);border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+              <i class="fas fa-share-alt"></i> 공유
+            </button>
+          </div>
+          
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._ahaDetail=null;goScreen('aha-report-list')"><i class="fas fa-arrow-left"></i></button>
+        <h1>💡 리포트 상세</h1>
+      </div>
+      
+      <!-- 요약 정보 -->
+      <div style="padding:0 16px 12px;display:flex;align-items:center;gap:10px">
+        <span style="background:${sc}22;color:${sc};padding:5px 14px;border-radius:10px;font-size:13px;font-weight:700">${d.subject}</span>
+        <span style="color:var(--text-muted);font-size:12px">${date}</span>
+        <span style="margin-left:auto;background:rgba(255,159,67,0.15);color:#ff9f43;padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">🍩+3</span>
+      </div>
+      
+      <!-- 3탭 -->
+      <div style="display:flex;border-bottom:2px solid var(--border);margin:0 16px;gap:0">
+        ${[{key:'photo',label:'원본 사진',icon:'📷'},{key:'report',label:'리포트 양식',icon:'📄'},{key:'feedback',label:'AI 피드백',icon:'🤖'}].map(t => `
+          <button onclick="state._ahaDetailTab='${t.key}';renderScreen()" 
+            style="flex:1;padding:12px 8px;font-size:13px;font-weight:${tab === t.key ? '700' : '500'};color:${tab === t.key ? 'var(--primary-light)' : 'var(--text-muted)'};background:transparent;border:none;border-bottom:2px solid ${tab === t.key ? 'var(--primary)' : 'transparent'};margin-bottom:-2px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px">
+            ${t.icon} ${t.label}
+          </button>
+        `).join('')}
+      </div>
+      
+      <!-- 탭 콘텐츠 -->
+      <div style="padding-bottom:120px">
+        ${tabContent}
+      </div>
+    </div>
+  `;
+}
+
+// 사진 확대 보기
+function ahaZoomPhoto(src) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.95);display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `
+    <img src="${src}" style="max-width:95%;max-height:90vh;object-fit:contain;border-radius:8px" />
+    <button style="position:absolute;top:20px;right:20px;background:rgba(255,255,255,0.2);border:none;color:#fff;width:40px;height:40px;border-radius:50%;font-size:20px;cursor:pointer">×</button>
+  `;
+  document.body.appendChild(overlay);
+}
+
+// PDF 저장 (html2canvas 방식)
+async function ahaExportPDF() {
+  const el = document.getElementById('aha-report-printable');
+  if (!el) return;
+
+  try {
+    // html2canvas CDN 동적 로드
+    if (!window.html2canvas) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const reportEl = el;
+    const canvas = await html2canvas(reportEl, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#f5f5f0',
+      logging: false
+    });
+
+    // jsPDF CDN 동적 로드
+    if (!window.jspdf) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const { jsPDF } = window.jspdf;
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdfW = pdf.internal.pageSize.getWidth();
+    const pdfPageH = pdf.internal.pageSize.getHeight();
+    const imgH = (canvas.height * pdfW) / canvas.width;
+    
+    // 다중 페이지 처리
+    if (imgH <= pdfPageH) {
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, imgH);
+    } else {
+      let y = 0;
+      while (y < imgH) {
+        if (y > 0) pdf.addPage();
+        pdf.addImage(imgData, 'JPEG', 0, -y, pdfW, imgH);
+        y += pdfPageH;
+      }
+    }
+    
+    const d = state._ahaDetail;
+    const filename = `AHA리포트_${d?.subject || ''}_${d?.created_at ? new Date(d.created_at).toISOString().slice(0,10) : ''}.pdf`;
+    pdf.save(filename);
+  } catch (e) {
+    console.error('PDF export error:', e);
+    alert('PDF 저장에 실패했습니다. 다시 시도해주세요.');
+  }
+}
+
+// 공유 (Web Share API)
+async function ahaShareReport() {
+  const d = state._ahaDetail;
+  if (!d) return;
+
+  const text = `[AHA-Report] ${d.subject} - ${d.unit_detected || d.unit || ''}\n\n` +
+    `1. 문제 상황: ${d.section_problem || ''}\n\n` +
+    `2. 주제 설정: ${d.section_topic || ''}\n\n` +
+    `3. 탐구 과정 및 결론: ${d.section_research || ''}\n\n` +
+    `4. 자가 피드백: ${d.section_self_feedback || ''}\n\n` +
+    `5. AI 피드백: ${d.ai_feedback || ''}`;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: `아하 리포트 - ${d.subject}`, text });
+    } catch (e) { /* user cancelled */ }
+  } else {
+    // Fallback: 클립보드 복사
+    try {
+      await navigator.clipboard.writeText(text);
+      alert('리포트 내용이 클립보드에 복사되었습니다!');
+    } catch {
+      // textarea fallback
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      alert('리포트 내용이 클립보드에 복사되었습니다!');
+    }
+  }
+}
+
+// ==================== 크로켓 포인트 히스토리 ====================
+
+function renderCroquetHistory() {
+  const sid = state._authUser?.id;
+  // 비동기 로드
+  if (sid && !state._croquetHistoryLoaded) {
+    state._croquetHistoryLoaded = true;
+    fetch(`/api/student/${sid}/croquet-points/history`)
+      .then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); })
+      .then(data => {
+        state._croquetHistory = data.history || [];
+        state._croquetBalance = data.balance || 0;
+        renderScreen();
+      })
+      .catch(() => {});
+  }
+
+  const history = state._croquetHistory || [];
+  const balance = state._croquetBalance || 0;
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._croquetHistoryLoaded=false;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>🍩 크로켓 포인트</h1>
+      </div>
+      <div class="form-body">
+        <!-- 잔액 카드 -->
+        <div class="card" style="margin-bottom:20px;padding:24px;text-align:center;background:linear-gradient(135deg,rgba(255,159,67,0.12),rgba(253,203,110,0.08))">
+          <div style="font-size:13px;color:var(--text-muted);font-weight:600;margin-bottom:6px">보유 포인트</div>
+          <div style="font-size:36px;font-weight:900;color:#FF9F43">🍩 ${balance.toLocaleString()}P</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:8px">학원 카페에서 사용할 수 있어요!</div>
+        </div>
+
+        <!-- 히스토리 목록 -->
+        <div style="font-size:14px;font-weight:700;color:var(--text-secondary);margin-bottom:12px">포인트 내역</div>
+        ${history.length === 0 ? `
+          <div style="text-align:center;padding:40px 0;color:var(--text-muted)">
+            <span style="font-size:48px;display:block;margin-bottom:12px">🍩</span>
+            <p style="font-size:14px;font-weight:600">아직 포인트 내역이 없어요</p>
+            <p style="font-size:12px;margin-top:6px">멘토 선생님이 포인트를 지급하면 여기에 표시됩니다</p>
+          </div>
+        ` : history.map(h => {
+          const date = (h.created_at || '').slice(0, 10);
+          const time = (h.created_at || '').slice(11, 16);
+          return `
+          <div class="card" style="margin-bottom:8px;padding:14px;display:flex;align-items:center;gap:12px">
+            <div style="width:40px;height:40px;border-radius:12px;background:rgba(255,159,67,0.12);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🍩</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:14px;font-weight:600;color:var(--text-main)">${h.reason || '기타'}${h.reason_detail ? ' · ' + h.reason_detail : ''}</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${date} ${time} · ${!h.mentor_id ? '🤖 자동 지급' : (h.mentor_name || '멘토') + ' 선생님'}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:16px;font-weight:800;color:#FF9F43">+${(h.amount || 0).toLocaleString()}P</div>
+              <div style="font-size:10px;color:var(--text-muted)">${(h.balance_after || 0).toLocaleString()}P</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== NOTIFICATIONS ====================
+
+function renderNotifications() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>🔔 알림</h1>
+        <span class="card-subtitle">${state.notifications.filter(n=>n.unread).length}개 새 알림</span>
+      </div>
+      <div class="form-body">
+        ${state.notifications.map((n,i) => `
+          <div class="notification-item ${n.unread?'unread':''} stagger-${i+1} animate-in">
+            <div class="notif-icon" style="background:${n.bg}">${n.icon}</div>
+            <div class="notif-content">
+              <div class="notif-title">${n.title}</div>
+              <div class="notif-desc">${n.desc}</div>
+            </div>
+            <span class="notif-time">${n.time}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== RECORD TAB (R-01~R-06) ====================
+
+function renderRecordTab() {
+  return `
+    <div class="tab-content animate-in">
+      <div class="screen-header">
+        <h1>📝 기록</h1>
+      </div>
+      
+      <div class="record-type-grid">
+        <!-- 당일 수업 · 당일 복습하기 (최상단) -->
+        <div class="record-type-card stagger-0 animate-in" style="background:linear-gradient(135deg,rgba(108,92,231,0.12),rgba(0,184,148,0.08));border:1.5px solid rgba(108,92,231,0.3)" onclick="goScreen('record-status')">
+          <div class="record-type-icon" style="background:rgba(108,92,231,0.2)">📝</div>
+          <div class="record-type-info">
+            <h3>당일 수업 · 당일 복습하기</h3>
+            <p>학교 + 학원 수업을 당일에 바로 기록</p>
+          </div>
+          <span style="color:var(--primary-light);font-size:14px"><i class="fas fa-chevron-right"></i></span>
+        </div>
+        <!-- 나의 수업 기록 열람 -->
+        <div class="record-type-card stagger-1 animate-in" style="background:rgba(108,92,231,0.08);border:1px solid rgba(108,92,231,0.2)" onclick="goScreen('class-record-history')">
+          <div class="record-type-icon" style="background:rgba(108,92,231,0.2)">📚</div>
+          <div class="record-type-info">
+            <h3>나의 수업 기록</h3>
+            <p>기록한 수업 내용·사진 열람 ${(state._dbClassRecords||[]).length > 0 ? '<span style="color:var(--primary-light);font-weight:600">' + (state._dbClassRecords||[]).length + '건</span>' : ''}</p>
+          </div>
+          <span style="color:var(--primary-light);font-size:14px"><i class="fas fa-chevron-right"></i></span>
+        </div>
+        ${[
+          { screen:'__aha-options__', icon:'💡', bg:'rgba(255,159,67,0.15)', title:'아하 리포트', desc:'영역 탐구 보고서 작성 · 사진 기록', xp:'🍩+3' },
+          { screen:'record-assignment', icon:'📋', bg:'rgba(255,159,67,0.15)', title:'과제 기록', desc:'선생님 과제를 기록하고 계획', xp:'+15' },
+          { screen:'__qa-new__', icon:'❓', bg:'rgba(255,107,107,0.15)', title:'질문 코칭', desc:'2축 9단계 정율 코칭', xp:'+8~30' },
+          { screen:'record-teach', icon:'🤝', bg:'rgba(0,184,148,0.15)', title:'교학상장', desc:'친구에게 가르친 경험', xp:'+30' },
+          { screen:'record-activity', icon:'🏫', bg:'rgba(253,203,110,0.15)', title:'창의적 체험활동', desc:'비교과 활동 기록', xp:'+20' },
+          { screen:'exam-list', icon:'📝', bg:'rgba(116,185,255,0.15)', title:'시험 관리', desc:'중간·기말·모의·수행평가', xp:'+25' },
+          { screen:'record-schoolrecord', icon:'📄', bg:'rgba(162,155,254,0.15)', title:'학교 생활기록부 관리', desc:'생기부 업로드 및 정율 분석', xp:'+30' },
+        ].map((item,i) => `
+          <div class="record-type-card stagger-${i+1} animate-in" onclick="goScreen('${item.screen}')">
+            <div class="record-type-icon" style="background:${item.bg}">${item.icon}</div>
+            <div class="record-type-info">
+              <h3>${item.title}</h3>
+              <p>${item.desc}</p>
+            </div>
+            <span class="xp-badge-sm">${item.xp}</span>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- 다가오는 시험 -->
+      ${state.exams.filter(ex => ex.status !== 'completed').length > 0 ? `
+      <div class="card stagger-6 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">🎯 다가오는 시험</span>
+          <button class="card-link" onclick="goScreen('exam-list')">전체보기 →</button>
+        </div>
+        ${state.exams.filter(ex => ex.status !== 'completed').sort((a,b) => a.startDate.localeCompare(b.startDate)).slice(0,2).map(ex => {
+          const dDay = getDday(ex.startDate);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+          const urgency = dDay <= 3 ? 'urgent' : dDay <= 7 ? 'warning' : 'normal';
+          const typeIcon = ex.type === 'midterm' ? '📘' : ex.type === 'final' ? '📕' : ex.type === 'mock' ? '📗' : '📝';
+          const avgReadiness = Math.round(ex.subjects.reduce((s,sub) => s + sub.readiness, 0) / ex.subjects.length);
+          const readColor = avgReadiness >= 60 ? '#00B894' : avgReadiness >= 30 ? '#FDCB6E' : '#FF6B6B';
+          return `
+          <div class="exam-mini-row" onclick="state.viewingExam='${ex.id}';goScreen('exam-detail')">
+            <div class="exam-mini-icon">${typeIcon}</div>
+            <div class="exam-mini-info">
+              <span class="exam-mini-name">${ex.name}</span>
+              <span class="exam-mini-subjects">${ex.subjects.map(s => s.subject).join(' · ')}</span>
+            </div>
+            <div class="exam-mini-right">
+              <span class="assignment-dday ${urgency}">${dDayText}</span>
+              <div class="exam-mini-bar"><div class="exam-mini-bar-fill" style="width:${avgReadiness}%;background:${readColor}"></div></div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      ` : ''}
+
+      <!-- Upcoming Assignments Mini -->
+      ${state.assignments.filter(a => a.status !== 'completed').length > 0 ? `
+      <div class="card stagger-6 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">📋 진행 중인 과제</span>
+          <button class="card-link" onclick="goScreen('assignment-list')">전체보기 →</button>
+        </div>
+        ${state.assignments.filter(a => a.status !== 'completed').slice(0, 2).map(a => {
+          const dDay = getDday(a.dueDate);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+          const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+          return `
+          <div class="assignment-mini-row" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
+            <div class="assignment-mini-dot" style="background:${a.color}"></div>
+            <div class="assignment-mini-info">
+              <span class="assignment-mini-subject">${a.subject}</span>
+              <span class="assignment-mini-title">${a.title}</span>
+            </div>
+            <div class="assignment-mini-right">
+              <span class="assignment-dday ${urgency}">${dDayText}</span>
+              <div class="assignment-mini-bar"><div class="assignment-mini-bar-fill" style="width:${a.progress}%;background:${a.color}"></div></div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+      </div>
+      ` : ''}
+
+      <!-- 진행 중인 비교과 활동 -->
+      ${state.extracurriculars.filter(e => e.status !== 'completed').length > 0 ? `
+      <div class="card stagger-7 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">📚 진행 중인 비교과 활동</span>
+          <button class="card-link" onclick="goScreen('record-activity')">전체보기 →</button>
+        </div>
+        ${state.extracurriculars.filter(e => e.status !== 'completed').slice(0, 4).map(e => {
+          const typeLabel = e.type === 'report' ? '📄 탐구보고서' : e.type === 'reading' ? '📖 독서' : e.subType === 'career' ? '🎯 진로' : e.subType === 'self' ? '🧠 자율자치' : '🎭 동아리';
+          const statusLabel = e.status === 'in-progress' ? '진행중' : '예정';
+          const onclick = e.type === 'report' && e.report 
+            ? `state.viewingReport='${e.id}';state.reportPhaseTab=${e.report.currentPhase};goScreen('report-project')` 
+            : `state.viewingActivity='${e.id}';goScreen('activity-detail')`;
+          return `
+          <div class="ec-mini-row" onclick="${onclick}" style="cursor:pointer">
+            <div class="ec-mini-dot" style="background:${e.color}"></div>
+            <div class="ec-mini-info">
+              <div class="ec-mini-top">
+                <span class="ec-mini-type">${typeLabel}</span>
+                <span class="ec-mini-subject">${e.subject}</span>
+              </div>
+              <span class="ec-mini-title">${e.title}</span>
+            </div>
+            <div class="ec-mini-right">
+              <span class="ec-mini-status ${e.status}">${statusLabel}</span>
+              <div class="ec-mini-bar"><div class="ec-mini-bar-fill" style="width:${e.progress}%;background:${e.color}"></div></div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+      </div>
+      ` : ''}
+
+      <!-- 생기부 포트폴리오 -->
+      <div class="card stagger-8 animate-in" onclick="goScreen('portfolio')" style="cursor:pointer">
+        <div class="portfolio-entry">
+          <div class="portfolio-icon">📊</div>
+          <div class="portfolio-text">
+            <strong>나의 활동 기록부</strong>
+            <p>기간별 수업·질문·과제·비교과 종합 리포트</p>
+          </div>
+          <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+        </div>
+      </div>
+
+      <!-- Recent Records Timeline -->
+      <div class="card stagger-7 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">📜 최근 아카이브</span>
+          <button class="card-link" onclick="goScreen('record-history')">전체보기 →</button>
+        </div>
+
+        <div id="home-recent-archive-phone" class="timeline">
+          ${(state._dbClassRecords || []).slice(0, 4).map(r => `
+          <div class="timeline-item">
+            <div class="timeline-dot" style="background:var(--primary)"></div>
+            <div class="timeline-content">
+              <div class="timeline-header">
+                <span class="timeline-time">${r.date || ''}</span>
+                <span class="timeline-subject">${r.subject || ''}</span>
+              </div>
+              <p class="timeline-text">${r.content || r.topic || '수업 기록'}</p>
+            </div>
+          </div>
+          `).join('')}
+          ${(state._dbClassRecords || []).length === 0 ? '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:13px">아직 기록이 없습니다. 수업을 기록해보세요!</div>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== SCHOOL RECORD (학교 생활기록부 관리) ====================
+
+function renderSchoolRecord() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📄 생활기록부 관리</h1>
+        <span class="header-badge">+30 XP</span>
+      </div>
+
+      <div class="form-body" style="text-align:center;padding-top:40px">
+        <!-- 준비 중 안내 -->
+        <div style="background:linear-gradient(135deg,rgba(162,155,254,0.15),rgba(108,92,231,0.1));border-radius:20px;padding:32px 24px;margin-bottom:24px">
+          <div style="font-size:64px;margin-bottom:16px">📋</div>
+          <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:8px">학교 생활기록부 정율 분석</h2>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6">
+            1학년 과정이 끝나면 실제 생활기록부를<br>
+            업로드하여 정율이 분석해드립니다
+          </p>
+        </div>
+
+        <!-- 예정 기능 목록 -->
+        <div style="text-align:left">
+          <h3 style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:12px">🔮 예정 기능</h3>
+          
+          ${[
+            { icon: '📤', title: '생기부 PDF 업로드', desc: '나이스에서 다운받은 생활기록부를 업로드', status: '준비 중' },
+            { icon: '🤖', title: '정율 종합 분석', desc: '교과/비교과/세특 전 영역 정율 자동 분석', status: '준비 중' },
+            { icon: '📊', title: '강점·보완점 진단', desc: '대입 관점에서 강점과 보완해야 할 부분 제시', status: '준비 중' },
+            { icon: '🎯', title: '맞춤 전략 제안', desc: '분석 결과 기반 2·3학년 학업 전략 추천', status: '준비 중' },
+            { icon: '📈', title: '학기별 변화 추적', desc: '매 학기 생기부 비교로 성장 과정 시각화', status: '준비 중' },
+            { icon: '✍️', title: '세특 키워드 분석', desc: '세부능력특기사항 핵심 키워드 추출 및 일관성 점검', status: '준비 중' },
+          ].map(f => `
+            <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--bg-card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border-color)">
+              <span style="font-size:24px;flex-shrink:0">${f.icon}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:700;color:var(--text-primary)">${f.title}</div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${f.desc}</div>
+              </div>
+              <span style="font-size:10px;color:#a29bfe;background:rgba(162,155,254,0.15);padding:3px 8px;border-radius:8px;white-space:nowrap">${f.status}</span>
+            </div>
+          `).join('')}
+        </div>
+
+        <!-- 알림 설정 -->
+        <div style="margin-top:24px;padding:20px;background:rgba(0,184,148,0.08);border-radius:14px;border:1px solid rgba(0,184,148,0.2)">
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6">
+            <strong style="color:#00b894">💡 Tip</strong><br>
+            지금은 수업 기록, 질문 코칭, 창체 활동 기록을 꾸준히 쌓아두세요.<br>
+            이 데이터가 나중에 생기부 분석과 함께 강력한 포트폴리오가 됩니다!
+          </p>
+        </div>
+
+        <button class="btn-primary" style="margin-top:24px;width:100%;opacity:0.5;cursor:not-allowed" disabled>
+          <i class="fas fa-bell" style="margin-right:6px"></i>
+          오픈 시 알림 받기 (준비 중)
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== EXAM MANAGEMENT (시험 관리) ====================
+
+function getExamTypeLabel(type) {
+  const map = { midterm:'중간고사', final:'기말고사', mock:'모의고사', performance:'수행평가' };
+  return map[type] || type;
+}
+function getExamTypeIcon(type) {
+  const map = { midterm:'📘', final:'📕', mock:'📗', performance:'📝' };
+  return map[type] || '📝';
+}
+
+function renderExamList() {
+  const upcoming = state.exams.filter(e => e.status !== 'completed').sort((a,b) => a.startDate.localeCompare(b.startDate));
+  const completed = state.exams.filter(e => e.status === 'completed');
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+        <h1>🎯 시험 관리</h1>
+        <button class="header-action-btn" onclick="resetExamAddState();goScreen('exam-add')" title="시험 추가"><i class="fas fa-plus"></i></button>
+      </div>
+      <div class="form-body">
+
+        ${upcoming.length > 0 ? `
+        <div class="section-label">다가오는 시험</div>
+        ${upcoming.map((ex,i) => {
+          const dDay = getDday(ex.startDate);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+          const urgency = dDay <= 3 ? 'urgent' : dDay <= 7 ? 'warning' : 'normal';
+          const avgReadiness = Math.round(ex.subjects.reduce((s,sub) => s + sub.readiness, 0) / ex.subjects.length);
+          const dateRange = ex.startDate === ex.endDate 
+            ? ex.startDate.slice(5).replace('-','/') 
+            : ex.startDate.slice(5).replace('-','/') + ' ~ ' + ex.endDate.slice(5).replace('-','/');
+          return `
+          <div class="exam-card stagger-${i+1} animate-in" onclick="state.viewingExam='${ex.id}';goScreen('exam-detail')">
+            <div class="exam-card-top">
+              <div class="exam-card-icon">${getExamTypeIcon(ex.type)}</div>
+              <div class="exam-card-info">
+                <div class="exam-card-name">${ex.name}</div>
+                <div class="exam-card-meta">${getExamTypeLabel(ex.type)} · ${dateRange} · ${ex.subjects.length}과목</div>
+              </div>
+              <div class="exam-card-dday">
+                <span class="assignment-dday ${urgency}">${dDayText}</span>
+              </div>
+            </div>
+            <div class="exam-card-subjects">
+              ${ex.subjects.map(sub => `
+                <div class="exam-subject-chip" style="border-left:3px solid ${sub.color}">
+                  <span class="exam-subj-name">${sub.subject}</span>
+                  <div class="exam-subj-bar"><div class="exam-subj-bar-fill" style="width:${sub.readiness}%;background:${sub.color}"></div></div>
+                  <span class="exam-subj-pct">${sub.readiness}%</span>
+                </div>
+              `).join('')}
+            </div>
+            <div class="exam-card-bottom">
+              <span class="exam-avg-label">평균 준비도</span>
+              <div class="exam-avg-bar"><div class="exam-avg-bar-fill" style="width:${avgReadiness}%;background:${avgReadiness>=60?'#00B894':avgReadiness>=30?'#FDCB6E':'#FF6B6B'}"></div></div>
+              <span class="exam-avg-pct" style="color:${avgReadiness>=60?'#00B894':avgReadiness>=30?'#FDCB6E':'#FF6B6B'}">${avgReadiness}%</span>
+            </div>
+          </div>`;
+        }).join('')}
+        ` : `
+        <div class="pf-empty">
+          <div class="pf-empty-icon">🎉</div>
+          <div class="pf-empty-text">예정된 시험이 없습니다</div>
+        </div>
+        `}
+
+        ${completed.length > 0 ? `
+        <div class="section-label" style="margin-top:20px">지난 시험</div>
+        ${completed.map(ex => `
+          <div class="exam-card completed" onclick="state.viewingExam='${ex.id}';goScreen('exam-detail')">
+            <div class="exam-card-top">
+              <div class="exam-card-icon">${getExamTypeIcon(ex.type)}</div>
+              <div class="exam-card-info">
+                <div class="exam-card-name">${ex.name}</div>
+                <div class="exam-card-meta">${getExamTypeLabel(ex.type)} · ${ex.startDate.slice(5).replace('-','/')}</div>
+              </div>
+              <span style="color:var(--text-muted);font-size:12px">✅ 완료</span>
+            </div>
+          </div>
+        `).join('')}
+        ` : ''}
+
+        <button class="btn-primary" style="width:100%;margin-top:20px" onclick="resetExamAddState();goScreen('exam-add')">
+          <i class="fas fa-plus" style="margin-right:6px"></i>시험 추가
+        </button>
+
+        <!-- 성장 분석 버튼 -->
+        ${state.exams.some(e => e.result) ? `
+        <button class="btn-secondary" style="width:100%;margin-top:8px;border-color:rgba(108,92,231,0.4);color:#A29BFE" onclick="goScreen('growth-analysis')">
+          <i class="fas fa-chart-line" style="margin-right:6px"></i>📈 시간축 성장 분석 보기
+        </button>
+        ` : ''}
+
+      </div>
+    </div>
+  `;
+}
+
+
+function renderExamDetail() {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex) return '<div class="full-screen"><p>시험을 찾을 수 없습니다</p></div>';
+
+  const dDay = getDday(ex.startDate);
+  const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+  const urgency = dDay <= 3 ? 'urgent' : dDay <= 7 ? 'warning' : 'normal';
+  const avgReadiness = Math.round(ex.subjects.reduce((s,sub) => s + sub.readiness, 0) / ex.subjects.length);
+  const dateRange = ex.startDate === ex.endDate 
+    ? ex.startDate.slice(5).replace('-','/')
+    : ex.startDate.slice(5).replace('-','/') + ' ~ ' + ex.endDate.slice(5).replace('-','/');
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('exam-list')"><i class="fas fa-arrow-left"></i></button>
+        <h1>${getExamTypeIcon(ex.type)} ${ex.name}</h1>
+        <button class="header-action-btn" onclick="deleteExam('${ex.id}')" title="삭제" style="color:#FF6B6B"><i class="fas fa-trash"></i></button>
+      </div>
+      <div class="form-body">
+
+        <!-- 상단 요약 -->
+        <div class="exam-detail-summary">
+          <div class="exam-detail-dday">
+            <span class="assignment-dday ${urgency}" style="font-size:18px;padding:6px 16px">${dDayText}</span>
+          </div>
+          <div class="exam-detail-meta">
+            <div><i class="fas fa-calendar" style="width:16px;color:var(--text-muted)"></i> ${dateRange}</div>
+            <div><i class="fas fa-book" style="width:16px;color:var(--text-muted)"></i> ${ex.subjects.length}과목</div>
+            <div><i class="fas fa-chart-line" style="width:16px;color:var(--text-muted)"></i> 평균 준비도 <strong style="color:${avgReadiness>=60?'#00B894':avgReadiness>=30?'#FDCB6E':'#FF6B6B'}">${avgReadiness}%</strong></div>
+          </div>
+        </div>
+
+        <!-- 과목별 상세 -->
+        <div class="section-label">과목별 시험 범위 & 준비 상태</div>
+        ${ex.subjects.map((sub, idx) => {
+          const subDday = getDday(sub.date);
+          const subDdayText = subDday === 0 ? 'D-Day' : subDday > 0 ? 'D-' + subDday : '';
+          return `
+          <div class="exam-subject-card stagger-${idx+1} animate-in">
+            <div class="exam-subj-header">
+              <div class="exam-subj-color-dot" style="background:${sub.color}"></div>
+              <span class="exam-subj-title">${sub.subject}</span>
+              <span class="exam-subj-date">${sub.date.slice(5).replace('-','/')} ${sub.time}</span>
+              ${subDdayText ? '<span class="exam-subj-dday">' + subDdayText + '</span>' : ''}
+            </div>
+            <div class="exam-subj-range">
+              <i class="fas fa-bookmark" style="color:${sub.color};margin-right:6px;font-size:11px"></i>
+              <span>${sub.range}</span>
+            </div>
+            <div class="exam-subj-readiness-row">
+              <span class="exam-subj-readiness-label">준비도</span>
+              <div class="exam-subj-readiness-bar">
+                <div class="exam-subj-readiness-fill" style="width:${sub.readiness}%;background:${sub.color}"></div>
+              </div>
+              <span class="exam-subj-readiness-pct" style="color:${sub.color}">${sub.readiness}%</span>
+              <input type="range" min="0" max="100" value="${sub.readiness}" class="exam-readiness-slider" 
+                oninput="updateExamReadiness('${ex.id}',${idx},parseInt(this.value))">
+            </div>
+            ${sub.notes ? `
+            <div class="exam-subj-notes">
+              <i class="fas fa-sticky-note" style="color:var(--text-muted);margin-right:4px;font-size:10px"></i>
+              ${sub.notes}
+            </div>` : ''}
+            <div class="exam-subj-actions">
+              <button class="exam-subj-note-btn" onclick="editExamSubjectNote('${ex.id}',${idx})">
+                <i class="fas fa-edit"></i> 메모
+              </button>
+              <button class="exam-subj-note-btn" onclick="editExamSubjectRange('${ex.id}',${idx})">
+                <i class="fas fa-bookmark"></i> 범위수정
+              </button>
+            </div>
+          </div>`;
+        }).join('')}
+
+        <!-- 정율 시험대비 코칭 -->
+        <div class="section-label" style="margin-top:20px">🤖 정율 시험대비 코칭</div>
+        <div class="card">
+          ${state.examAiLoading ? `
+            <div style="text-align:center;padding:24px">
+              <div class="diag-loading-spinner"></div>
+              <p style="color:var(--text-muted);margin-top:12px;font-size:13px">정율이 학습 계획을 분석 중...</p>
+            </div>
+          ` : ex.aiPlan ? `
+            <div class="exam-ai-plan">
+              <div class="exam-ai-plan-header">
+                <span>📋 정율 맞춤 학습 계획</span>
+                <button class="card-link" onclick="generateExamPlan('${ex.id}')">다시 생성 →</button>
+              </div>
+              <div class="exam-ai-plan-content">${ex.aiPlan}</div>
+            </div>
+          ` : `
+            <div style="text-align:center;padding:16px">
+              <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">시험 범위와 준비 상태를 분석해서<br>맞춤 학습 계획을 세워드릴게요</p>
+              <button class="btn-primary" onclick="generateExamPlan('${ex.id}')">
+                <i class="fas fa-magic" style="margin-right:6px"></i>정율 학습계획 생성
+              </button>
+            </div>
+          `}
+        </div>
+
+        <!-- 플래너 연동 -->
+        ${ex.aiPlan ? `
+        <button class="btn-secondary" style="width:100%;margin-top:12px" onclick="applyExamPlanToPlanner('${ex.id}')">
+          <i class="fas fa-calendar-plus" style="margin-right:6px"></i>학습 계획을 플래너에 반영하기
+        </button>
+        ` : ''}
+
+        <!-- 시험 결과 입력/보고서 -->
+        <div class="section-label" style="margin-top:20px">📊 시험 결과</div>
+        ${ex.result ? `
+        <div class="card" style="border:1px solid rgba(108,92,231,0.3)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <span style="font-size:14px;font-weight:700;color:var(--text-primary)">✅ 결과 입력 완료</span>
+            <span style="font-size:20px;font-weight:800;color:var(--primary-light)">${ex.result.totalScore}점</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-primary" style="flex:1;font-size:12px" onclick="state.viewingExam='${ex.id}';goScreen('exam-report')">
+              <i class="fas fa-chart-bar" style="margin-right:4px"></i>결과 보고서
+            </button>
+            <button class="btn-secondary" style="flex:1;font-size:12px" onclick="state.viewingExam='${ex.id}';goScreen('exam-result-input')">
+              <i class="fas fa-edit" style="margin-right:4px"></i>결과 수정
+            </button>
+          </div>
+        </div>
+        ` : `
+        <div class="card" style="text-align:center">
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">시험이 끝나면 결과를 입력하고<br>오답 분석 보고서를 만들어보세요</p>
+          <button class="btn-primary" onclick="state.viewingExam='${ex.id}';goScreen('exam-result-input')">
+            <i class="fas fa-pen" style="margin-right:6px"></i>결과 입력하기
+          </button>
+        </div>
+        `}
+
+      </div>
+    </div>
+  `;
+}
+
+
+function renderExamAdd() {
+  // 모드가 아직 선택되지 않았으면 모드 선택 화면
+  if (!_examAddMode) {
+    return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('exam-list')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📝 시험 추가</h1>
+      </div>
+      <div class="form-body">
+        <div class="ea-mode-title">어떤 시험을 추가할까요?</div>
+        <div class="ea-mode-grid">
+          <button class="ea-mode-card" onclick="_examAddMode='midterm';renderScreen()">
+            <div class="ea-mode-icon" style="background:rgba(108,92,231,0.15);color:#6C5CE7">📘</div>
+            <div class="ea-mode-label">중간 · 기말고사</div>
+            <div class="ea-mode-desc">시험 기간 설정 후 날짜별 과목을 추가해요</div>
+            <i class="fas fa-chevron-right ea-mode-arrow"></i>
+          </button>
+          <button class="ea-mode-card" onclick="_examAddMode='performance';renderScreen()">
+            <div class="ea-mode-icon" style="background:rgba(253,203,110,0.2);color:#F39C12">📝</div>
+            <div class="ea-mode-label">수행평가</div>
+            <div class="ea-mode-desc">마감 기한과 평가 주제만 간단히 입력해요</div>
+            <i class="fas fa-chevron-right ea-mode-arrow"></i>
+          </button>
+          <button class="ea-mode-card" onclick="_examAddMode='mock';renderScreen()">
+            <div class="ea-mode-icon" style="background:rgba(0,184,148,0.15);color:#00B894">📗</div>
+            <div class="ea-mode-label">모의고사</div>
+            <div class="ea-mode-desc">프리셋으로 한 번에 입력! 클릭 한 번이면 끝</div>
+            <i class="fas fa-chevron-right ea-mode-arrow"></i>
+          </button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // 모드별 분기
+  if (_examAddMode === 'midterm') return renderExamAddMidterm();
+  if (_examAddMode === 'performance') return renderExamAddPerformance();
+  if (_examAddMode === 'mock') return renderExamAddMock();
+  return '';
+}
+
+/* ── 중간 · 기말고사 모드 ── */
+function renderExamAddMidterm() {
+  const today = kstNow();
+  const y = today.getFullYear();
+  const m = String(today.getMonth()+1).padStart(2,'0');
+  const defaultStart = _eaMidtermStart || `${y}-${m}-21`;
+  const defaultEnd = _eaMidtermEnd || `${y}-${m}-25`;
+
+  // 날짜별 교시 카드 생성 (교시 기반 인라인 선택)
+  let dateCards = '';
+  const examPeriods = _eaMidtermPeriodCount || 4; // 기본 4교시
+  if (_eaMidtermStart && _eaMidtermEnd) {
+    const dates = getDateRange(_eaMidtermStart, _eaMidtermEnd);
+    const dayNames = ['일','월','화','수','목','금','토'];
+    const dayIdxMap = {'월':0,'화':1,'수':2,'목':3,'금':4};
+    const dayColors = {'토':'#74B9FF','일':'#FF6B6B'};
+    dateCards = dates.map((d, di) => {
+      const dt = new Date(d + 'T00:00:00');
+      const dayName = dayNames[dt.getDay()];
+      const dayStyle = dayColors[dayName] ? `color:${dayColors[dayName]}` : '';
+      const slotsForDay = _eaMidtermSubjects[d] || {};
+      const filledCount = Object.values(slotsForDay).filter(v => v && v.subject).length;
+      // 시간표에서 해당 요일의 교시 과목 가져오기
+      const ttDayIdx = dayIdxMap[dayName];
+      const ttSchool = state.timetable?.school || [];
+      return `
+      <div class="ea-date-card ${filledCount>0?'has-subj':''} stagger-${Math.min(di+1,5)} animate-in">
+        <div class="ea-date-header">
+          <span class="ea-date-badge"><span class="ea-date-day" style="${dayStyle}">${d.slice(5).replace('-','/')}</span> <span class="ea-date-dayname">(${dayName})</span></span>
+          <span class="ea-date-pill ${filledCount>0?'filled':''}">${filledCount}과목</span>
+        </div>
+        <div class="ea-period-slots">
+          ${Array.from({length: examPeriods}, (_,pi) => {
+            const pNum = pi + 1;
+            const slot = slotsForDay[pNum];
+            const subj = slot?.subject || '';
+            const color = slot?.color || '';
+            // 시간표 기반 추천 과목
+            const ttSubj = (ttDayIdx !== undefined && ttSchool[pi]) ? (ttSchool[pi][ttDayIdx] || '') : '';
+            if (subj) {
+              return `<div class="ea-slot filled" style="border-left:3px solid ${color}">
+                <span class="ea-slot-period">${pNum}교시</span>
+                <span class="ea-slot-subj" style="color:${color}">${subj}</span>
+                <button class="ea-slot-clear" onclick="clearPeriodSlot('${d}',${pNum})"><i class="fas fa-times"></i></button>
+              </div>`;
+            } else {
+              return `<div class="ea-slot empty" onclick="openPeriodPicker('${d}',${pNum})">
+                <span class="ea-slot-period">${pNum}교시</span>
+                ${ttSubj && !['체육','미술','음악','창체','동아리'].includes(ttSubj) 
+                  ? `<span class="ea-slot-hint">${ttSubj}</span>` 
+                  : `<span class="ea-slot-hint">탭하여 선택</span>`}
+                <i class="fas fa-chevron-right ea-slot-arrow"></i>
+              </div>`;
+            }
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  const totalSubjects = Object.values(_eaMidtermSubjects).reduce((s,slots) => {
+    if (typeof slots === 'object' && !Array.isArray(slots)) {
+      return s + Object.values(slots).filter(v => v && v.subject).length;
+    }
+    return s + (Array.isArray(slots) ? slots.length : 0);
+  }, 0);
+  const typeLabel = _eaMidtermType === 'final' ? '기말고사' : '중간고사';
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="_examAddMode=null;renderScreen()"><i class="fas fa-arrow-left"></i></button>
+        <h1>📘 ${typeLabel} 추가</h1>
+      </div>
+      <div class="form-body" style="padding-bottom:100px">
+
+        <!-- 중간/기말 토글 -->
+        <div class="ea-toggle-row">
+          <button class="ea-toggle-btn ${_eaMidtermType!=='final'?'active':''}" onclick="_eaMidtermType='midterm';renderScreen()">중간고사</button>
+          <button class="ea-toggle-btn ${_eaMidtermType==='final'?'active':''}" onclick="_eaMidtermType='final';renderScreen()">기말고사</button>
+        </div>
+
+        <!-- 시험 이름 -->
+        <label class="form-label">시험 이름</label>
+        <input type="text" id="ea-mid-name" class="form-input" placeholder="예: 1학기 ${typeLabel}" value="${_eaMidtermName || ''}">
+
+        <!-- 시험 기간 바 -->
+        <label class="form-label" style="margin-top:14px">시험 기간</label>
+        <div class="ea-period-bar">
+          <div class="ea-period-field">
+            <i class="fas fa-calendar-day"></i>
+            <input type="date" id="ea-mid-start" class="ea-period-input" value="${defaultStart}" onchange="onMidtermPeriodChange()">
+          </div>
+          <div class="ea-period-arrow"><i class="fas fa-arrow-right"></i></div>
+          <div class="ea-period-field">
+            <i class="fas fa-calendar-check"></i>
+            <input type="date" id="ea-mid-end" class="ea-period-input" value="${defaultEnd}" onchange="onMidtermPeriodChange()">
+          </div>
+        </div>
+
+        <!-- 시험 교시 수 -->
+        <label class="form-label" style="margin-top:10px">시험 교시 수</label>
+        <div class="ea-period-count-row">
+          ${[3,4,5].map(n => `
+            <button class="ea-period-count-btn ${examPeriods===n?'active':''}" onclick="_eaMidtermPeriodCount=${n};renderScreen()">${n}교시</button>
+          `).join('')}
+        </div>
+
+        <!-- 날짜별 과목 카드 -->
+        ${_eaMidtermStart && _eaMidtermEnd ? `
+          <div class="ea-section-label">
+            <span>날짜별 시험 과목</span>
+            <span class="ea-section-count">${totalSubjects}과목</span>
+          </div>
+          ${dateCards}
+        ` : `
+          <div class="ea-hint-box">
+            <i class="fas fa-info-circle"></i>
+            시험 기간을 설정하면 날짜별 과목을 추가할 수 있어요
+          </div>
+        `}
+
+        <!-- 하단 저장 버튼 -->
+        <div class="ea-bottom-bar">
+          <button class="btn-primary ea-save-btn" onclick="saveMidtermExam()" ${totalSubjects===0?'disabled':''}>
+            <i class="fas fa-check" style="margin-right:8px"></i>${typeLabel} 저장
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 교시 과목 선택 바텀시트 -->
+    <div class="ea-modal-overlay" id="ea-period-picker">
+      <div class="ea-modal">
+        <div class="ea-modal-header">
+          <h3 id="ea-pp-title"><i class="fas fa-book" style="color:var(--primary);margin-right:6px"></i>과목 선택</h3>
+          <button class="ea-modal-close" onclick="closePeriodPicker()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="ea-modal-body">
+          <div class="ea-pp-hint" id="ea-pp-hint"></div>
+          <div class="ea-pp-grid" id="ea-pp-grid"></div>
+          <div style="margin-top:12px">
+            <label class="form-label" style="margin-top:0;font-size:13px">직접 입력</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="ea-pp-custom" class="form-input" placeholder="과목명 입력" style="flex:1;font-size:14px;padding:10px 12px">
+              <button class="btn-primary" style="padding:10px 16px;font-size:13px;white-space:nowrap" onclick="confirmPeriodCustom()">확인</button>
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <label class="form-label" style="margin-top:0;font-size:13px">시험 범위 (선택)</label>
+            <input type="text" id="ea-pp-range" class="form-input" placeholder="예: 수학Ⅱ 1~3단원" style="font-size:14px;padding:10px 12px">
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ── 수행평가 모드 ── */
+function renderExamAddPerformance() {
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="_examAddMode=null;renderScreen()"><i class="fas fa-arrow-left"></i></button>
+        <h1>📝 수행평가 추가</h1>
+      </div>
+      <div class="form-body" style="padding-bottom:100px">
+
+        <label class="form-label">과목</label>
+        <div class="ea-quick-subjects" style="margin-bottom:6px">
+          ${['국어','수학','영어','과학','한국사','사회','물리','화학','생명과학','미술','음악','체육'].map(s => 
+            `<button class="ea-quick-subj-btn ${_eaPerfSubject===s?'active':''}" onclick="_eaPerfSubject='${s}';document.getElementById('ea-perf-subj').value='${s}';renderScreen()">${s}</button>`
+          ).join('')}
+        </div>
+        <input type="text" id="ea-perf-subj" class="form-input" placeholder="직접 입력" value="${_eaPerfSubject || ''}">
+
+        <label class="form-label" style="margin-top:14px">수행평가 이름</label>
+        <input type="text" id="ea-perf-name" class="form-input" placeholder="예: 수학 탐구보고서, 영어 발표" value="${_eaPerfName || ''}">
+
+        <label class="form-label" style="margin-top:14px">마감 기한</label>
+        <div class="ea-period-field ea-single-date">
+          <i class="fas fa-clock" style="color:#F39C12"></i>
+          <input type="date" id="ea-perf-deadline" class="ea-period-input" value="${_eaPerfDeadline || ''}">
+        </div>
+
+        <label class="form-label" style="margin-top:14px">평가 주제</label>
+        <textarea id="ea-perf-topic" class="form-input ea-textarea" placeholder="예: 자유주제 탐구보고서 A4 5장 이상\n미적분 활용 사례 조사">${_eaPerfTopic || ''}</textarea>
+
+        <label class="form-label" style="margin-top:14px">메모 (선택)</label>
+        <input type="text" id="ea-perf-memo" class="form-input" placeholder="참고 사항을 입력하세요" value="${_eaPerfMemo || ''}">
+
+        <!-- 하단 저장 버튼 -->
+        <div class="ea-bottom-bar">
+          <button class="btn-primary ea-save-btn" onclick="savePerformanceExam()">
+            <i class="fas fa-check" style="margin-right:8px"></i>수행평가 저장
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ── 모의고사 모드 ── */
+function renderExamAddMock() {
+  // 프리셋 목록
+  const presets = [
+    { key:'3월', label:'3월 전국연합학력평가', month:3 },
+    { key:'4월', label:'4월 전국연합학력평가', month:4 },
+    { key:'6월', label:'6월 모의평가 (평가원)', month:6 },
+    { key:'7월', label:'7월 전국연합학력평가', month:7 },
+    { key:'9월', label:'9월 모의평가 (평가원)', month:9 },
+    { key:'10월', label:'10월 전국연합학력평가', month:10 },
+    { key:'수능', label:'대학수학능력시험', month:11 },
+  ];
+  const mockSubjects = [
+    { subject:'국어', time:'1교시 (08:40~10:00)', range:'독서+문학+언어와 매체', color:'#FF6B6B' },
+    { subject:'수학', time:'2교시 (10:30~12:10)', range:'수학Ⅰ+수학Ⅱ+확률과 통계/미적분/기하', color:'#6C5CE7' },
+    { subject:'영어', time:'3교시 (13:10~14:20)', range:'듣기+독해 전 범위', color:'#00B894' },
+    { subject:'한국사', time:'3교시 (14:30~14:50)', range:'전 범위', color:'#74B9FF' },
+    { subject:'탐구1', time:'4교시 (15:20~15:50)', range:'선택과목 1', color:'#FDCB6E' },
+    { subject:'탐구2', time:'4교시 (15:50~16:20)', range:'선택과목 2', color:'#E056A0' },
+  ];
+
+  const year = new Date().getFullYear();
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="_examAddMode=null;renderScreen()"><i class="fas fa-arrow-left"></i></button>
+        <h1>📗 모의고사 추가</h1>
+      </div>
+      <div class="form-body" style="padding-bottom:100px">
+
+        <div class="ea-mock-intro">
+          <i class="fas fa-magic" style="color:var(--primary);font-size:18px"></i>
+          <span>프리셋을 선택하면 과목·시간이 자동으로 채워져요</span>
+        </div>
+
+        <!-- 프리셋 버튼 -->
+        <div class="ea-section-label"><span>🗓️ ${year}년 모의고사 프리셋</span></div>
+        <div class="ea-preset-grid">
+          ${presets.map((p,i) => {
+            const sel = _eaMockPreset === p.key;
+            return `
+            <button class="ea-preset-btn ${sel?'active':''} stagger-${i+1} animate-in" onclick="selectMockPreset('${p.key}')">
+              <span class="ea-preset-month">${p.key}</span>
+              <span class="ea-preset-name">${p.label}</span>
+              ${sel ? '<i class="fas fa-check-circle ea-preset-check"></i>' : ''}
+            </button>`;
+          }).join('')}
+        </div>
+
+        <!-- 선택 후 상세 -->
+        ${_eaMockPreset ? `
+          <label class="form-label" style="margin-top:16px">시험 이름</label>
+          <input type="text" id="ea-mock-name" class="form-input" value="${_eaMockName || presets.find(p=>p.key===_eaMockPreset)?.label || ''}" placeholder="시험 이름">
+
+          <label class="form-label" style="margin-top:14px">시험 날짜</label>
+          <div class="ea-period-field ea-single-date">
+            <i class="fas fa-calendar-day" style="color:#00B894"></i>
+            <input type="date" id="ea-mock-date" class="ea-period-input" value="${_eaMockDate || `${year}-${String(presets.find(p=>p.key===_eaMockPreset)?.month||3).padStart(2,'0')}-06`}">
+          </div>
+
+          <div class="ea-section-label" style="margin-top:16px">
+            <span>📋 시험 과목 (자동 설정)</span>
+            <span class="ea-section-count">${mockSubjects.length}과목</span>
+          </div>
+          <div class="ea-mock-subjects">
+            ${mockSubjects.map(s => `
+              <div class="ea-mock-subj-row">
+                <div class="ea-subj-color" style="background:${s.color}"></div>
+                <div class="ea-mock-subj-info">
+                  <span class="ea-mock-subj-name">${s.subject}</span>
+                  <span class="ea-mock-subj-time">${s.time}</span>
+                </div>
+                <span class="ea-mock-subj-range">${s.range}</span>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="ea-mock-custom-note">
+            <i class="fas fa-pencil-alt"></i>
+            탐구 과목은 저장 후 상세 화면에서 수정할 수 있어요
+          </div>
+
+          <!-- 하단 저장 -->
+          <div class="ea-bottom-bar">
+            <button class="btn-primary ea-save-btn" onclick="saveMockExam()">
+              <i class="fas fa-check" style="margin-right:8px"></i>모의고사 저장
+            </button>
+          </div>
+        ` : `
+          <div class="ea-hint-box" style="margin-top:16px">
+            <i class="fas fa-hand-pointer"></i>
+            위 프리셋 중 하나를 선택해주세요
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+
+// ==================== EXAM RESULT INPUT ====================
+
+function renderExamResultInput() {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex) return '<div class="full-screen"><p>시험을 찾을 수 없습니다</p></div>';
+
+  // 기존 결과가 있으면 편집 모드
+  const r = ex.result || {};
+  const subjResults = r.subjects || ex.subjects.map(s => ({
+    subject: s.subject, score: '', grade: '', avg: '', color: s.color,
+    wrongAnswers: []
+  }));
+
+  // 현재 편집 중인 과목 인덱스
+  const activeSubj = state._examResultActiveSubj || 0;
+  const sr = subjResults[activeSubj] || subjResults[0];
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('exam-detail')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📝 결과 입력</h1>
+        <button class="header-action-btn" onclick="saveExamResult()" title="저장" style="color:var(--primary-light)"><i class="fas fa-save"></i></button>
+      </div>
+      <div class="form-body">
+
+        <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:12px">${ex.name}</div>
+
+        <!-- 전체 총점/등급 -->
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <div style="flex:1">
+            <label class="field-label">총점 (100점 환산)</label>
+            <input class="input-field" type="number" id="exam-total-score" placeholder="82" value="${r.totalScore || ''}" min="0" max="100" style="text-align:center;font-size:18px;font-weight:700">
+          </div>
+          <div style="flex:1">
+            <label class="field-label">전체 등급</label>
+            <select class="input-field" id="exam-total-grade" style="text-align:center;font-size:18px;font-weight:700">
+              <option value="">-</option>
+              ${[1,2,3,4,5,6,7,8,9].map(g => `<option value="${g}" ${r.grade==g?'selected':''}>${g}등급</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <!-- 과목 탭 -->
+        <div class="chip-row" style="margin-bottom:12px;flex-wrap:wrap">
+          ${subjResults.map((s,i) => `
+            <button class="chip ${i===activeSubj?'active':''}" onclick="state._examResultActiveSubj=${i};renderScreen()" style="${i===activeSubj?'background:'+s.color+';border-color:'+s.color:''}">
+              ${s.subject}
+              ${s.score ? ' ✅' : ''}
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- 선택 과목 입력 -->
+        <div class="card" style="border-left:3px solid ${sr.color || 'var(--primary-light)'}">
+          <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">${sr.subject}</div>
+          
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <div style="flex:1">
+              <label class="field-label">점수</label>
+              <input class="input-field exam-subj-score" type="number" data-idx="${activeSubj}" placeholder="78" value="${sr.score || ''}" min="0" max="100">
+            </div>
+            <div style="flex:1">
+              <label class="field-label">등급</label>
+              <select class="input-field exam-subj-grade" data-idx="${activeSubj}">
+                <option value="">-</option>
+                ${[1,2,3,4,5,6,7,8,9].map(g => `<option value="${g}" ${sr.grade==g?'selected':''}>${g}등급</option>`).join('')}
+              </select>
+            </div>
+            <div style="flex:1">
+              <label class="field-label">평균</label>
+              <input class="input-field exam-subj-avg" type="number" data-idx="${activeSubj}" placeholder="65" value="${sr.avg || ''}" min="0" max="100">
+            </div>
+          </div>
+
+          <!-- 오답 분석 -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:700;color:var(--text-primary)">❌ 오답 분석</span>
+            <button class="card-link" onclick="addWrongAnswer(${activeSubj})">+ 오답 추가</button>
+          </div>
+
+          ${(sr.wrongAnswers || []).length === 0 ? `
+            <div style="text-align:center;padding:16px;background:var(--bg-input);border-radius:12px">
+              <p style="color:var(--text-muted);font-size:12px">틀린 문항을 추가하여 오답 분석을 시작하세요</p>
+              <button class="btn-secondary" style="margin-top:8px;font-size:12px" onclick="addWrongAnswer(${activeSubj})">
+                <i class="fas fa-plus" style="margin-right:4px"></i>오답 추가
+              </button>
+            </div>
+          ` : `
+            ${(sr.wrongAnswers || []).map((w,wi) => `
+              <div class="wrong-answer-card" style="background:var(--bg-input);border-radius:12px;padding:12px;margin-bottom:8px;position:relative">
+                <button style="position:absolute;top:6px;right:8px;background:none;border:none;color:#FF6B6B;font-size:14px;cursor:pointer" onclick="removeWrongAnswer(${activeSubj},${wi})"><i class="fas fa-times"></i></button>
+                
+                <div style="display:flex;gap:6px;margin-bottom:8px">
+                  <div style="flex:0.5">
+                    <label style="font-size:10px;color:var(--text-muted)">문항</label>
+                    <input class="input-field wa-number" data-subj="${activeSubj}" data-wi="${wi}" type="number" placeholder="15" value="${w.number || ''}" style="font-size:13px;padding:6px 8px">
+                  </div>
+                  <div style="flex:1">
+                    <label style="font-size:10px;color:var(--text-muted)">관련 단원</label>
+                    <input class="input-field wa-topic" data-subj="${activeSubj}" data-wi="${wi}" placeholder="치환적분" value="${w.topic || ''}" style="font-size:13px;padding:6px 8px">
+                  </div>
+                </div>
+
+                <div style="margin-bottom:8px">
+                  <label style="font-size:10px;color:var(--text-muted)">오답 유형</label>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
+                    ${[{k:'concept',l:'📘 개념부족',c:'#6C5CE7'},{k:'careless',l:'⚡ 실수',c:'#FF9F43'},{k:'interpretation',l:'🔍 해석오류',c:'#FF6B6B'},{k:'time',l:'⏱️ 시간부족',c:'#74B9FF'}].map(t => `
+                      <button class="chip wa-type-btn ${w.type===t.k?'active':''}" data-subj="${activeSubj}" data-wi="${wi}" data-type="${t.k}" style="font-size:10px;padding:4px 8px;${w.type===t.k?'background:'+t.c+';border-color:'+t.c:''}" onclick="setWrongAnswerType(${activeSubj},${wi},'${t.k}')">
+                        ${t.l}
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+
+                <div style="display:flex;gap:6px;margin-bottom:8px">
+                  <div style="flex:1">
+                    <label style="font-size:10px;color:var(--text-muted)">내 답</label>
+                    <input class="input-field wa-my" data-subj="${activeSubj}" data-wi="${wi}" placeholder="③" value="${w.myAnswer || ''}" style="font-size:13px;padding:6px 8px">
+                  </div>
+                  <div style="flex:1">
+                    <label style="font-size:10px;color:var(--text-muted)">정답</label>
+                    <input class="input-field wa-correct" data-subj="${activeSubj}" data-wi="${wi}" placeholder="④" value="${w.correctAnswer || ''}" style="font-size:13px;padding:6px 8px">
+                  </div>
+                </div>
+
+                <div style="margin-bottom:6px">
+                  <label style="font-size:10px;color:var(--text-muted)">왜 틀렸는지 (원인 분석)</label>
+                  <textarea class="input-field wa-reason" data-subj="${activeSubj}" data-wi="${wi}" rows="2" placeholder="치환 후 적분 구간 변환을 안 했음" style="font-size:12px;padding:8px">${w.reason || ''}</textarea>
+                </div>
+                <div>
+                  <label style="font-size:10px;color:var(--text-muted)">다음에 어떻게 할지 (성찰)</label>
+                  <textarea class="input-field wa-reflection" data-subj="${activeSubj}" data-wi="${wi}" rows="2" placeholder="구간 변환 공식을 다시 정리해야겠다" style="font-size:12px;padding:8px">${w.reflection || ''}</textarea>
+                </div>
+
+                <!-- 오답 문제 사진 -->
+                <div style="margin-top:8px">
+                  <label style="font-size:10px;color:var(--text-muted)">📷 오답 문제 사진</label>
+                  <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center">
+                    ${(w.images || []).map((img, imgIdx) => `
+                      <div style="position:relative;width:64px;height:64px;border-radius:8px;overflow:hidden;border:1px solid var(--border-color);flex-shrink:0">
+                        <img src="${img}" style="width:100%;height:100%;object-fit:cover;cursor:pointer" onclick="viewWrongAnswerImage(${activeSubj},${wi},${imgIdx})">
+                        <button style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:rgba(255,107,107,0.9);border:none;color:#fff;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center" onclick="removeWrongAnswerImage(${activeSubj},${wi},${imgIdx})"><i class="fas fa-times" style="font-size:8px"></i></button>
+                      </div>
+                    `).join('')}
+                    <div style="display:flex;gap:4px">
+                      <label style="width:48px;height:48px;border-radius:8px;border:2px dashed var(--border-color);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-size:10px;color:var(--text-muted);gap:2px;transition:all 0.2s" onmouseover="this.style.borderColor='var(--primary-light)'" onmouseout="this.style.borderColor='var(--border-color)'">
+                        <i class="fas fa-image" style="font-size:14px"></i>
+                        <span>앨범</span>
+                        <input type="file" accept="image/*" multiple style="display:none" onchange="handleWrongAnswerImage(event,${activeSubj},${wi})">
+                      </label>
+                      <label style="width:48px;height:48px;border-radius:8px;border:2px dashed var(--border-color);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-size:10px;color:var(--text-muted);gap:2px;transition:all 0.2s" onmouseover="this.style.borderColor='var(--primary-light)'" onmouseout="this.style.borderColor='var(--border-color)'">
+                        <i class="fas fa-camera" style="font-size:14px"></i>
+                        <span>촬영</span>
+                        <input type="file" accept="image/*" style="display:none" onchange="handleWrongAnswerImage(event,${activeSubj},${wi})">
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          `}
+        </div>
+
+        <!-- 전체 소감 -->
+        <div style="margin-top:12px">
+          <label class="field-label">💭 전체 소감</label>
+          <textarea class="input-field" id="exam-overall-reflection" rows="3" placeholder="이번 시험을 돌아보며 느낀 점을 적어주세요">${r.overallReflection || ''}</textarea>
+        </div>
+
+        <button class="btn-primary" style="width:100%;margin-top:16px;padding:14px" onclick="saveExamResult()">
+          <i class="fas fa-save" style="margin-right:6px"></i>결과 저장
+        </button>
+
+      </div>
+    </div>
+  `;
+}
+
+// ==================== EXAM REPORT ====================
+
+function renderExamReport() {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return '<div class="full-screen"><p>결과 데이터가 없습니다</p></div>';
+
+  const r = ex.result;
+  const totalWrong = r.subjects.reduce((s,sub) => s + (sub.wrongAnswers||[]).length, 0);
+  const errorTypes = {concept:0, careless:0, interpretation:0, time:0};
+  const weakTopics = {};
+  
+  r.subjects.forEach(sub => {
+    (sub.wrongAnswers||[]).forEach(w => {
+      if (w.type) errorTypes[w.type]++;
+      if (w.topic) {
+        const key = sub.subject + ' - ' + w.topic;
+        weakTopics[key] = (weakTopics[key]||0) + 1;
+      }
+    });
+  });
+
+  const sortedWeakTopics = Object.entries(weakTopics).sort((a,b) => b[1]-a[1]).slice(0,5);
+  const errorTotal = Object.values(errorTypes).reduce((a,b)=>a+b,0) || 1;
+  const errorTypeLabels = {concept:'📘 개념부족', careless:'⚡ 실수', interpretation:'🔍 해석오류', time:'⏱️ 시간부족'};
+  const errorTypeColors = {concept:'#6C5CE7', careless:'#FF9F43', interpretation:'#FF6B6B', time:'#74B9FF'};
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('exam-detail')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📊 결과 보고서</h1>
+      </div>
+      <div class="form-body">
+
+        <div style="text-align:center;margin-bottom:20px">
+          <div style="font-size:13px;color:var(--text-muted)">${ex.name}</div>
+          <div style="font-size:36px;font-weight:800;color:var(--primary-light);margin:8px 0">${r.totalScore}점</div>
+          <div style="display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--text-secondary)">
+            ${r.grade ? `<span>📋 ${r.grade}등급</span>` : ''}
+            <span>❌ 총 오답 ${totalWrong}문항</span>
+          </div>
+        </div>
+
+        <!-- 과목별 성적 -->
+        <div class="section-label">📚 과목별 성적</div>
+        <div class="card">
+          ${r.subjects.map(sub => {
+            const diff = sub.score && sub.avg ? sub.score - sub.avg : 0;
+            return `
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-color)">
+              <div style="width:4px;height:28px;border-radius:2px;background:${sub.color}"></div>
+              <span style="font-size:13px;font-weight:600;width:44px">${sub.subject}</span>
+              <div style="flex:1;height:8px;background:var(--bg-input);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${sub.score||0}%;background:${sub.color};border-radius:4px"></div>
+              </div>
+              <span style="font-size:14px;font-weight:700;width:36px;text-align:right;color:var(--text-primary)">${sub.score||'-'}</span>
+              ${sub.grade ? `<span style="font-size:10px;background:rgba(108,92,231,0.15);padding:2px 6px;border-radius:6px;color:${sub.color}">${sub.grade}등급</span>` : ''}
+              ${diff !== 0 ? `<span style="font-size:10px;color:${diff>0?'#00B894':'#FF6B6B'}">${diff>0?'+':''}${diff}</span>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+
+        <!-- 오답 유형 분석 -->
+        ${totalWrong > 0 ? `
+        <div class="section-label" style="margin-top:16px">🔍 오답 유형 분석</div>
+        <div class="card">
+          ${Object.entries(errorTypes).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([type,count]) => {
+            const pct = Math.round(count/errorTotal*100);
+            return `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
+              <span style="font-size:12px;width:90px">${errorTypeLabels[type]}</span>
+              <div style="flex:1;height:10px;background:var(--bg-input);border-radius:5px;overflow:hidden">
+                <div style="height:100%;width:${pct}%;background:${errorTypeColors[type]};border-radius:5px;transition:width 0.5s"></div>
+              </div>
+              <span style="font-size:12px;font-weight:700;width:50px;text-align:right;color:${errorTypeColors[type]}">${count}개 ${pct}%</span>
+            </div>`;
+          }).join('')}
+        </div>
+        ` : ''}
+
+        <!-- 취약 단원 TOP -->
+        ${sortedWeakTopics.length > 0 ? `
+        <div class="section-label" style="margin-top:16px">⚠️ 취약 단원 TOP ${sortedWeakTopics.length}</div>
+        <div class="card">
+          ${sortedWeakTopics.map(([topic,count],i) => `
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;${i<sortedWeakTopics.length-1?'border-bottom:1px solid var(--border-color)':''}">
+              <span style="width:22px;height:22px;border-radius:50%;background:${i===0?'#FF6B6B':i===1?'#FF9F43':'#FDCB6E'};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center">${i+1}</span>
+              <span style="flex:1;font-size:13px;color:var(--text-primary)">${topic}</span>
+              <span style="font-size:12px;color:var(--text-muted)">${count}문항</span>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
+        <!-- 과목별 오답 상세 -->
+        ${r.subjects.filter(s => (s.wrongAnswers||[]).length > 0).map((sub, sIdx) => `
+        <div class="section-label" style="margin-top:16px">${sub.subject} 오답 상세</div>
+        ${(sub.wrongAnswers||[]).map((w, wIdx) => `
+          <div class="card" style="border-left:3px solid ${errorTypeColors[w.type]||'var(--border-color)'};margin-bottom:8px;padding:12px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <span style="font-size:12px;font-weight:700;background:var(--bg-input);padding:2px 8px;border-radius:6px">${w.number ? w.number+'번' : '?'}</span>
+              <span style="font-size:12px;color:var(--text-secondary)">${w.topic || ''}</span>
+              <span style="margin-left:auto;font-size:10px;padding:2px 6px;border-radius:6px;background:${errorTypeColors[w.type]||'var(--bg-input)'}20;color:${errorTypeColors[w.type]||'var(--text-muted)'}">${errorTypeLabels[w.type]||'미분류'}</span>
+            </div>
+            ${w.myAnswer || w.correctAnswer ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">내 답: <span style="color:#FF6B6B">${w.myAnswer||'?'}</span> → 정답: <span style="color:#00B894">${w.correctAnswer||'?'}</span></div>` : ''}
+            ${w.reason ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><strong>원인:</strong> ${w.reason}</div>` : ''}
+            ${w.reflection ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:2px"><strong>성찰:</strong> ${w.reflection}</div>` : ''}
+            ${(w.images && w.images.length > 0) ? `
+              <div style="margin-top:8px">
+                <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">📷 오답 문제 사진</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  ${w.images.map((img, imgI) => `
+                    <div style="width:72px;height:72px;border-radius:8px;overflow:hidden;border:1px solid var(--border-color);cursor:pointer" onclick="viewReportWrongImage('${ex.id}','${sub.subject}',${wIdx},${imgI})">
+                      <img src="${img}" style="width:100%;height:100%;object-fit:cover">
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        `).join('')}
+        `).join('')}
+
+        <!-- 전체 소감 -->
+        ${r.overallReflection ? `
+        <div class="section-label" style="margin-top:16px">💭 전체 소감</div>
+        <div class="card">
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6">${r.overallReflection}</p>
+        </div>
+        ` : ''}
+
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn-secondary" style="flex:1" onclick="state.viewingExam='${ex.id}';goScreen('exam-result-input')">
+            <i class="fas fa-edit" style="margin-right:4px"></i>결과 수정
+          </button>
+          <button class="btn-primary" style="flex:1" onclick="goScreen('growth-analysis')">
+            <i class="fas fa-chart-line" style="margin-right:4px"></i>성장 분석
+          </button>
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+
+// ==================== GROWTH ANALYSIS ====================
+
+function renderGrowthAnalysis() {
+  const examsWithResult = state.exams.filter(e => e.result).sort((a,b) => a.startDate.localeCompare(b.startDate));
+  
+  if (examsWithResult.length === 0) {
+    return `
+      <div class="full-screen animate-in">
+        <div class="screen-header">
+          <button class="back-btn" onclick="goScreen('exam-list')"><i class="fas fa-arrow-left"></i></button>
+          <h1>📈 성장 분석</h1>
+        </div>
+        <div class="form-body" style="text-align:center;padding-top:60px">
+          <div style="font-size:48px;margin-bottom:16px">📊</div>
+          <p style="font-size:14px;color:var(--text-secondary)">시험 결과를 2개 이상 입력하면<br>성장 추이를 분석할 수 있습니다</p>
+        </div>
+      </div>
+    `;
+  }
+
+  // 전체 과목 리스트 수집
+  const allSubjects = [...new Set(examsWithResult.flatMap(e => e.result.subjects.map(s => s.subject)))];
+  const activeTab = state._growthTab || 'total';
+
+  // 과목별 색상 매핑
+  const subjColorMap = {};
+  examsWithResult.forEach(e => e.result.subjects.forEach(s => { if (!subjColorMap[s.subject]) subjColorMap[s.subject] = s.color; }));
+
+  // 오답유형 변화 추적
+  const errorTypeLabels = {concept:'📘 개념부족', careless:'⚡ 실수', interpretation:'🔍 해석오류', time:'⏱️ 시간부족'};
+  const errorTypeColors = {concept:'#6C5CE7', careless:'#FF9F43', interpretation:'#FF6B6B', time:'#74B9FF'};
+  
+  // 성장 하이라이트 계산
+  let highlights = [];
+  if (examsWithResult.length >= 2) {
+    const first = examsWithResult[0].result;
+    const last = examsWithResult[examsWithResult.length-1].result;
+    
+    allSubjects.forEach(subj => {
+      const firstSub = first.subjects.find(s => s.subject === subj);
+      const lastSub = last.subjects.find(s => s.subject === subj);
+      if (firstSub && lastSub && firstSub.score && lastSub.score) {
+        const diff = lastSub.score - firstSub.score;
+        highlights.push({ subject: subj, first: firstSub.score, last: lastSub.score, diff, color: subjColorMap[subj] || '#888' });
+      }
+    });
+    highlights.sort((a,b) => b.diff - a.diff);
+  }
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('exam-list')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📈 성장 분석</h1>
+      </div>
+      <div class="form-body">
+
+        <!-- 과목 필터 탭 -->
+        <div class="chip-row" style="margin-bottom:16px;flex-wrap:wrap">
+          <button class="chip ${activeTab==='total'?'active':''}" onclick="state._growthTab='total';renderScreen()">전체</button>
+          ${allSubjects.map(s => `
+            <button class="chip ${activeTab===s?'active':''}" onclick="state._growthTab='${s}';renderScreen()" style="${activeTab===s?'background:'+subjColorMap[s]+';border-color:'+subjColorMap[s]:''}">
+              ${s}
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- 성적 추이 차트 -->
+        <div class="section-label">📊 성적 추이</div>
+        <div class="card" style="padding:16px">
+          <canvas id="growth-chart" width="300" height="180"></canvas>
+        </div>
+
+        <!-- 오답 유형 변화 -->
+        ${examsWithResult.length >= 1 ? `
+        <div class="section-label" style="margin-top:16px">🔍 오답 유형 변화</div>
+        <div class="card">
+          <div style="display:flex;gap:4px;margin-bottom:8px;font-size:10px;color:var(--text-muted)">
+            <span style="width:80px"></span>
+            ${examsWithResult.map(e => `<span style="flex:1;text-align:center">${e.name.replace(/.*?(중간|기말|모의|수행|학력).*/, '$1')}</span>`).join('')}
+          </div>
+          ${Object.entries(errorTypeLabels).map(([type, label]) => {
+            const counts = examsWithResult.map(e => {
+              let c = 0;
+              const subs = activeTab === 'total' ? e.result.subjects : e.result.subjects.filter(s => s.subject === activeTab);
+              subs.forEach(s => (s.wrongAnswers||[]).forEach(w => { if (w.type===type) c++; }));
+              return c;
+            });
+            if (counts.every(c => c===0)) return '';
+            const trend = counts.length >= 2 ? (counts[counts.length-1] < counts[0] ? '📉' : counts[counts.length-1] > counts[0] ? '📈' : '➡️') : '';
+            return `
+            <div style="display:flex;align-items:center;gap:4px;padding:4px 0;font-size:12px">
+              <span style="width:80px;color:${errorTypeColors[type]}">${label}</span>
+              ${counts.map(c => `<span style="flex:1;text-align:center;font-weight:700;color:var(--text-primary)">${c}</span>`).join('')}
+              <span>${trend}</span>
+            </div>`;
+          }).join('')}
+        </div>
+        ` : ''}
+
+        <!-- 성장 하이라이트 -->
+        ${highlights.length > 0 ? `
+        <div class="section-label" style="margin-top:16px">🏆 성장 하이라이트</div>
+        <div class="card">
+          ${highlights.map(h => `
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-color)">
+              <span style="font-size:${h.diff>0?'16px':'14px'};width:24px">${h.diff>0?'✅':'⚠️'}</span>
+              <span style="font-size:13px;font-weight:600;color:${h.color};width:44px">${h.subject}</span>
+              <span style="font-size:12px;color:var(--text-muted)">${h.first} → ${h.last}</span>
+              <span style="margin-left:auto;font-size:14px;font-weight:700;color:${h.diff>0?'#00B894':'#FF6B6B'}">${h.diff>0?'+':''}${h.diff}</span>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
+        <!-- 시험별 보고서 바로가기 -->
+        <div class="section-label" style="margin-top:16px">📋 시험별 보고서</div>
+        ${examsWithResult.map(e => `
+          <div class="card" style="padding:12px;margin-bottom:8px;cursor:pointer" onclick="state.viewingExam='${e.id}';goScreen('exam-report')">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text-primary)">${e.name}</div>
+                <div style="font-size:11px;color:var(--text-muted)">${e.startDate.slice(5).replace('-','/')}</div>
+              </div>
+              <div style="text-align:right">
+                <span style="font-size:18px;font-weight:800;color:var(--primary-light)">${e.result.totalScore}점</span>
+                ${e.result.grade ? `<span style="font-size:11px;color:var(--text-muted);margin-left:4px">(${e.result.grade}등급)</span>` : ''}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+
+      </div>
+    </div>
+  `;
+}
+
+
+// ==================== EXAM RESULT UTILITY FUNCTIONS ====================
+
+function collectExamResultData() {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex) return null;
+
+  const r = ex.result || {};
+  const subjResults = r.subjects || ex.subjects.map(s => ({
+    subject: s.subject, score: '', grade: '', avg: '', color: s.color, wrongAnswers: []
+  }));
+
+  // 이미지 데이터는 DOM이 아닌 state에 있으므로 기존 데이터에서 보존
+  subjResults.forEach(sr => {
+    (sr.wrongAnswers || []).forEach(w => {
+      if (!w.images) w.images = [];
+    });
+  });
+
+  // 현재 과목의 입력값 수집
+  const activeSubj = state._examResultActiveSubj || 0;
+  
+  // 과목 점수/등급/평균 수집
+  document.querySelectorAll('.exam-subj-score').forEach(el => {
+    const idx = parseInt(el.dataset.idx);
+    if (subjResults[idx]) subjResults[idx].score = el.value ? parseInt(el.value) : '';
+  });
+  document.querySelectorAll('.exam-subj-grade').forEach(el => {
+    const idx = parseInt(el.dataset.idx);
+    if (subjResults[idx]) subjResults[idx].grade = el.value ? parseInt(el.value) : '';
+  });
+  document.querySelectorAll('.exam-subj-avg').forEach(el => {
+    const idx = parseInt(el.dataset.idx);
+    if (subjResults[idx]) subjResults[idx].avg = el.value ? parseInt(el.value) : '';
+  });
+
+  // 오답 데이터 수집
+  document.querySelectorAll('.wa-number').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].number = el.value ? parseInt(el.value) : '';
+  });
+  document.querySelectorAll('.wa-topic').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].topic = el.value;
+  });
+  document.querySelectorAll('.wa-my').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].myAnswer = el.value;
+  });
+  document.querySelectorAll('.wa-correct').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].correctAnswer = el.value;
+  });
+  document.querySelectorAll('.wa-reason').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].reason = el.value;
+  });
+  document.querySelectorAll('.wa-reflection').forEach(el => {
+    const si = parseInt(el.dataset.subj), wi = parseInt(el.dataset.wi);
+    if (subjResults[si] && subjResults[si].wrongAnswers[wi]) subjResults[si].wrongAnswers[wi].reflection = el.value;
+  });
+
+  return subjResults;
+}
+
+function addWrongAnswer(subjIdx) {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex) return;
+
+  // 현재 입력값 저장
+  const collected = collectExamResultData();
+  if (collected) {
+    if (!ex.result) ex.result = { totalScore:'', grade:'', subjects: collected, overallReflection:'' };
+    else ex.result.subjects = collected;
+  }
+
+  const totalScore = document.getElementById('exam-total-score')?.value;
+  const totalGrade = document.getElementById('exam-total-grade')?.value;
+  const reflection = document.getElementById('exam-overall-reflection')?.value;
+  if (ex.result) {
+    if (totalScore) ex.result.totalScore = parseInt(totalScore);
+    if (totalGrade) ex.result.grade = parseInt(totalGrade);
+    if (reflection !== undefined) ex.result.overallReflection = reflection;
+  }
+
+  // 오답 추가
+  if (!ex.result) ex.result = { totalScore:'', grade:'', subjects: ex.subjects.map(s => ({subject:s.subject,score:'',grade:'',avg:'',color:s.color,wrongAnswers:[]})), overallReflection:'' };
+  if (!ex.result.subjects[subjIdx].wrongAnswers) ex.result.subjects[subjIdx].wrongAnswers = [];
+  ex.result.subjects[subjIdx].wrongAnswers.push({ number:'', topic:'', type:'', myAnswer:'', correctAnswer:'', reason:'', reflection:'', images:[] });
+  
+  renderScreen();
+}
+
+function removeWrongAnswer(subjIdx, waIdx) {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return;
+  
+  const collected = collectExamResultData();
+  if (collected) ex.result.subjects = collected;
+  
+  ex.result.subjects[subjIdx].wrongAnswers.splice(waIdx, 1);
+  renderScreen();
+}
+
+function setWrongAnswerType(subjIdx, waIdx, type) {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return;
+  
+  const collected = collectExamResultData();
+  if (collected) ex.result.subjects = collected;
+  
+  ex.result.subjects[subjIdx].wrongAnswers[waIdx].type = type;
+  renderScreen();
+}
+
+// 오답 문제 사진 업로드 핸들러
+function handleWrongAnswerImage(event, subjIdx, waIdx) {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return;
+
+  // 현재 입력값 저장
+  const collected = collectExamResultData();
+  if (collected) ex.result.subjects = collected;
+
+  const wa = ex.result.subjects[subjIdx]?.wrongAnswers[waIdx];
+  if (!wa) return;
+  if (!wa.images) wa.images = [];
+
+  // 최대 5장 제한
+  const maxImages = 5;
+  const remaining = maxImages - wa.images.length;
+  if (remaining <= 0) {
+    alert('사진은 최대 5장까지 첨부할 수 있습니다.');
+    return;
+  }
+
+  const filesToProcess = Array.from(files).slice(0, remaining);
+  let processedCount = 0;
+
+  filesToProcess.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      // 이미지 리사이즈 (최대 800px)
+      const img = new Image();
+      img.onload = function() {
+        const canvas = document.createElement('canvas');
+        const MAX_SIZE = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX_SIZE || h > MAX_SIZE) {
+          if (w > h) { h = Math.round(h * MAX_SIZE / w); w = MAX_SIZE; }
+          else { w = Math.round(w * MAX_SIZE / h); h = MAX_SIZE; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        wa.images.push(dataUrl);
+        processedCount++;
+        if (processedCount === filesToProcess.length) {
+          renderScreen();
+        }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// 오답 사진 삭제
+function removeWrongAnswerImage(subjIdx, waIdx, imgIdx) {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return;
+
+  const collected = collectExamResultData();
+  if (collected) ex.result.subjects = collected;
+
+  const wa = ex.result.subjects[subjIdx]?.wrongAnswers[waIdx];
+  if (!wa || !wa.images) return;
+  wa.images.splice(imgIdx, 1);
+  renderScreen();
+}
+
+// 오답 사진 확대 보기
+function viewWrongAnswerImage(subjIdx, waIdx, imgIdx) {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex || !ex.result) return;
+
+  const wa = ex.result.subjects[subjIdx]?.wrongAnswers[waIdx];
+  if (!wa || !wa.images || !wa.images[imgIdx]) return;
+
+  const images = wa.images;
+  let currentIdx = imgIdx;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'wa-image-viewer';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+  
+  function renderViewer() {
+    overlay.innerHTML = `
+      <button style="position:absolute;top:16px;right:16px;background:none;border:none;color:#fff;font-size:24px;cursor:pointer;z-index:10001" onclick="document.getElementById('wa-image-viewer').remove()"><i class="fas fa-times"></i></button>
+      <div style="position:absolute;top:16px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px">${currentIdx+1} / ${images.length}</div>
+      ${images.length > 1 ? `
+        <button style="position:absolute;left:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.2);border:none;color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('wa-image-viewer')._nav(-1)"><i class="fas fa-chevron-left"></i></button>
+        <button style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.2);border:none;color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('wa-image-viewer')._nav(1)"><i class="fas fa-chevron-right"></i></button>
+      ` : ''}
+      <img src="${images[currentIdx]}" style="max-width:90%;max-height:80%;object-fit:contain;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5)">
+    `;
+  }
+
+  overlay._nav = function(dir) {
+    currentIdx = (currentIdx + dir + images.length) % images.length;
+    renderViewer();
+  };
+
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  renderViewer();
+  document.body.appendChild(overlay);
+}
+
+// 보고서에서 오답 사진 확대 보기
+function viewReportWrongImage(examId, subjectName, waIdx, imgIdx) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (!ex || !ex.result) return;
+
+  const sub = ex.result.subjects.find(s => s.subject === subjectName);
+  if (!sub || !sub.wrongAnswers || !sub.wrongAnswers[waIdx]) return;
+
+  const images = sub.wrongAnswers[waIdx].images || [];
+  if (!images[imgIdx]) return;
+
+  let currentIdx = imgIdx;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'wa-image-viewer';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+  
+  function renderViewer() {
+    overlay.innerHTML = `
+      <button style="position:absolute;top:16px;right:16px;background:none;border:none;color:#fff;font-size:24px;cursor:pointer;z-index:10001" onclick="document.getElementById('wa-image-viewer').remove()"><i class="fas fa-times"></i></button>
+      <div style="position:absolute;top:16px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px">${currentIdx+1} / ${images.length}</div>
+      ${images.length > 1 ? `
+        <button style="position:absolute;left:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.2);border:none;color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('wa-image-viewer')._nav(-1)"><i class="fas fa-chevron-left"></i></button>
+        <button style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.2);border:none;color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('wa-image-viewer')._nav(1)"><i class="fas fa-chevron-right"></i></button>
+      ` : ''}
+      <img src="${images[currentIdx]}" style="max-width:90%;max-height:80%;object-fit:contain;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5)">
+    `;
+  }
+
+  overlay._nav = function(dir) {
+    currentIdx = (currentIdx + dir + images.length) % images.length;
+    renderViewer();
+  };
+
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  renderViewer();
+  document.body.appendChild(overlay);
+}
+
+function saveExamResult() {
+  const ex = state.exams.find(e => e.id === state.viewingExam);
+  if (!ex) return;
+
+  const collected = collectExamResultData();
+  const totalScore = document.getElementById('exam-total-score')?.value;
+  const totalGrade = document.getElementById('exam-total-grade')?.value;
+  const reflection = document.getElementById('exam-overall-reflection')?.value || '';
+
+  if (!totalScore) { alert('총점을 입력해주세요'); return; }
+
+  ex.result = {
+    totalScore: parseInt(totalScore),
+    grade: totalGrade ? parseInt(totalGrade) : '',
+    subjects: collected || [],
+    overallReflection: reflection,
+    createdAt: kstToday(),
+  };
+
+  ex.status = 'completed';
+
+  // DB 저장 (비동기)
+  if (ex._dbId && DB.studentId()) {
+    DB.saveExamResult(ex._dbId, ex.result);
+    DB.updateExam(ex._dbId, { status: 'completed' });
+  }
+
+  alert('시험 결과가 저장되었습니다! 📊');
+  goScreen('exam-report');
+}
+
+// 성장 분석 차트 그리기
+function drawGrowthChart() {
+  const canvas = document.getElementById('growth-chart');
+  if (!canvas) return;
+  
+  const ctx = canvas.getContext('2d');
+  const examsWithResult = state.exams.filter(e => e.result).sort((a,b) => a.startDate.localeCompare(b.startDate));
+  if (examsWithResult.length === 0) return;
+
+  const activeTab = state._growthTab || 'total';
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const pad = {top:20, right:20, bottom:30, left:35};
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (activeTab === 'total') {
+    // 전체: 모든 과목 라인
+    const allSubjects = [...new Set(examsWithResult.flatMap(e => e.result.subjects.map(s => s.subject)))];
+    const subjColorMap = {};
+    examsWithResult.forEach(e => e.result.subjects.forEach(s => { if (!subjColorMap[s.subject]) subjColorMap[s.subject] = s.color; }));
+
+    // 그리드
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + chartH * (1 - i/4);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left+chartW, y); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(i*25, pad.left-4, y+4);
+    }
+
+    // X축 라벨
+    examsWithResult.forEach((e,i) => {
+      const x = pad.left + (examsWithResult.length===1 ? chartW/2 : chartW * i/(examsWithResult.length-1));
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'center';
+      const label = e.name.replace(/.*?(중간|기말|모의|수행|학력).*/, '$1');
+      ctx.fillText(label, x, H - 6);
+    });
+
+    // 각 과목 라인
+    allSubjects.forEach(subj => {
+      const points = [];
+      examsWithResult.forEach((e,i) => {
+        const s = e.result.subjects.find(s => s.subject === subj);
+        if (s && s.score) {
+          const x = pad.left + (examsWithResult.length===1 ? chartW/2 : chartW * i/(examsWithResult.length-1));
+          const y = pad.top + chartH * (1 - s.score/100);
+          points.push({x, y, score: s.score});
+        }
+      });
+      if (points.length === 0) return;
+
+      ctx.strokeStyle = subjColorMap[subj] || '#888';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.stroke();
+
+      points.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+        ctx.fillStyle = subjColorMap[subj] || '#888';
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.score, p.x, p.y-8);
+      });
+    });
+
+    // 범례
+    let legendX = pad.left;
+    allSubjects.forEach(subj => {
+      ctx.fillStyle = subjColorMap[subj] || '#888';
+      ctx.beginPath(); ctx.arc(legendX+4, pad.top-8, 3, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(subj, legendX+10, pad.top-5);
+      legendX += ctx.measureText(subj).width + 20;
+    });
+
+  } else {
+    // 단일 과목
+    const color = '#A29BFE';
+    const points = [];
+    examsWithResult.forEach((e,i) => {
+      const s = e.result.subjects.find(s => s.subject === activeTab);
+      if (s && s.score) {
+        const x = pad.left + (examsWithResult.length===1 ? chartW/2 : chartW * i/(examsWithResult.length-1));
+        const y = pad.top + chartH * (1 - s.score/100);
+        points.push({x, y, score: s.score, avg: s.avg, name: e.name.replace(/.*?(중간|기말|모의|수행|학력).*/, '$1')});
+      }
+    });
+
+    // 그리드
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + chartH * (1 - i/4);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left+chartW, y); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(i*25, pad.left-4, y+4);
+    }
+
+    // X축
+    points.forEach(p => {
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.name, p.x, H - 6);
+    });
+
+    // 평균 라인 (점선)
+    if (points.some(p => p.avg)) {
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      points.filter(p=>p.avg).forEach((p,i) => {
+        const ay = pad.top + chartH * (1 - p.avg/100);
+        i===0 ? ctx.moveTo(p.x, ay) : ctx.lineTo(p.x, ay);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 내 점수 라인
+    const subjColor = examsWithResult.flatMap(e=>e.result.subjects).find(s=>s.subject===activeTab)?.color || color;
+    ctx.strokeStyle = subjColor;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+    ctx.stroke();
+
+    points.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
+      ctx.fillStyle = subjColor;
+      ctx.fill();
+      ctx.strokeStyle = '#1a1a2e';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.score, p.x, p.y-10);
+    });
+  }
+}
+
+// ==================== EXAM UTILITY FUNCTIONS ====================
+
+// ==================== EXAM ADD STATE ====================
+let _examAddMode = null; // null, 'midterm', 'performance', 'mock'
+// 중간·기말 상태
+let _eaMidtermType = 'midterm';
+let _eaMidtermName = '';
+let _eaMidtermStart = '';
+let _eaMidtermEnd = '';
+let _eaMidtermSubjects = {}; // { '2026-04-21': {1:{subject,color,range}, 2:{...}}, ... }
+let _eaMidtermAddingDate = ''; // 모달에서 추가 중인 날짜
+let _eaMidtermPeriodCount = 4; // 시험 교시 수 (기본 4교시)
+let _eaMidtermPickerDate = ''; // 현재 피커에서 선택 중인 날짜
+let _eaMidtermPickerPeriod = 0; // 현재 피커에서 선택 중인 교시
+// 수행평가 상태
+let _eaPerfSubject = '';
+let _eaPerfName = '';
+let _eaPerfDeadline = '';
+let _eaPerfTopic = '';
+let _eaPerfMemo = '';
+// 모의고사 상태
+let _eaMockPreset = '';
+let _eaMockName = '';
+let _eaMockDate = '';
+
+function resetExamAddState() {
+  _examAddMode = null;
+  _eaMidtermType = 'midterm'; _eaMidtermName = ''; _eaMidtermStart = ''; _eaMidtermEnd = '';
+  _eaMidtermSubjects = {}; _eaMidtermAddingDate = ''; _eaMidtermPeriodCount = 4;
+  _eaMidtermPickerDate = ''; _eaMidtermPickerPeriod = 0;
+  _eaPerfSubject = ''; _eaPerfName = ''; _eaPerfDeadline = ''; _eaPerfTopic = ''; _eaPerfMemo = '';
+  _eaMockPreset = ''; _eaMockName = ''; _eaMockDate = '';
+}
+
+function getDateRange(start, end) {
+  const dates = [];
+  let cur = new Date(start + 'T00:00:00');
+  const last = new Date(end + 'T00:00:00');
+  while (cur <= last) {
+    dates.push(cur.toISOString().slice(0,10));
+    cur.setDate(cur.getDate()+1);
+  }
+  return dates;
+}
+
+/* ── 중간·기말: 기간 변경 ── */
+function onMidtermPeriodChange() {
+  const s = document.getElementById('ea-mid-start')?.value;
+  const e = document.getElementById('ea-mid-end')?.value;
+  if (s) _eaMidtermStart = s;
+  if (e) _eaMidtermEnd = e;
+  // 이름 자동 입력
+  const nameEl = document.getElementById('ea-mid-name');
+  if (nameEl) _eaMidtermName = nameEl.value.trim();
+  // 기존 날짜에 없는 날짜 제거, 새 날짜 추가
+  if (_eaMidtermStart && _eaMidtermEnd) {
+    const dates = getDateRange(_eaMidtermStart, _eaMidtermEnd);
+    const newSubj = {};
+    dates.forEach(d => { newSubj[d] = _eaMidtermSubjects[d] || {}; });
+    _eaMidtermSubjects = newSubj;
+  }
+  renderScreen();
+}
+
+/* ── 중간·기말: 교시별 과목 선택 피커 ── */
+function openPeriodPicker(date, period) {
+  _eaMidtermPickerDate = date;
+  _eaMidtermPickerPeriod = period;
+  // 이름 저장
+  const nameEl = document.getElementById('ea-mid-name');
+  if (nameEl) _eaMidtermName = nameEl.value.trim();
+
+  const modal = document.getElementById('ea-period-picker');
+  if (modal) modal.classList.add('open');
+
+  // 해당 날짜의 요일 기반 시간표 과목 추천
+  const dt = new Date(date + 'T00:00:00');
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const dayIdxMap = {'월':0,'화':1,'수':2,'목':3,'금':4};
+  const dayName = dayNames[dt.getDay()];
+  const ttDayIdx = dayIdxMap[dayName];
+  const ttSchool = state.timetable?.school || [];
+  const ttSubj = (ttDayIdx !== undefined && ttSchool[period-1]) ? (ttSchool[period-1][ttDayIdx] || '') : '';
+
+  // 타이틀 업데이트
+  const titleEl = document.getElementById('ea-pp-title');
+  if (titleEl) titleEl.innerHTML = `<i class="fas fa-book" style="color:var(--primary);margin-right:6px"></i>${date.slice(5).replace('-','/')} (${dayName}) ${period}교시`;
+
+  // 힌트
+  const hintEl = document.getElementById('ea-pp-hint');
+  if (hintEl && ttSubj && !['체육','미술','음악','창체','동아리'].includes(ttSubj)) {
+    hintEl.innerHTML = `<i class="fas fa-magic" style="margin-right:6px"></i>시간표 기준: <strong>${ttSubj}</strong>`;
+    hintEl.style.display = 'flex';
+  } else if (hintEl) {
+    hintEl.style.display = 'none';
+  }
+
+  // 주요 과목 그리드 생성
+  const examSubjects = ['국어','수학','영어','과학','한국사','사회','물리','화학','생명과학','지구과학'];
+  const gridEl = document.getElementById('ea-pp-grid');
+  if (gridEl) {
+    gridEl.innerHTML = examSubjects.map(s => {
+      const c = _subjectColorMap[s] || '#888';
+      return `<button class="ea-pp-subj-btn" style="--subj-color:${c}" data-period-subject="${escapeHtml(s)}" onclick="pickPeriodSubjectFromData(this)">${s}</button>`;
+    }).join('');
+  }
+
+  // 범위 초기화
+  const rangeEl = document.getElementById('ea-pp-range');
+  if (rangeEl) rangeEl.value = '';
+  const customEl = document.getElementById('ea-pp-custom');
+  if (customEl) customEl.value = '';
+}
+
+function closePeriodPicker() {
+  const modal = document.getElementById('ea-period-picker');
+  if (modal) modal.classList.remove('open');
+}
+
+function pickPeriodSubject(subj) {
+  const d = _eaMidtermPickerDate;
+  const p = _eaMidtermPickerPeriod;
+  if (!_eaMidtermSubjects[d]) _eaMidtermSubjects[d] = {};
+  const color = _subjectColorMap[subj] || _subjectColorFallback[p % _subjectColorFallback.length];
+  const range = document.getElementById('ea-pp-range')?.value?.trim() || '';
+  _eaMidtermSubjects[d][p] = { subject: subj, color, range, period: p, date: d, readiness: 0, notes: '' };
+  closePeriodPicker();
+  renderScreen();
+}
+
+function confirmPeriodCustom() {
+  const subj = document.getElementById('ea-pp-custom')?.value?.trim();
+  if (!subj) { alert('과목명을 입력하세요'); return; }
+  pickPeriodSubject(subj);
+}
+
+function clearPeriodSlot(date, period) {
+  if (_eaMidtermSubjects[date]) {
+    delete _eaMidtermSubjects[date][period];
+    renderScreen();
+  }
+}
+
+function closeEaModal() {
+  closePeriodPicker();
+}
+
+function pickQuickSubject(name) {
+  const el = document.getElementById('ea-pp-custom');
+  if (el) el.value = name;
+}
+
+const _subjectColorMap = {
+  '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+  '한국사':'#74B9FF','사회':'#A29BFE','물리':'#E056A0','화학':'#FF9F43',
+  '생명과학':'#00CEC9','지구과학':'#E17055','미술':'#FD79A8','음악':'#fd79a8','체육':'#A29BFE'
+};
+const _subjectColorFallback = ['#6C5CE7','#FF6B6B','#00B894','#FDCB6E','#74B9FF','#E056A0','#A29BFE','#FF9F43'];
+
+function confirmMidtermSubjectAdd() {
+  // Legacy compatibility - redirect to period picker
+  confirmPeriodCustom();
+}
+
+function removeMidtermSubject(date, period) {
+  clearPeriodSlot(date, period);
+}
+
+/* ── 중간·기말: 저장 ── */
+function saveMidtermExam() {
+  const nameEl = document.getElementById('ea-mid-name');
+  const name = nameEl?.value?.trim() || _eaMidtermName;
+  if (!name) { alert('시험 이름을 입력하세요'); return; }
+  const subjects = [];
+  Object.entries(_eaMidtermSubjects).forEach(([date, slots]) => {
+    if (typeof slots === 'object' && !Array.isArray(slots)) {
+      Object.entries(slots).forEach(([period, s]) => {
+        if (s && s.subject) {
+          subjects.push({ ...s, date, time: period + '교시' });
+        }
+      });
+    }
+  });
+  if (subjects.length === 0) { alert('최소 1개 과목을 추가하세요'); return; }
+
+  const newExam = {
+    id: 'exam' + Date.now(),
+    type: _eaMidtermType === 'final' ? 'final' : 'midterm',
+    name,
+    startDate: _eaMidtermStart,
+    endDate: _eaMidtermEnd,
+    subjects,
+    status: 'upcoming',
+    aiPlan: null,
+  };
+  state.exams.push(newExam);
+  state.viewingExam = newExam.id;
+
+  if (DB.studentId()) {
+    DB.saveExam({ name, type: newExam.type, startDate: _eaMidtermStart, endDate: _eaMidtermEnd, subjects, memo:'' })
+      .then(dbId => { if (dbId) { newExam._dbId = dbId; newExam.id = String(dbId); state.viewingExam = newExam.id; }});
+  }
+  resetExamAddState();
+  goScreen('exam-detail');
+}
+
+/* ── 수행평가: 저장 ── */
+function savePerformanceExam() {
+  const subj = document.getElementById('ea-perf-subj')?.value?.trim() || _eaPerfSubject;
+  const name = document.getElementById('ea-perf-name')?.value?.trim() || _eaPerfName;
+  const deadline = document.getElementById('ea-perf-deadline')?.value || _eaPerfDeadline;
+  const topic = document.getElementById('ea-perf-topic')?.value?.trim() || _eaPerfTopic;
+  const memo = document.getElementById('ea-perf-memo')?.value?.trim() || _eaPerfMemo;
+
+  if (!subj) { alert('과목을 입력하세요'); return; }
+  if (!name) { alert('수행평가 이름을 입력하세요'); return; }
+  if (!deadline) { alert('마감 기한을 입력하세요'); return; }
+
+  const color = _subjectColorMap[subj] || '#FDCB6E';
+  const newExam = {
+    id: 'exam' + Date.now(),
+    type: 'performance',
+    name,
+    startDate: deadline,
+    endDate: deadline,
+    subjects: [{ subject:subj, date:deadline, time:'제출', range:topic, readiness:0, notes:memo, color }],
+    status: 'upcoming',
+    aiPlan: null,
+  };
+  state.exams.push(newExam);
+  state.viewingExam = newExam.id;
+
+  if (DB.studentId()) {
+    DB.saveExam({ name, type:'performance', startDate:deadline, subjects:newExam.subjects, memo })
+      .then(dbId => { if (dbId) { newExam._dbId = dbId; newExam.id = String(dbId); state.viewingExam = newExam.id; }});
+  }
+  resetExamAddState();
+  goScreen('exam-detail');
+}
+
+/* ── 모의고사: 프리셋 선택 ── */
+function selectMockPreset(key) {
+  _eaMockPreset = key;
+  const presets = {
+    '3월':{label:'3월 전국연합학력평가',m:3}, '4월':{label:'4월 전국연합학력평가',m:4},
+    '6월':{label:'6월 모의평가 (평가원)',m:6}, '7월':{label:'7월 전국연합학력평가',m:7},
+    '9월':{label:'9월 모의평가 (평가원)',m:9}, '10월':{label:'10월 전국연합학력평가',m:10},
+    '수능':{label:'대학수학능력시험',m:11}
+  };
+  const p = presets[key];
+  const y = new Date().getFullYear();
+  _eaMockName = p ? p.label : '';
+  _eaMockDate = p ? `${y}-${String(p.m).padStart(2,'0')}-06` : '';
+  renderScreen();
+}
+
+/* ── 모의고사: 저장 ── */
+function saveMockExam() {
+  const name = document.getElementById('ea-mock-name')?.value?.trim() || _eaMockName;
+  const date = document.getElementById('ea-mock-date')?.value || _eaMockDate;
+  if (!name) { alert('시험 이름을 입력하세요'); return; }
+  if (!date) { alert('시험 날짜를 입력하세요'); return; }
+
+  const subjects = [
+    { subject:'국어', time:'1교시 (08:40~10:00)', range:'독서+문학+언어와 매체', color:'#FF6B6B' },
+    { subject:'수학', time:'2교시 (10:30~12:10)', range:'수학Ⅰ+수학Ⅱ+확률과 통계/미적분/기하', color:'#6C5CE7' },
+    { subject:'영어', time:'3교시 (13:10~14:20)', range:'듣기+독해 전 범위', color:'#00B894' },
+    { subject:'한국사', time:'3교시 (14:30~14:50)', range:'전 범위', color:'#74B9FF' },
+    { subject:'탐구1', time:'4교시 (15:20~15:50)', range:'선택과목 1', color:'#FDCB6E' },
+    { subject:'탐구2', time:'4교시 (15:50~16:20)', range:'선택과목 2', color:'#E056A0' },
+  ].map(s => ({ ...s, date, readiness:0, notes:'' }));
+
+  const newExam = {
+    id: 'exam' + Date.now(),
+    type: 'mock',
+    name,
+    startDate: date,
+    endDate: date,
+    subjects,
+    status: 'upcoming',
+    aiPlan: null,
+  };
+  state.exams.push(newExam);
+  state.viewingExam = newExam.id;
+
+  if (DB.studentId()) {
+    DB.saveExam({ name, type:'mock', startDate:date, subjects, memo:'' })
+      .then(dbId => { if (dbId) { newExam._dbId = dbId; newExam.id = String(dbId); state.viewingExam = newExam.id; }});
+  }
+  resetExamAddState();
+  goScreen('exam-detail');
+}
+
+function deleteExam(examId) {
+  if (!confirm('이 시험을 삭제하시겠습니까?')) return;
+  const ex = state.exams.find(e => e.id === examId);
+  // DB 삭제
+  if (ex && ex._dbId && DB.studentId()) {
+    DB.deleteExam(ex._dbId);
+  }
+  state.exams = state.exams.filter(e => e.id !== examId);
+  goScreen('exam-list');
+}
+
+function updateExamReadiness(examId, subIdx, value) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (ex && ex.subjects[subIdx] !== undefined) {
+    ex.subjects[subIdx].readiness = value;
+    // 화면을 다시 그리면 슬라이더가 초기화되므로 수동으로 업데이트
+    const pctEl = document.querySelectorAll('.exam-subj-readiness-pct')[subIdx];
+    const fillEl = document.querySelectorAll('.exam-subj-readiness-fill')[subIdx];
+    if (pctEl) pctEl.textContent = value + '%';
+    if (fillEl) fillEl.style.width = value + '%';
+  }
+}
+
+function editExamSubjectNote(examId, subIdx) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (!ex) return;
+  const note = prompt('메모 입력:', ex.subjects[subIdx].notes || '');
+  if (note !== null) {
+    ex.subjects[subIdx].notes = note;
+    renderScreen();
+  }
+}
+
+function editExamSubjectRange(examId, subIdx) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (!ex) return;
+  const range = prompt('시험 범위 수정:', ex.subjects[subIdx].range || '');
+  if (range !== null) {
+    ex.subjects[subIdx].range = range;
+    renderScreen();
+  }
+}
+
+async function generateExamPlan(examId) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (!ex) return;
+
+  state.examAiLoading = true;
+  renderScreen();
+
+  const dDay = getDday(ex.startDate);
+  const subjectInfo = ex.subjects.map(s => 
+    `- ${s.subject} (${s.date} ${s.time}): 범위="${s.range}", 준비도=${s.readiness}%, 메모="${s.notes}"`
+  ).join('\n');
+
+  const prompt = `너는 고등학교 시험 대비 학습 코치야. 학생의 시험 정보를 분석해서 구체적인 학습 계획을 세워줘.
+
+시험 정보:
+- 시험명: ${ex.name}
+- 유형: ${getExamTypeLabel(ex.type)}
+- 시험 기간: ${ex.startDate} ~ ${ex.endDate}
+- D-day: ${dDay > 0 ? dDay + '일 남음' : '오늘/지남'}
+
+과목별 정보:
+${subjectInfo}
+
+다음 형식으로 학습 계획을 작성해줘:
+1. 전체 전략 (2~3문장)
+2. 우선순위 분석 (준비도 낮은 과목 → 높은 과목 순)
+3. 일별 학습 계획 (남은 일수에 맞게)
+4. 과목별 핵심 공략법 (각 1~2문장)
+5. 컨디션 관리 팁 (1~2문장)
+
+HTML 태그를 사용해서 보기 좋게 포맷팅해줘. <h4>, <p>, <ul><li>, <strong> 태그 사용 가능. 한국어로 작성.`;
+
+  try {
+    const res = await fetch('/api/exam-coach', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, examId })
+    });
+    if (!res.ok) throw new Error('서버 응답 오류');
+    const data = await res.json();
+    if (data.plan) {
+      ex.aiPlan = data.plan;
+    } else if (data.error) {
+      ex.aiPlan = '<p style="color:#FF6B6B">⚠️ 정율 응답 오류: ' + escapeHtml(data.error) + '</p><p>다시 시도해주세요.</p>';
+    }
+  } catch (e) {
+    ex.aiPlan = '<p style="color:#FF6B6B">⚠️ 네트워크 오류. 다시 시도해주세요.</p>';
+  }
+
+  state.examAiLoading = false;
+  renderScreen();
+}
+
+function applyExamPlanToPlanner(examId) {
+  const ex = state.exams.find(e => e.id === examId);
+  if (!ex) return;
+  alert('📅 학습 계획이 플래너에 반영되었습니다!\n플래너 탭에서 일정을 확인하세요.');
+  // 실제로는 state.plannerItems에 학습 일정 추가
+  const dDay = getDday(ex.startDate);
+  const today = kstNow();
+  ex.subjects.forEach((sub, i) => {
+    const studyDate = new Date(today);
+    studyDate.setDate(studyDate.getDate() + Math.min(i, dDay > 0 ? dDay : 1));
+    const dateStr = studyDate.toISOString().slice(0,10);
+    state.plannerItems.push({
+      id: 'pexam' + Date.now() + i,
+      date: dateStr,
+      time: '16:00',
+      endTime: '18:00',
+      title: '[시험대비] ' + sub.subject + ' 집중 학습',
+      category: 'study',
+      color: sub.color,
+      icon: '📖',
+      done: false,
+      aiGenerated: true,
+      detail: sub.range
+    });
+  });
+}
+
+// ==================== PORTFOLIO (나의 활동 기록부) ====================
+
+function getPortfolioDateRange() {
+  const today = kstNow();
+  let start, end = today;
+  switch(state.portfolioPeriod) {
+    case '1week':
+      start = new Date(today); start.setDate(start.getDate() - 7); break;
+    case '2week':
+      start = new Date(today); start.setDate(start.getDate() - 14); break;
+    case '1month':
+      start = new Date(today); start.setMonth(start.getMonth() - 1); break;
+    case 'custom':
+      start = new Date(state.portfolioCustomStart); end = new Date(state.portfolioCustomEnd); break;
+    default:
+      start = new Date(today); start.setDate(start.getDate() - 7);
+  }
+  return { start, end };
+}
+
+function collectPortfolioItems() {
+  const { start, end } = getPortfolioDateRange();
+  const fmt = d => kstDate(d);
+  const s = fmt(start), e = fmt(end);
+  const items = [];
+
+  // 1) 수업 기록 (plannerItems category='class', done)
+  state.plannerItems.filter(p => p.category === 'class' && p.date >= s && p.date <= e).forEach(p => {
+    items.push({ date:p.date, time:p.time, cat:'class', icon:'📝', title:p.title, subject:p.detail||'', desc:'수업 기록', xp:10, color:p.color });
+  });
+
+  // 2) 질문 기록 (DB에서 로드)
+  (state._dbQuestionRecords || []).filter(q => q.created_at && q.created_at.slice(0,10) >= s && q.created_at.slice(0,10) <= e).forEach(q => {
+    items.push({ date:q.created_at.slice(0,10), time:q.created_at.slice(11,16)||'00:00', cat:'question', icon:'❓', title:q.question_text||q.title||'', subject:q.subject||'', desc:`질문 레벨 ${q.question_level||'-'}`, xp:q.xp_earned||0, color:'#FF6B6B' });
+  });
+
+  // 3) 과제
+  state.assignments.filter(a => a.createdDate >= s && a.createdDate <= e).forEach(a => {
+    const statusText = a.status === 'completed' ? '✅ 완료' : `진행 ${a.progress}%`;
+    items.push({ date:a.createdDate, time:'00:00', cat:'assignment', icon:'📋', title:a.title, subject:a.subject, desc:`${a.teacher} · ${statusText}`, xp:15, color:a.color });
+  });
+
+  // 4) 교학상장 기록 (DB에서 로드)
+  (state._dbTeachRecords || []).filter(t => t.created_at && t.created_at.slice(0,10) >= s && t.created_at.slice(0,10) <= e).forEach(t => {
+    items.push({ date:t.created_at.slice(0,10), time:t.created_at.slice(11,16)||'00:00', cat:'teach', icon:'🤝', title:`${t.taught_to||''}에게 ${t.topic||''} 설명`, subject:t.subject||'', desc:'멘토링', xp:t.xp_earned||30, color:'#00B894' });
+  });
+
+  // 5) 비교과: 탐구보고서, 독서, 창체
+  state.extracurriculars.filter(ec => ec.startDate <= e && (ec.endDate >= s || !ec.endDate)).forEach(ec => {
+    const catKey = ec.type === 'report' ? 'report' : ec.type === 'reading' ? 'reading' : 'activity';
+    const icon = ec.type === 'report' ? '📄' : ec.type === 'reading' ? '📖' : '🏫';
+    const statusText = ec.status === 'completed' ? '✅ 완료' : ec.status === 'in-progress' ? `진행 ${ec.progress}%` : '예정';
+    items.push({ date:ec.startDate, time:'00:00', cat:catKey, icon, title:ec.title, subject:ec.subject, desc:`${statusText} · ${ec.desc||''}`, xp:20, color:ec.color });
+  });
+
+  // 정렬: 날짜 내림차순
+  items.sort((a,b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time));
+
+  // 탭 필터
+  if (state.portfolioTab !== 'all') {
+    return items.filter(i => i.cat === state.portfolioTab);
+  }
+  return items;
+}
+
+function renderPortfolio() {
+  const items = collectPortfolioItems();
+  const allItems = (() => { const prev = state.portfolioTab; state.portfolioTab = 'all'; const r = collectPortfolioItems(); state.portfolioTab = prev; return r; })();
+  
+  // 통계
+  const stats = {
+    class: allItems.filter(i => i.cat === 'class').length,
+    question: allItems.filter(i => i.cat === 'question').length,
+    assignment: allItems.filter(i => i.cat === 'assignment').length,
+    extra: allItems.filter(i => ['report','reading','activity','teach'].includes(i.cat)).length,
+    totalXp: allItems.reduce((s,i) => s + (i.xp||0), 0),
+  };
+
+  // 날짜별 그룹핑
+  const grouped = {};
+  items.forEach(it => {
+    const dl = formatDateLabel(it.date);
+    if (!grouped[dl]) grouped[dl] = [];
+    grouped[dl].push(it);
+  });
+
+  const periods = [
+    { key:'1week', label:'1주' },
+    { key:'2week', label:'2주' },
+    { key:'1month', label:'1개월' },
+    { key:'custom', label:'직접 선택' },
+  ];
+
+  const tabs = [
+    { key:'all', label:'전체' },
+    { key:'class', label:'수업' },
+    { key:'question', label:'질문' },
+    { key:'assignment', label:'과제' },
+    { key:'report', label:'탐구' },
+    { key:'reading', label:'독서' },
+    { key:'activity', label:'창체' },
+    { key:'teach', label:'교학상장' },
+  ];
+
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main');state.studentTab='archive'"><i class="fas fa-arrow-left"></i></button>
+        <h1>📊 나의 활동 기록부</h1>
+      </div>
+      <div class="form-body" style="padding-bottom:24px">
+
+        <!-- 기간 선택 -->
+        <div class="period-selector">
+          ${periods.map(p => `
+            <button class="period-btn ${state.portfolioPeriod===p.key?'active':''}" onclick="state.portfolioPeriod='${p.key}';renderScreen()">${p.label}</button>
+          `).join('')}
+        </div>
+        ${state.portfolioPeriod === 'custom' ? `
+        <div class="custom-period-row">
+          <input type="date" value="${state.portfolioCustomStart}" onchange="state.portfolioCustomStart=this.value;renderScreen()">
+          <span>~</span>
+          <input type="date" value="${state.portfolioCustomEnd}" onchange="state.portfolioCustomEnd=this.value;renderScreen()">
+        </div>
+        ` : ''}
+
+        <!-- 통계 요약 -->
+        <div class="portfolio-stats">
+          <div class="portfolio-stat-item">
+            <span class="portfolio-stat-num">${stats.class}</span>
+            <span class="portfolio-stat-label">수업</span>
+          </div>
+          <div class="portfolio-stat-item">
+            <span class="portfolio-stat-num">${stats.question}</span>
+            <span class="portfolio-stat-label">질문</span>
+          </div>
+          <div class="portfolio-stat-item">
+            <span class="portfolio-stat-num">${stats.assignment}</span>
+            <span class="portfolio-stat-label">과제</span>
+          </div>
+          <div class="portfolio-stat-item">
+            <span class="portfolio-stat-num">${stats.extra}</span>
+            <span class="portfolio-stat-label">비교과</span>
+          </div>
+        </div>
+
+        <!-- 총 XP -->
+        <div class="card" style="margin-bottom:12px;text-align:center;padding:10px">
+          <span style="font-size:13px;color:var(--text-muted)">해당 기간 획득 XP</span>
+          <span style="font-size:22px;font-weight:800;color:var(--primary);margin-left:8px">${stats.totalXp} XP</span>
+        </div>
+
+        <!-- 카테고리 탭 -->
+        <div class="portfolio-tabs">
+          ${tabs.map(t => `
+            <button class="portfolio-tab-btn ${state.portfolioTab===t.key?'active':''}" onclick="state.portfolioTab='${t.key}';renderScreen()">${t.label}</button>
+          `).join('')}
+        </div>
+
+        <!-- 타임라인 -->
+        ${Object.keys(grouped).length > 0 ? `
+        <div class="pf-timeline">
+          ${Object.entries(grouped).map(([dateLabel, dateItems]) => `
+            <div class="pf-date-group">
+              <div class="pf-date-label">${dateLabel}</div>
+              ${dateItems.map(it => `
+                <div class="pf-item">
+                  <div class="pf-item-icon">${it.icon}</div>
+                  <div class="pf-item-body">
+                    <div class="pf-item-header">
+                      <span class="pf-item-cat cat-${it.cat}">${getPortfolioCatLabel(it.cat)}</span>
+                      <span class="pf-item-subject">${it.subject}</span>
+                    </div>
+                    <span class="pf-item-title">${it.title}</span>
+                    ${it.desc ? `<span class="pf-item-desc">${it.desc}</span>` : ''}
+                  </div>
+                  <div class="pf-item-right">
+                    ${it.time !== '00:00' ? `<span class="pf-item-time">${it.time}</span>` : ''}
+                    <span class="pf-item-xp">+${it.xp} XP</span>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `).join('')}
+        </div>
+        ` : `
+        <div class="pf-empty">
+          <div class="pf-empty-icon">📭</div>
+          <div class="pf-empty-text">해당 기간에 기록이 없습니다</div>
+        </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function getPortfolioCatLabel(cat) {
+  const map = { class:'수업', question:'질문', assignment:'과제', teach:'교학상장', report:'탐구보고서', reading:'독서', activity:'창체' };
+  return map[cat] || cat;
+}
+
+function formatDateLabel(dateStr) {
+  const d = new Date(dateStr);
+  const days = ['일','월','화','수','목','금','토'];
+  const m = d.getMonth()+1, dd = d.getDate(), day = days[d.getDay()];
+  const today = kstNow();
+  const diff = Math.round((today - d) / 86400000);
+  if (diff === 0) return `오늘 (${m}/${dd} ${day})`;
+  if (diff === 1) return `어제 (${m}/${dd} ${day})`;
+  return `${m}/${dd} (${day})`;
+}
+
+// ==================== REPORT PROJECT (탐구보고서 5단계 시스템) ====================
+
+const REPORT_PHASES = [
+  { id:'p1', name:'주제 선정', icon:'🔍', color:'#818cf8', aiRole:'가이드', desc:'궁금한 것에서 출발하여 탐구 질문 만들기', expectedLevel:'A-1 ~ A-2', tip:'"이게 궁금해!"에서 시작해봐' },
+  { id:'p2', name:'탐구 설계', icon:'📐', color:'#34d399', aiRole:'가이드', desc:'어떻게 조사/실험할 건지 계획 세우기', expectedLevel:'A-2 ~ B-1', tip:'"어떻게 알아볼 수 있을까?"를 고민해봐' },
+  { id:'p3', name:'자료 수집', icon:'📊', color:'#fbbf24', aiRole:'피드백', desc:'자료를 모으고 정율에게 물어보기', expectedLevel:'B-1 ~ B-2', tip:'"왜 이런 결과가 나올까?"를 물어봐' },
+  { id:'p4', name:'분석/작성', icon:'📝', color:'#f87171', aiRole:'검토', desc:'발견한 것을 정리하고 보고서 작성', expectedLevel:'B-2 ~ C-1', tip:'"만약 조건이 달랐다면?"을 생각해봐' },
+  { id:'p5', name:'회고', icon:'🪞', color:'#a78bfa', aiRole:'성찰', desc:'질문 성장을 돌아보고 성찰하기', expectedLevel:'R-1 ~ R-3', tip:'"내가 뭘 배웠지?"를 되돌아봐' },
+];
+
+const REPORT_LEVEL_META = {
+  'A-1': { n:1, name:'뭐지?', icon:'🔍', color:'#9ca3af', xp:8 },
+  'A-2': { n:2, name:'어떻게?', icon:'🔧', color:'#60a5fa', xp:10 },
+  'B-1': { n:3, name:'왜?', icon:'💡', color:'#34d399', xp:15 },
+  'B-2': { n:4, name:'만약에?', icon:'🔀', color:'#2dd4bf', xp:20 },
+  'C-1': { n:5, name:'뭐가 더 나아?', icon:'⚖️', color:'#fbbf24', xp:25 },
+  'C-2': { n:6, name:'그러면?', icon:'🚀', color:'#f87171', xp:30 },
+  'R-1': { n:3, name:'어디서 틀렸지?', icon:'🔬', color:'#a78bfa', xp:15 },
+  'R-2': { n:4, name:'왜 틀렸지?', icon:'🧠', color:'#c084fc', xp:20 },
+  'R-3': { n:5, name:'다음엔 어떻게?', icon:'🛡️', color:'#e879f9', xp:25 },
+};
+
+function renderReportProject() {
+  // 프로젝트 선택 화면 또는 개별 프로젝트 화면
+  const reportProjects = state.extracurriculars.filter(e => e.type === 'report' && e.report);
+
+  // viewingReport가 없으면 프로젝트 목록 표시
+  if (!state.viewingReport) {
+    return renderReportProjectList(reportProjects);
+  }
+
+  const ec = state.extracurriculars.find(e => e.id === state.viewingReport);
+  if (!ec || !ec.report) {
+    state.viewingReport = null;
+    return renderReportProjectList(reportProjects);
+  }
+
+  const rpt = ec.report;
+  const phase = REPORT_PHASES[state.reportPhaseTab] || REPORT_PHASES[0];
+  const phaseQuestions = rpt.questions.filter(q => q.phaseId === phase.id);
+  const allQuestions = rpt.questions;
+  const totalXp = allQuestions.reduce((s, q) => s + (q.xp || 0), 0);
+
+  // 성장 그래프 SVG 데이터
+  const growthSvg = buildGrowthSvg(allQuestions.filter(q => q.axis === 'curiosity'));
+
+  // 언락 상태 계산
+  const hasB1 = phaseQuestions.some(q => (REPORT_LEVEL_META[q.level]?.n || 0) >= 3);
+  const unlocked = hasB1 && phaseQuestions.length >= 2;
+
+  // 최고 수준
+  const highest = allQuestions.reduce((h, q) => {
+    const n = REPORT_LEVEL_META[q.level]?.n || 0;
+    return n > (REPORT_LEVEL_META[h]?.n || 0) ? q.level : h;
+  }, 'A-1');
+  const highestMeta = REPORT_LEVEL_META[highest];
+
+  return `
+    <div class="full-screen animate-slide">
+      <!-- 헤더 -->
+      <div class="rpt-header">
+        <div class="rpt-header-top">
+          <button class="back-btn" onclick="state.viewingReport=null;goScreen('report-project')"><i class="fas fa-arrow-left"></i></button>
+          <div class="rpt-header-title">
+            <div class="rpt-title">${ec.title}</div>
+            <div class="rpt-subtitle">${ec.subject} · ${ec.desc || ''}</div>
+          </div>
+          <div class="rpt-xp-badge">⚡ ${totalXp} XP</div>
+        </div>
+
+        <!-- 미니 성장 그래프 (질문 2개 이상일 때) -->
+        ${allQuestions.filter(q => q.axis === 'curiosity').length >= 2 ? `
+        <div class="rpt-mini-growth">
+          <div class="rpt-mini-growth-label">📈 질문 성장</div>
+          <svg width="100%" height="50" viewBox="0 0 300 50" preserveAspectRatio="none">
+            <defs><linearGradient id="rptGrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#34d399"/></linearGradient></defs>
+            ${growthSvg}
+          </svg>
+        </div>
+        ` : ''}
+
+        <!-- 요약 통계 -->
+        <div class="rpt-stats-row">
+          <div class="rpt-stat-item">
+            <span class="rpt-stat-icon">⚡</span>
+            <span class="rpt-stat-value" style="color:#fbbf24">${totalXp}</span>
+            <span class="rpt-stat-label">총 XP</span>
+          </div>
+          <div class="rpt-stat-item">
+            <span class="rpt-stat-icon">💬</span>
+            <span class="rpt-stat-value" style="color:#818cf8">${allQuestions.length}</span>
+            <span class="rpt-stat-label">질문 수</span>
+          </div>
+          <div class="rpt-stat-item">
+            <span class="rpt-stat-icon">${highestMeta?.icon || '🔍'}</span>
+            <span class="rpt-stat-value" style="color:${highestMeta?.color || '#888'}">${highest}</span>
+            <span class="rpt-stat-label">최고 수준</span>
+          </div>
+        </div>
+
+        <!-- Phase 탭 (가로 스크롤) -->
+        <div class="rpt-phase-tabs">
+          ${REPORT_PHASES.map((p, i) => {
+            const pQs = allQuestions.filter(q => q.phaseId === p.id);
+            const isActive = state.reportPhaseTab === i;
+            const phaseStatus = rpt.phases[i]?.status || 'locked';
+            return `
+            <button class="rpt-phase-tab ${isActive ? 'active' : ''} ${phaseStatus}"
+              onclick="state.reportPhaseTab=${i};state.reportViewMode='question';state.reportDiagResult=null;state.reportAiResponse=null;renderScreen()"
+              style="${isActive ? `--phase-color:${p.color};border-color:${p.color}44;background:${p.color}15;color:${p.color}` : ''}">
+              ${phaseStatus === 'locked' ? '🔒' : p.icon} ${p.name}
+              ${pQs.length > 0 ? `<span class="rpt-phase-badge" style="background:${p.color}25;color:${p.color}">${pQs.length}</span>` : ''}
+            </button>
+            `;
+          }).join('')}
+          <!-- 추가 탭: 전체기록, 리포트 -->
+          <button class="rpt-phase-tab ${state.reportViewMode === 'all-timeline' ? 'active' : ''}"
+            onclick="state.reportViewMode='all-timeline';renderScreen()"
+            style="${state.reportViewMode === 'all-timeline' ? '--phase-color:#34d399;border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.12);color:#34d399' : ''}">
+            📜 전체기록
+          </button>
+          <button class="rpt-phase-tab ${state.reportViewMode === 'report' ? 'active' : ''}"
+            onclick="state.reportViewMode='report';renderScreen()"
+            style="${state.reportViewMode === 'report' ? '--phase-color:#fbbf24;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.12);color:#fbbf24' : ''}">
+            📈 리포트
+          </button>
+        </div>
+      </div>
+
+      <!-- 컨텐츠 영역 -->
+      <div class="rpt-content">
+        ${state.reportViewMode === 'all-timeline' ? renderReportAllTimeline(allQuestions, rpt.timeline) :
+          state.reportViewMode === 'report' ? renderReportGrowthReport(allQuestions) :
+          renderReportPhaseView(phase, state.reportPhaseTab, phaseQuestions, allQuestions, rpt, ec, unlocked)}
+      </div>
+    </div>
+  `;
+}
+
+// 프로젝트 목록 화면
+function renderReportProjectList(projects) {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('record-activity')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📄 탐구보고서</h1>
+        <button class="header-add-btn" onclick="goScreen('report-add')"><i class="fas fa-plus"></i></button>
+      </div>
+      <div class="form-body">
+        <!-- 슬로건 배너 -->
+        <div class="rpt-banner stagger-1 animate-in">
+          <span style="font-size:20px">💡</span>
+          <div>
+            <div style="font-size:13px;font-weight:700;color:#e0e0e0">질문이 성장하면 보고서가 됩니다</div>
+            <div style="font-size:11px;color:#888;margin-top:2px">궁금한 것에서 시작해, 탐구 역량을 키워봐요</div>
+          </div>
+        </div>
+
+        ${projects.length === 0 ? `
+          <div style="text-align:center;padding:40px 0;color:var(--text-muted)">
+            <div style="font-size:48px;margin-bottom:12px">📝</div>
+            <div style="font-size:15px;font-weight:600;margin-bottom:8px">아직 탐구보고서 프로젝트가 없어요</div>
+            <div style="font-size:13px;color:#666;margin-bottom:16px">아래 버튼을 눌러 첫 탐구를 시작해보세요!</div>
+            <button class="btn-primary" onclick="goScreen('report-add')" style="display:inline-flex;align-items:center;gap:6px;padding:12px 24px">
+              <i class="fas fa-plus"></i> 새 탐구보고서 만들기
+            </button>
+          </div>
+        ` : projects.map((ec, i) => {
+          const rpt = ec.report;
+          const totalXp = rpt.questions.reduce((s, q) => s + (q.xp || 0), 0);
+          const highest = rpt.questions.reduce((h, q) => (REPORT_LEVEL_META[q.level]?.n || 0) > (REPORT_LEVEL_META[h]?.n || 0) ? q.level : h, 'A-1');
+          const hMeta = REPORT_LEVEL_META[highest];
+          const currentPhaseName = REPORT_PHASES[rpt.currentPhase]?.name || '주제 선정';
+          const currentPhaseIcon = REPORT_PHASES[rpt.currentPhase]?.icon || '🔍';
+          const currentPhaseColor = REPORT_PHASES[rpt.currentPhase]?.color || '#818cf8';
+          return `
+          <div class="rpt-project-card stagger-${i+1} animate-in" onclick="state.viewingReport='${ec.id}';state.reportPhaseTab=${rpt.currentPhase};state.reportViewMode='question';state.reportDiagResult=null;state.reportAiResponse=null;renderScreen()">
+            <div class="rpt-project-top">
+              <div class="rpt-project-color" style="background:${ec.color}"></div>
+              <div class="rpt-project-info">
+                <div class="rpt-project-name">${ec.title}</div>
+                <div class="rpt-project-meta">${ec.subject} · ${ec.startDate?.slice(5)} ~ ${ec.endDate?.slice(5)}</div>
+              </div>
+              <div class="rpt-project-phase" style="background:${currentPhaseColor}15;color:${currentPhaseColor}">
+                ${currentPhaseIcon} ${currentPhaseName}
+              </div>
+            </div>
+            <div class="rpt-project-bottom">
+              <div class="rpt-project-stat">💬 ${rpt.questions.length}개 질문</div>
+              <div class="rpt-project-stat">⚡ ${totalXp} XP</div>
+              <div class="rpt-project-stat" style="color:${hMeta?.color}">${hMeta?.icon} ${highest}</div>
+              <div class="rpt-project-progress">
+                <div class="rpt-project-progress-fill" style="width:${ec.progress}%;background:${ec.color}"></div>
+              </div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+        <!-- 추가 버튼 (하단 고정) -->
+        <button class="rpt-add-float-btn" onclick="goScreen('report-add')">
+          <i class="fas fa-plus" style="margin-right:6px"></i> 새 탐구보고서
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// 탐구보고서 추가 화면
+function renderReportAdd() {
+  const subjects = ['수학','국어','영어','과학','한국사','사회','정보','기술가정','음악','미술','체육'];
+  const colors = ['#6C5CE7','#FF6B6B','#00B894','#FDCB6E','#74B9FF','#A29BFE','#E056A0','#FF9F43','#00CEC9','#FD79A8','#E17055'];
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('report-project')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📄 새 탐구보고서</h1>
+      </div>
+      <div class="form-body">
+        <!-- Step 1: 궁금한 것 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">1</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">💡 뭐가 궁금해?</label>
+            <div style="font-size:11px;color:#888;margin-bottom:8px">탐구의 출발점이 되는 궁금증을 자유롭게 적어봐!</div>
+            <textarea id="rpt-add-curiosity" class="input-field form-input" rows="3" placeholder="예: 왜 항생제를 오래 쓰면 안 듣게 되는 걸까?"></textarea>
+          </div>
+        </div>
+
+        <!-- Step 2: 과목 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">2</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📚 관련 과목</label>
+            <div class="rpt-add-subject-grid" id="rpt-add-subjects">
+              ${subjects.map((s, i) => `
+                <button class="rpt-add-subject-btn" data-subject="${s}" data-color="${colors[i]}" onclick="selectReportSubject(this)">
+                  <span class="rpt-add-subject-dot" style="background:${colors[i]}"></span>${s}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: 제목 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">3</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📝 탐구 주제 (제목)</label>
+            <div style="font-size:11px;color:#888;margin-bottom:8px">나중에 수정할 수 있어요. 지금은 대략적으로 적어도 OK!</div>
+            <input id="rpt-add-title" class="input-field form-input" placeholder="예: 항생제 내성 확산 메커니즘 탐구">
+          </div>
+        </div>
+
+        <!-- Step 4: 기간 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">4</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📅 탐구 기간</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="rpt-add-start" type="date" class="input-field form-input" value="${kstToday()}" style="flex:1">
+              <span style="color:#666">~</span>
+              <input id="rpt-add-end" type="date" class="input-field form-input" value="${kstDateOffset(30)}" style="flex:1">
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 5: 설명 (선택) -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">5</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📖 간단 설명 <span class="field-hint">(선택)</span></label>
+            <input id="rpt-add-desc" class="input-field form-input" placeholder="예: 다양한 조건에서 반응속도 비교 실험">
+          </div>
+        </div>
+
+        <button class="btn-primary" onclick="saveNewReport()" style="margin-top:16px">
+          🚀 탐구 시작하기!
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function selectReportSubject(btn) {
+  document.querySelectorAll('#rpt-add-subjects .rpt-add-subject-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function saveNewReport() {
+  const curiosity = document.getElementById('rpt-add-curiosity')?.value?.trim();
+  const title = document.getElementById('rpt-add-title')?.value?.trim();
+  const startDate = document.getElementById('rpt-add-start')?.value;
+  const endDate = document.getElementById('rpt-add-end')?.value;
+  const desc = document.getElementById('rpt-add-desc')?.value?.trim() || '';
+  const subjectBtn = document.querySelector('#rpt-add-subjects .rpt-add-subject-btn.active');
+  const subject = subjectBtn?.dataset?.subject || '기타';
+  const color = subjectBtn?.dataset?.color || '#818cf8';
+
+  if (!title) {
+    alert('탐구 주제(제목)를 입력해주세요!');
+    return;
+  }
+
+  // 새 ID 생성
+  const newId = 'ec' + (Date.now() % 100000);
+
+  // extracurriculars에 추가
+  const newEntry = {
+    id: newId,
+    type: 'report',
+    title: title,
+    subject: subject,
+    status: 'in-progress',
+    progress: 0,
+    startDate: startDate || kstToday(),
+    endDate: endDate || kstDateOffset(30),
+    color: color,
+    desc: desc,
+    memo: curiosity || '',
+    report: {
+      currentPhase: 0,
+      phases: [
+        { id:'p1', name:'주제 선정', status:'in-progress' },
+        { id:'p2', name:'탐구 설계', status:'locked' },
+        { id:'p3', name:'자료 수집', status:'locked' },
+        { id:'p4', name:'분석/작성', status:'locked' },
+        { id:'p5', name:'회고', status:'locked' },
+      ],
+      questions: [],
+      timeline: [],
+      totalXp: 0,
+    }
+  };
+
+  // 초기 궁금증이 있으면 첫 질문으로 자동 등록
+  if (curiosity) {
+    newEntry.report.questions.push({
+      text: curiosity,
+      level: 'A-1',
+      axis: 'curiosity',
+      xp: 8,
+      phaseId: 'p1',
+      time: new Date().toISOString(),
+      diag: { specific_target:{met:false}, own_thinking:{met:false}, context_connection:{met:false} },
+    });
+    newEntry.report.timeline.push({
+      type: 'question',
+      text: curiosity,
+      phaseId: 'p1',
+      time: new Date().toISOString(),
+      diagResult: { level:'A-1', axis:'curiosity', xp:8 },
+    });
+    newEntry.report.totalXp = 8;
+    state.xp += 8;
+  }
+
+  state.extracurriculars.push(newEntry);
+
+  // DB 저장 (탐구보고서)
+  if (DB.studentId()) {
+    DB.saveReportRecord({
+      title,
+      subject,
+      phase: '주제 선정',
+      timeline: newEntry.report.timeline,
+      questions: newEntry.report.questions,
+      totalXp: newEntry.report.totalXp,
+      status: 'in-progress',
+    }).then(dbId => {
+      if (dbId) newEntry._reportDbId = dbId;
+    });
+    // activity_records에도 저장
+    DB.saveActivityRecord({
+      activityType: 'report',
+      title,
+      description: desc,
+      startDate: newEntry.startDate,
+      endDate: newEntry.endDate,
+      status: 'in-progress',
+      progress: 0,
+      reflection: '',
+    }).then(dbId => {
+      if (dbId) newEntry._dbId = dbId;
+    });
+  }
+
+  // 바로 새 프로젝트로 진입
+  state.viewingReport = newId;
+  state.reportPhaseTab = 0;
+  state.reportViewMode = 'question';
+  state.reportDiagResult = null;
+  state.reportAiResponse = null;
+  goScreen('report-project');
+
+  // XP 팝업
+  showXpPopup(curiosity ? 8 : 0, '새 탐구보고서가 생성되었어요! 🎉');
+}
+
+// Phase 뷰 (질문하기 / 기록 / 성장)
+function renderReportPhaseView(phase, phaseIdx, phaseQuestions, allQuestions, rpt, ec, unlocked) {
+  const phaseStatus = rpt.phases[phaseIdx]?.status || 'locked';
+
+  return `
+    <!-- Phase 헤더 -->
+    <div class="rpt-phase-header" style="background:linear-gradient(135deg, ${phase.color}10, transparent);border-color:${phase.color}22">
+      <div class="rpt-phase-header-top">
+        <span style="font-size:28px">${phase.icon}</span>
+        <div style="flex:1">
+          <div style="font-size:17px;font-weight:800;color:${phase.color}">${phase.name}</div>
+          <div style="font-size:11px;color:#888">${phase.desc}</div>
+        </div>
+        <div class="rpt-ai-role" style="background:${phase.color}15;color:${phase.color}">🤖 ${phase.aiRole}</div>
+      </div>
+      <div class="rpt-phase-hint">
+        예상 질문 수준: <span style="color:${phase.color};font-weight:700">${phase.expectedLevel}</span>
+        &nbsp;·&nbsp; 💡 ${phase.tip}
+      </div>
+    </div>
+
+    ${phaseStatus === 'locked' ? `
+      <div class="rpt-locked-msg">
+        <div style="font-size:36px;margin-bottom:8px">🔒</div>
+        <div style="font-size:15px;font-weight:600;color:#888;margin-bottom:6px">이 단계는 아직 잠겨있어요</div>
+        <div style="font-size:12px;color:#555">이전 단계를 완료하면 열려요!</div>
+      </div>
+    ` : `
+      <!-- 언락 상태 -->
+      <div class="rpt-unlock-status ${unlocked ? 'unlocked' : ''}">
+        <div class="rpt-unlock-title">${unlocked ? '🔓 정율 초안 보조 활성화!' : '🔒 정율 초안 보조 잠김'}</div>
+        <div class="rpt-unlock-checks">
+          <span style="color:${phaseQuestions.length >= 2 ? '#34d399' : '#f87171'}">${phaseQuestions.length >= 2 ? '✅' : '❌'} 질문 2회 이상 (${phaseQuestions.length}/2)</span>
+          <span style="color:${phaseQuestions.some(q => (REPORT_LEVEL_META[q.level]?.n || 0) >= 3) ? '#34d399' : '#f87171'}">${phaseQuestions.some(q => (REPORT_LEVEL_META[q.level]?.n || 0) >= 3) ? '✅' : '❌'} B-1 이상 질문 달성</span>
+        </div>
+      </div>
+
+      <!-- 모드 탭 -->
+      <div class="rpt-mode-tabs">
+        ${[
+          { id:'question', label:'💬 질문하기', c:'#818cf8' },
+          { id:'timeline', label:'📜 기록', c:'#34d399', badge: rpt.timeline.filter(t => t.phaseId === phase.id).length },
+          { id:'growth', label:'📈 성장', c:'#fbbf24' },
+        ].map(tab => `
+          <button class="rpt-mode-tab ${state.reportViewMode === tab.id ? 'active' : ''}"
+            onclick="state.reportViewMode='${tab.id}';renderScreen()"
+            style="${state.reportViewMode === tab.id ? `color:${tab.c};border-bottom-color:${tab.c}` : ''}">
+            ${tab.label}
+            ${tab.badge > 0 ? `<span class="rpt-mode-badge">${tab.badge}</span>` : ''}
+          </button>
+        `).join('')}
+      </div>
+
+      ${state.reportViewMode === 'question' ? renderReportQuestionMode(phase, phaseQuestions, allQuestions, ec) : ''}
+      ${state.reportViewMode === 'timeline' ? renderReportTimelineMode(phase, rpt) : ''}
+      ${state.reportViewMode === 'growth' ? renderReportGrowthMode(phase, phaseQuestions) : ''}
+    `}
+  `;
+}
+
+// 질문하기 모드
+function renderReportQuestionMode(phase, phaseQuestions, allQuestions, ec) {
+  // 추천 질문
+  const suggestions = {
+    'p1': ['내가 관심 있는 분야에서 탐구할 만한 주제가 뭐가 있을까?', '이 주제를 어떤 각도에서 접근할 수 있을까?'],
+    'p2': ['이 주제를 탐구하려면 어떤 방법이 좋을까?', '비슷한 연구에서는 어떤 방법을 썼어?'],
+    'p3': ['이 주제에 대한 최신 연구가 있을까?', '이 데이터를 어떻게 해석하면 좋을까?'],
+    'p4': ['내 분석이 논리적인지 검토해줘', '결론과 근거가 잘 연결되는지 봐줘'],
+    'p5': ['이 탐구에서 내가 가장 성장한 점은 뭘까?', '다음 탐구를 한다면 뭘 다르게 할까?'],
+  };
+
+  return `
+    <!-- 추천 질문 (아직 질문 없을 때) -->
+    ${phaseQuestions.length === 0 ? `
+      <div class="rpt-suggestions">
+        <div style="font-size:11px;color:#888;margin-bottom:6px">💡 이런 것부터 물어봐:</div>
+        ${(suggestions[phase.id] || []).map(s => `
+          <button class="rpt-suggestion-btn" onclick="document.getElementById('rpt-question-input').value='${s.replace(/'/g, "\\'")}'">
+            ${s}
+          </button>
+        `).join('')}
+      </div>
+    ` : ''}
+
+    <!-- 질문 입력 -->
+    <div class="rpt-input-area">
+      <textarea id="rpt-question-input" class="rpt-input" rows="2" placeholder="${phase.name} 단계에서 궁금한 것을 물어봐!"></textarea>
+      <button class="rpt-send-btn" style="background:${state.reportAiLoading ? '#444' : phase.color}"
+        onclick="submitReportQuestion('${ec.id}', ${REPORT_PHASES.indexOf(phase)})"
+        ${state.reportAiLoading ? 'disabled' : ''}>
+        ${state.reportAiLoading ? '<div class="rpt-btn-spinner"></div>' : '전송'}
+      </button>
+    </div>
+
+    <!-- 로딩 -->
+    ${state.reportAiLoading ? `
+      <div class="rpt-loading">
+        <div class="rpt-loading-pulse">🔍 질문 분석 중... → 📚 자료 검색 중...</div>
+      </div>
+    ` : ''}
+
+    <!-- 진단 결과 -->
+    ${state.reportDiagResult ? renderReportDiagBadge(state.reportDiagResult) : ''}
+
+    <!-- 정율 멘토 응답 (Perplexity) -->
+    ${state.reportAiResponse ? `
+      <div class="rpt-ai-response">
+        <div class="rpt-ai-response-header">
+          <span>🤖 정율 멘토 (${phase.aiRole})</span>
+          <span class="rpt-ai-source">📚 Perplexity 검색 기반</span>
+        </div>
+        <div class="rpt-ai-response-body">${formatReportAiText(state.reportAiResponse.answer || '')}</div>
+        ${state.reportAiResponse.citations && state.reportAiResponse.citations.length > 0 ? `
+          <div class="rpt-ai-citations">
+            <div style="font-size:10px;color:#888;margin-bottom:4px">📎 출처:</div>
+            ${state.reportAiResponse.citations.map((c, i) => `
+              <a href="${c}" target="_blank" class="rpt-citation-link">[${i+1}] ${c.length > 50 ? c.slice(0, 50) + '...' : c}</a>
+            `).join('')}
+          </div>
+        ` : ''}
+        <div style="margin-top:8px;font-size:9px;color:#555">💾 이 대화는 자동으로 탐구 기록에 저장되었습니다</div>
+      </div>
+    ` : ''}
+
+    <!-- 이전 질문 이력 -->
+    ${phaseQuestions.length > 0 ? `
+      <div class="rpt-prev-questions">
+        <div style="font-size:11px;color:#888;margin-bottom:8px">이 단계의 질문 이력 (${phaseQuestions.length}개)</div>
+        ${phaseQuestions.slice().reverse().map(q => {
+          const m = REPORT_LEVEL_META[q.level];
+          return `
+          <div class="rpt-q-history-item">
+            <span class="rpt-q-level" style="background:${m?.color}15;color:${m?.color}">${q.level}</span>
+            <span class="rpt-q-text">${q.text.length > 60 ? q.text.slice(0, 60) + '...' : q.text}</span>
+            <span class="rpt-q-xp">+${q.xp}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
+// 진단 배지 렌더링
+function renderReportDiagBadge(result) {
+  const m = REPORT_LEVEL_META[result.level] || REPORT_LEVEL_META['A-1'];
+  const diag = result.diag || {};
+  return `
+    <div class="rpt-diag-badge" style="background:${m.color}08;border-color:${m.color}22">
+      <div class="rpt-diag-top">
+        <span style="font-size:20px">${m.icon}</span>
+        <div>
+          <div style="font-size:15px;font-weight:800;color:${m.color}">${result.level} "${m.name}"</div>
+          <div style="font-size:11px;color:#888">${result.axis === 'curiosity' ? '호기심 사다리' : '성찰 질문'} · +${result.xp || m.xp} XP</div>
+        </div>
+      </div>
+      <div class="rpt-diag-checks">
+        ${[
+          { key:'specific_target', label:'①대상' },
+          { key:'own_thinking', label:'②생각' },
+          { key:'context_connection', label:'③맥락' },
+        ].map(c => {
+          const d = diag[c.key];
+          return `
+          <div class="rpt-diag-check ${d?.met ? 'pass' : 'fail'}">
+            <div style="font-size:12px">${d?.met ? '✅' : '❌'}</div>
+            <div class="rpt-diag-check-label">${c.label}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${result.coaching_comment ? `<div class="rpt-diag-coaching">💬 ${result.coaching_comment}</div>` : ''}
+      ${result.upgrade_hint ? `<div class="rpt-diag-hint">⬆️ ${result.upgrade_hint}</div>` : ''}
+    </div>
+  `;
+}
+
+// 타임라인 모드
+function renderReportTimelineMode(phase, rpt) {
+  const entries = rpt.timeline.filter(t => t.phaseId === phase.id);
+  if (entries.length === 0) {
+    return `
+      <div class="rpt-empty">
+        <div style="font-size:28px;margin-bottom:6px">📭</div>
+        <div style="font-size:13px">이 단계의 기록이 아직 없어요</div>
+        <div style="font-size:11px;margin-top:4px;color:#555">💬 질문하기 탭에서 정율에게 물어보면 자동 기록됩니다</div>
+      </div>
+    `;
+  }
+  return entries.slice().reverse().map(entry => {
+    const phaseMeta = REPORT_PHASES.find(p => p.id === entry.phaseId);
+    const diagMeta = entry.diagResult ? REPORT_LEVEL_META[entry.diagResult.level] : null;
+    return `
+    <div class="rpt-timeline-entry">
+      <div class="rpt-tl-icon ${entry.type}">
+        ${entry.type === 'question' ? '💬' : entry.type === 'ai_response' ? '🤖' : '✏️'}
+      </div>
+      <div class="rpt-tl-body">
+        <div class="rpt-tl-meta">
+          <span class="rpt-tl-phase" style="background:${phaseMeta?.color || '#888'}15;color:${phaseMeta?.color || '#888'}">${phaseMeta?.name || ''}</span>
+          ${entry.diagResult ? `<span class="rpt-tl-level" style="background:${diagMeta?.color}15;color:${diagMeta?.color}">${diagMeta?.icon} ${entry.diagResult.level} +${entry.diagResult.xp || diagMeta?.xp}XP</span>` : ''}
+          <span class="rpt-tl-time">${new Date(entry.time).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</span>
+        </div>
+        <div class="rpt-tl-text">${entry.text}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// 성장 모드
+function renderReportGrowthMode(phase, phaseQuestions) {
+  if (phaseQuestions.length === 0) {
+    return `<div class="rpt-empty" style="padding:30px"><div style="font-size:13px;color:#555">아직 이 단계에서 질문한 적이 없어요</div></div>`;
+  }
+  const curiosityQs = phaseQuestions.filter(q => q.axis === 'curiosity');
+  const growthSvg = buildGrowthSvg(curiosityQs);
+  return `
+    ${curiosityQs.length >= 2 ? `
+    <div class="rpt-growth-chart">
+      <div style="font-size:11px;color:#888;margin-bottom:6px">📈 이 단계의 질문 성장 그래프</div>
+      <svg width="100%" height="100" viewBox="0 0 300 100" preserveAspectRatio="none">
+        <defs><linearGradient id="rptGrad2" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#34d399"/></linearGradient></defs>
+        ${buildGrowthSvg(curiosityQs, 100)}
+      </svg>
+    </div>` : ''}
+    <div style="margin-top:12px">
+      <div style="font-size:11px;color:#888;margin-bottom:8px">이 단계의 질문 이력</div>
+      ${phaseQuestions.map(q => {
+        const m = REPORT_LEVEL_META[q.level];
+        return `
+        <div class="rpt-q-history-item">
+          <span class="rpt-q-level" style="background:${m?.color}15;color:${m?.color}">${q.level}</span>
+          <span class="rpt-q-text">${q.text.length > 50 ? q.text.slice(0, 50) + '...' : q.text}</span>
+          <span class="rpt-q-xp" style="color:#fbbf24">+${q.xp}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// 전체 기록 뷰
+function renderReportAllTimeline(allQuestions, timeline) {
+  const totalXp = allQuestions.reduce((s, q) => s + (q.xp || 0), 0);
+  const highest = allQuestions.reduce((h, q) => (REPORT_LEVEL_META[q.level]?.n || 0) > (REPORT_LEVEL_META[h]?.n || 0) ? q.level : h, 'A-1');
+  return `
+    <div style="font-size:14px;font-weight:800;color:#34d399;margin-bottom:12px">📜 전체 탐구 기록 (${timeline.length}건)</div>
+    <div class="rpt-stats-row" style="margin-bottom:12px">
+      <div class="rpt-stat-item"><span class="rpt-stat-icon">⚡</span><span class="rpt-stat-value" style="color:#fbbf24">${totalXp}</span><span class="rpt-stat-label">총 XP</span></div>
+      <div class="rpt-stat-item"><span class="rpt-stat-icon">💬</span><span class="rpt-stat-value" style="color:#818cf8">${allQuestions.length}</span><span class="rpt-stat-label">질문 수</span></div>
+      <div class="rpt-stat-item"><span class="rpt-stat-icon">${REPORT_LEVEL_META[highest]?.icon}</span><span class="rpt-stat-value" style="color:${REPORT_LEVEL_META[highest]?.color}">${highest}</span><span class="rpt-stat-label">최고 수준</span></div>
+    </div>
+    ${timeline.length === 0 ? `<div class="rpt-empty" style="padding:40px"><div style="font-size:13px;color:#555">각 단계에서 정율에게 질문하면 여기에 자동 기록됩니다</div></div>` :
+    timeline.slice().reverse().map(entry => {
+      const phaseMeta = REPORT_PHASES.find(p => p.id === entry.phaseId);
+      const diagMeta = entry.diagResult ? REPORT_LEVEL_META[entry.diagResult.level] : null;
+      return `
+      <div class="rpt-timeline-entry">
+        <div class="rpt-tl-icon ${entry.type}">${entry.type === 'question' ? '💬' : entry.type === 'ai_response' ? '🤖' : '✏️'}</div>
+        <div class="rpt-tl-body">
+          <div class="rpt-tl-meta">
+            <span class="rpt-tl-phase" style="background:${phaseMeta?.color || '#888'}15;color:${phaseMeta?.color || '#888'}">${phaseMeta?.name || ''}</span>
+            ${entry.diagResult ? `<span class="rpt-tl-level" style="background:${diagMeta?.color}15;color:${diagMeta?.color}">${diagMeta?.icon} ${entry.diagResult.level}</span>` : ''}
+            <span class="rpt-tl-time">${new Date(entry.time).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</span>
+          </div>
+          <div class="rpt-tl-text">${entry.text.length > 100 ? entry.text.slice(0,100) + '...' : entry.text}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  `;
+}
+
+// 성장 리포트 뷰
+function renderReportGrowthReport(allQuestions) {
+  if (allQuestions.length === 0) {
+    return `<div class="rpt-empty" style="padding:40px"><div style="font-size:32px;margin-bottom:8px">📊</div><div style="font-size:14px;color:#555">질문을 시작하면 성장 리포트가 생성됩니다</div></div>`;
+  }
+  const curiosityQs = allQuestions.filter(q => q.axis === 'curiosity');
+  const reflectQs = allQuestions.filter(q => q.axis === 'reflection');
+  const totalXp = allQuestions.reduce((s, q) => s + (q.xp || 0), 0);
+  const highest = allQuestions.reduce((h, q) => (REPORT_LEVEL_META[q.level]?.n || 0) > (REPORT_LEVEL_META[h]?.n || 0) ? q.level : h, 'A-1');
+  const first = allQuestions[0];
+  const last = allQuestions[allQuestions.length - 1];
+  const firstB1 = curiosityQs.find(q => (REPORT_LEVEL_META[q.level]?.n || 0) >= 3);
+
+  // 수준 분포
+  const levelDist = {};
+  allQuestions.forEach(q => { levelDist[q.level] = (levelDist[q.level] || 0) + 1; });
+
+  const growthSvg = buildGrowthSvg(curiosityQs, 100);
+
+  return `
+    <div class="rpt-report-card">
+      <div style="font-size:16px;font-weight:900;color:#fff;margin-bottom:12px">📈 나의 질문 성장 리포트</div>
+
+      <!-- 탐구 여정 -->
+      ${first && last ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:#888;margin-bottom:6px">🎯 탐구 여정</div>
+        <div class="rpt-journey">
+          <div>시작: <span style="color:${REPORT_LEVEL_META[first.level]?.color}">${first.level}</span> "${first.text.length > 40 ? first.text.slice(0,40)+'...' : first.text}"</div>
+          <div style="text-align:center;color:#555;font-size:16px;margin:4px 0">⬇️</div>
+          <div>현재: <span style="color:${REPORT_LEVEL_META[last.level]?.color}">${last.level}</span> "${last.text.length > 40 ? last.text.slice(0,40)+'...' : last.text}"</div>
+        </div>
+      </div>` : ''}
+
+      <!-- 성장 그래프 -->
+      ${curiosityQs.length >= 2 ? `
+      <div class="rpt-growth-chart">
+        <div style="font-size:11px;color:#888;margin-bottom:6px">📈 질문 성장 그래프</div>
+        <svg width="100%" height="100" viewBox="0 0 300 100" preserveAspectRatio="none">
+          <defs><linearGradient id="rptGrad3" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#34d399"/></linearGradient></defs>
+          ${growthSvg}
+        </svg>
+      </div>` : ''}
+
+      <!-- 통계 -->
+      <div class="rpt-stats-row" style="margin-top:8px">
+        <div class="rpt-stat-item"><div style="font-size:14px">💬</div><div style="font-size:14px;font-weight:800;color:#818cf8">${allQuestions.length}</div><div style="font-size:9px;color:#666">총 질문</div></div>
+        <div class="rpt-stat-item"><div style="font-size:14px">⚡</div><div style="font-size:14px;font-weight:800;color:#fbbf24">${totalXp}</div><div style="font-size:9px;color:#666">총 XP</div></div>
+        <div class="rpt-stat-item"><div style="font-size:14px">🏆</div><div style="font-size:14px;font-weight:800;color:${REPORT_LEVEL_META[highest]?.color}">${highest}</div><div style="font-size:9px;color:#666">최고 수준</div></div>
+      </div>
+
+      <!-- 첫 B-1 달성 -->
+      ${firstB1 ? `
+      <div class="rpt-highlight">
+        <div style="font-size:11px;font-weight:700;color:#34d399;margin-bottom:4px">🎉 첫 B-1 달성!</div>
+        <div style="font-size:12px;color:#b0b0b0;line-height:1.6">"${firstB1.text.length > 80 ? firstB1.text.slice(0,80)+'...' : firstB1.text}"</div>
+      </div>` : ''}
+
+      <!-- 수준 분포 -->
+      <div style="margin-top:12px">
+        <div style="font-size:11px;color:#888;margin-bottom:6px">질문 수준 분포</div>
+        <div class="rpt-level-dist">
+          ${Object.entries(levelDist).sort().map(([lv, cnt]) => {
+            const m = REPORT_LEVEL_META[lv];
+            return `<div class="rpt-level-dist-item" style="flex:${cnt};background:${m?.color}20"><div style="font-size:10px;font-weight:700;color:${m?.color}">${lv}</div><div style="font-size:9px;color:#888">${cnt}회</div></div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// SVG 성장 그래프 빌더
+function buildGrowthSvg(curiosityQs, height) {
+  height = height || 50;
+  const levels = ['A-1','A-2','B-1','B-2','C-1','C-2'];
+  const padL = 36;
+  const chartW = 300 - padL;
+  const chartH = height - 10;
+
+  if (curiosityQs.length === 0) return '';
+
+  // 그리드 라인 (호기심 축만)
+  let svg = levels.map((lv, i) => {
+    const y = chartH - (i / 5) * chartH;
+    return `<line x1="${padL}" y1="${y}" x2="300" y2="${y}" stroke="rgba(255,255,255,.06)"/>
+    <text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#555" font-size="8">${lv}</text>`;
+  }).join('');
+
+  // 포인트 계산
+  const points = curiosityQs.map((q, i) => {
+    const lvlIdx = levels.indexOf(q.level);
+    const x = padL + (i / Math.max(curiosityQs.length - 1, 1)) * chartW;
+    const y = chartH - (lvlIdx / 5) * chartH;
+    return { x, y, q };
+  });
+
+  // 선
+  if (points.length > 1) {
+    const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+    svg += `<path d="${pathD}" fill="none" stroke="url(#rptGrad)" stroke-width="2" stroke-linecap="round"/>`;
+  }
+
+  // 점
+  points.forEach((p, i) => {
+    const m = REPORT_LEVEL_META[p.q.level];
+    const r = i === points.length - 1 ? 4 : 2.5;
+    svg += `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${m?.color || '#888'}" stroke="#08080f" stroke-width="1"/>`;
+  });
+
+  // 마지막 라벨
+  if (points.length > 0) {
+    const last = points[points.length - 1];
+    const lastMeta = REPORT_LEVEL_META[last.q.level];
+    svg += `<text x="${last.x}" y="${last.y - 8}" text-anchor="middle" fill="${lastMeta?.color}" font-size="9" font-weight="700">${last.q.level}</text>`;
+  }
+
+  return svg;
+}
+
+// AI 텍스트 포맷팅
+function formatReportAiText(text) {
+  return text
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" style="color:#60a5fa">$1</a>');
+}
+
+// 질문 제출 함수 (이중 파이프라인: Gemini 진단 → Perplexity 답변)
+async function submitReportQuestion(ecId, phaseIdx) {
+  const input = document.getElementById('rpt-question-input');
+  if (!input || !input.value.trim()) return;
+
+  const question = input.value.trim();
+  input.value = '';
+  state.reportAiLoading = true;
+  state.reportDiagResult = null;
+  state.reportAiResponse = null;
+  renderScreen();
+
+  const ec = state.extracurriculars.find(e => e.id === ecId);
+  if (!ec || !ec.report) { state.reportAiLoading = false; renderScreen(); return; }
+
+  const rpt = ec.report;
+  const phase = REPORT_PHASES[phaseIdx] || REPORT_PHASES[0];
+  if (!phase) { state.reportAiLoading = false; renderScreen(); return; }
+
+  try {
+    // Step 1: 질문 진단 (Gemini Flash → OpenAI 자동 폴백)
+    const diagRes = await fetch('/api/report-diagnose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        phase: phase.name,
+        projectTitle: ec.title,
+        subject: ec.subject,
+      })
+    });
+    if (!diagRes.ok) throw new Error('진단 서버 응답 오류');
+    const diagData = await diagRes.json();
+
+    // 에러 응답 처리
+    if (diagData.error) {
+      state.reportAiResponse = { answer: '⚠️ 정율 분석 중 일시적 오류가 발생했습니다. 잠시 후 다시 시도해주세요.', citations: [] };
+      state.reportAiLoading = false;
+      renderScreen();
+      return;
+    }
+
+    if (diagData.level) {
+      state.reportDiagResult = diagData;
+
+      // 질문 로그 추가
+      const qEntry = {
+        text: question,
+        level: diagData.level,
+        axis: diagData.axis || 'curiosity',
+        xp: diagData.xp || (REPORT_LEVEL_META[diagData.level]?.xp || 8),
+        phaseId: phase.id,
+        time: new Date().toISOString(),
+        diag: diagData.diag || {},
+      };
+      rpt.questions.push(qEntry);
+      rpt.totalXp = rpt.questions.reduce((s, q) => s + (q.xp || 0), 0);
+
+      // 타임라인에 추가
+      rpt.timeline.push({
+        type: 'question',
+        text: question,
+        phaseId: phase.id,
+        time: qEntry.time,
+        diagResult: diagData,
+      });
+
+      // XP 추가
+      state.xp += qEntry.xp;
+    }
+    renderScreen();
+
+    // Step 2: 정율 멘토 답변 (Perplexity - 자료 검색 기반)
+    const mentorRes = await fetch('/api/report-mentor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        phase: phase.name,
+        projectTitle: ec.title,
+        subject: ec.subject,
+        questionHistory: rpt.questions.slice(-5).map(q => ({ level: q.level, text: q.text })),
+      })
+    });
+    if (!mentorRes.ok) throw new Error('멘토 서버 응답 오류');
+    const mentorData = await mentorRes.json();
+
+    if (mentorData.answer) {
+      state.reportAiResponse = mentorData;
+
+      // 타임라인에 AI 응답 추가
+      rpt.timeline.push({
+        type: 'ai_response',
+        text: (mentorData.answer || '').slice(0, 200) + '...',
+        phaseId: phase.id,
+        time: new Date().toISOString(),
+      });
+    }
+
+    // DB에 탐구보고서 업데이트 (질문/타임라인 변경)
+    if (ec._reportDbId && DB.studentId()) {
+      DB.updateReportRecord(ec._reportDbId, {
+        timeline: rpt.timeline,
+        questions: rpt.questions,
+        totalXp: rpt.totalXp,
+        phase: phase.name,
+      });
+    }
+  } catch (e) {
+    state.reportAiResponse = { answer: '⚠️ 오류가 발생했습니다: ' + e.message, citations: [] };
+  }
+
+  state.reportAiLoading = false;
+  renderScreen();
+
+  // 스크롤 조정
+  setTimeout(() => {
+    const content = document.querySelector('.rpt-content');
+    if (content) content.scrollTop = content.scrollHeight;
+  }, 100);
+}
+
+
+// ==================== CLASS END POPUP ====================
+
+function renderClassEndPopup() {
+  const nextRecord = state.todayRecords.find(r => !r.done);
+  const subject = nextRecord ? nextRecord.subject : '영어';
+  const period = nextRecord ? nextRecord.period : 3;
+  const teacher = nextRecord ? nextRecord.teacher : '';
+  const color = nextRecord ? nextRecord.color : '#00B894';
+  
+  return `
+    <div class="popup-overlay animate-in">
+      <div class="popup-card">
+        <div class="popup-record-title">
+          <button class="popup-back-btn" onclick="goScreen('main')">
+            <i class="fas fa-arrow-left"></i>
+          </button>
+          <span>📝 당일 수업 · 당일 복습하기</span>
+        </div>
+        <div class="popup-header">
+          <div class="popup-bell"><i class="fas fa-bell"></i></div>
+          <h2>${period}교시 <span style="color:${color}">${subject}</span> 수업 끝!</h2>
+          <p>${teacher} 선생님</p>
+        </div>
+
+        <div class="popup-timer">
+          <span class="timer-icon">⏱️</span>
+          <span class="timer-text">30초면 OK!</span>
+        </div>
+
+        ${renderClassRecordFields(subject)}
+
+        <button class="btn-primary class-record-submit" onclick="completeClassRecord(${period-1})" disabled style="opacity:0.4;cursor:not-allowed">
+          기록 완료 +10 XP ✨
+        </button>
+
+        <div class="popup-question-after" style="display:none;text-align:center;padding:16px 0;margin-top:8px;border-top:1px solid var(--border)">
+          <div style="font-size:24px;margin-bottom:8px">🎉</div>
+          <p style="font-size:14px;font-weight:600;color:var(--success);margin:0 0 12px">수업 기록 완료!</p>
+          <span style="font-size:14px;font-weight:600">💡 오늘 수업에서 궁금했던 것이 있나요?</span>
+          <p style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;line-height:1.5">질문방에 남겨두면 나중에 스스로 직접 답해볼 수 있어요!</p>
+          <button class="btn-secondary" style="width:100%;padding:12px;font-size:14px;border-color:rgba(108,92,231,0.4)" onclick="openMyQaIframe()">✏️ 질문하기 +3 XP</button>
+          <button class="btn-ghost" style="width:100%;margin-top:8px;font-size:13px" onclick="goScreen('main')">다음에 할게요</button>
+        </div>
+
+        <button class="popup-skip popup-skip-before" onclick="goScreen('main')">나중에 할게요</button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 학원 수업 기록 팝업 ====================
+
+function openAcademyRecordPopup(idx) {
+  state._recordingAcademyIdx = idx;
+  goScreen('academy-record-popup');
+}
+
+function viewAcademyRecord(idx) {
+  // 학원 기록 상세 보기 → 기존 detail 화면 재활용
+  const r = (state.todayAcademyRecords || [])[idx];
+  if (!r) return;
+  // todayRecords 구조로 변환해서 기존 상세 뷰에서 볼 수 있도록
+  state._viewingTodayRecordIdx = null;
+  state._viewingDbRecord = null;
+  state._viewingAcademyRecord = { ...r, _academyIdx: idx };
+  goScreen('class-record-detail');
+}
+
+function renderAcademyRecordPopup() {
+  const idx = state._recordingAcademyIdx;
+  const acRecords = state.todayAcademyRecords || [];
+  const r = acRecords[idx];
+  if (!r) { goScreen('main'); return ''; }
+  
+  const subject = r.subject;
+  const color = r.color;
+  const academyName = r.academyName || r.teacher;
+  const className = r.className || r.subject;
+  
+  return `
+    <div class="popup-overlay animate-in">
+      <div class="popup-card">
+        <div class="popup-record-title">
+          <button class="popup-back-btn" onclick="goScreen('main')">
+            <i class="fas fa-arrow-left"></i>
+          </button>
+          <span>📝 당일 수업 · 당일 복습하기</span>
+        </div>
+        <div class="popup-header">
+          <div class="popup-bell" style="background:rgba(${parseInt(color.slice(1,3),16)},${parseInt(color.slice(3,5),16)},${parseInt(color.slice(5,7),16)},0.2)">
+            <i class="fas fa-graduation-cap" style="color:${color}"></i>
+          </div>
+          <h2><span style="color:${color}">${subject}</span> 학원 수업 끝!</h2>
+          <p style="font-size:13px;color:var(--text-muted)">${academyName} · ${className}</p>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:2px">${r.startTime||''}~${r.endTime||''}</p>
+        </div>
+
+        <div class="popup-timer">
+          <span class="timer-icon">⏱️</span>
+          <span class="timer-text">30초면 OK!</span>
+        </div>
+
+        ${renderClassRecordFields(subject)}
+
+        <button class="btn-primary class-record-submit" onclick="completeAcademyRecord(${idx})" disabled style="opacity:0.4;cursor:not-allowed">
+          기록 완료 +10 XP ✨
+        </button>
+
+        <div class="popup-question-after" style="display:none;text-align:center;padding:16px 0;margin-top:8px;border-top:1px solid var(--border)">
+          <div style="font-size:24px;margin-bottom:8px">🎉</div>
+          <p style="font-size:14px;font-weight:600;color:var(--success);margin:0 0 12px">학원 수업 기록 완료!</p>
+          <span style="font-size:14px;font-weight:600">💡 학원 수업에서 궁금했던 것이 있나요?</span>
+          <p style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;line-height:1.5">질문방에 남겨두면 나중에 스스로 직접 답해볼 수 있어요!</p>
+          <button class="btn-secondary" style="width:100%;padding:12px;font-size:14px;border-color:rgba(108,92,231,0.4)" onclick="openMyQaIframe()">✏️ 질문하기 +3 XP</button>
+          <button class="btn-ghost" style="width:100%;margin-top:8px;font-size:13px" onclick="goScreen('main')">다음에 할게요</button>
+        </div>
+
+        <button class="popup-skip popup-skip-before" onclick="goScreen('main')">나중에 할게요</button>
+      </div>
+    </div>
+  `;
+}
+
+function completeAcademyRecord(idx) {
+  // 유효성 검사 (기존 함수 재활용)
+  if (!validateClassRecordForm()) {
+    const keywordInput = document.querySelector('.class-keyword-input');
+    if (keywordInput) {
+      keywordInput.focus();
+      keywordInput.style.borderColor = 'var(--accent)';
+      keywordInput.setAttribute('placeholder', '핵심 키워드를 입력해야 기록을 완료할 수 있어요!');
+      setTimeout(() => { keywordInput.style.borderColor = ''; }, 2000);
+    }
+    return;
+  }
+  
+  const acRecords = state.todayAcademyRecords || [];
+  if (idx < 0 || idx >= acRecords.length) return;
+  const r = acRecords[idx];
+  
+  // 폼 필드 수집 (기존 로직과 동일)
+  const topicInput = document.querySelector('.class-topic-input');
+  const topic = topicInput ? topicInput.value.trim() : '';
+  
+  const pagesInput = document.querySelector('.class-pages-input');
+  const pages = pagesInput ? pagesInput.value.trim() : '';
+  
+  const keywordInput = document.querySelector('.class-keyword-input');
+  const keywordText = keywordInput ? keywordInput.value.trim() : '';
+  const keywordTexts = [];
+  if (keywordText) {
+    keywordText.split(/[,，、\n]+/).forEach(k => { const t = k.trim(); if (t) keywordTexts.push(t); });
+  }
+  
+  const photos = state._classPhotos || [];
+  
+  const teacherNoteInput = document.querySelector('.class-teacher-note-input');
+  const teacherNote = teacherNoteInput ? teacherNoteInput.value.trim() : '';
+  
+  const assignInput = document.querySelector('.class-assignment-input');
+  const assignText = assignInput ? assignInput.value.trim() : '';
+  
+  r.done = true;
+  r.summary = topic || keywordTexts.join(', ') || '학원 수업 기록 완료';
+  r._topic = topic;
+  r._pages = pages;
+  r._keywords = keywordTexts;
+  r._photos = photos;
+  r._teacherNote = teacherNote;
+  r._assignmentText = assignText;
+  r._assignmentDue = state._classAssignmentDue || '';
+  
+  // 미션 업데이트 (학교+학원 합산)
+  const totalDone = state.todayRecords.filter(x => x.done).length + acRecords.filter(x => x.done).length;
+  if (state.missions && state.missions[0]) {
+    state.missions[0].current = totalDone;
+    if (state.missions[0].current >= state.missions[0].target && !state.missions[0].done) {
+      state.missions[0].done = true;
+    }
+  }
+  
+  // DB 저장 (학원 수업도 동일하게 class-records API 사용)
+  if (state._authUser?.id) {
+    saveClassRecord({
+      student_id: state._authUser.id,
+      subject: r.subject,
+      date: kstToday(),
+      topic: topic,
+      pages: pages,
+      keywords: keywordTexts,
+      photos: photos,
+      teacher_note: teacherNote,
+      content: topic || r.summary,
+      memo: JSON.stringify({
+        period: r.period,
+        isAcademy: true,
+        academyName: r.academyName,
+        className: r.className,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        assignmentText: assignText,
+        assignmentDue: state._classAssignmentDue || ''
+      })
+    });
+  }
+  
+  // 사진 초기화
+  state._classPhotos = [];
+  state._classAssignmentDue = '';
+  
+  // UI 전환 (기존과 동일한 애니메이션)
+  const submitBtn = document.querySelector('.class-record-submit');
+  const skipBtn = document.querySelector('.popup-skip-before');
+  const questionAfter = document.querySelector('.popup-question-after');
+  
+  if (submitBtn) {
+    submitBtn.innerHTML = '✅ 기록 완료! +10 XP';
+    submitBtn.style.background = 'var(--success)';
+    submitBtn.style.opacity = '1';
+  }
+  if (skipBtn) skipBtn.style.display = 'none';
+  
+  setTimeout(() => {
+    if (submitBtn) submitBtn.style.display = 'none';
+    if (questionAfter) questionAfter.style.display = 'block';
+    
+    // 기록 필드 숨기기
+    document.querySelectorAll('.class-record-section').forEach(el => el.style.display = 'none');
+  }, 1200);
+  
+  showXpPopup(10, '학원 수업 기록 완료! 📚');
+}
+
+// ==================== 수업 기록 공통 필드 ====================
+function getDeadlineOptions() {
+  const today = kstNow();
+  const dayNames = ['일','월','화','수','목','금','토'];
+  
+  function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+  function fmt(d) { return `${d.getMonth()+1}/${d.getDate()}(${dayNames[d.getDay()]})`; }
+  function iso(d) { return d.toISOString().slice(0,10); }
+  
+  // 내일
+  const tomorrow = addDays(today, 1);
+  // 모레
+  const dayAfter = addDays(today, 2);
+  // 이번주 금요일
+  const dayOfWeek = today.getDay(); // 0=Sun
+  const daysToFri = dayOfWeek <= 5 ? (5 - dayOfWeek) : (5 + 7 - dayOfWeek);
+  const thisFri = addDays(today, daysToFri || 7);
+  // 다음주 월요일
+  const daysToMon = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+  const nextMon = addDays(today, daysToMon);
+  // 다음주 수요일
+  const nextWed = addDays(nextMon, 2);
+  
+  return [
+    { label: '내일', sub: fmt(tomorrow), value: iso(tomorrow) },
+    { label: '모레', sub: fmt(dayAfter), value: iso(dayAfter) },
+    { label: '이번주 금', sub: fmt(thisFri), value: iso(thisFri) },
+    { label: '다음주 월', sub: fmt(nextMon), value: iso(nextMon) },
+    { label: '다음주 수', sub: fmt(nextWed), value: iso(nextWed) },
+  ];
+}
+
+function renderClassRecordFields(subject) {
+  const photoCount = (state._classPhotos || []).length;
+  const photoThumbs = (state._classPhotos || []).map((p, i) => `
+    <div class="class-photo-thumb" style="position:relative;width:72px;height:72px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+      <img src="${p}" style="width:100%;height:100%;object-fit:cover" onclick="viewClassPhoto(${i})">
+      <button onclick="removeClassPhoto(${i})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.6);color:#fff;border:none;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer">&times;</button>
+    </div>
+  `).join('');
+
+  const deadlineOpts = getDeadlineOptions();
+  const selectedDue = state._classAssignmentDue || '';
+  const deadlineBtns = deadlineOpts.map(o => `
+    <button type="button" class="deadline-btn ${selectedDue === o.value ? 'active' : ''}" data-due="${o.value}" onclick="selectDeadline(this)" style="flex:1;min-width:0;padding:8px 4px;border-radius:8px;border:1px solid ${selectedDue === o.value ? 'var(--primary-light)' : 'var(--border)'};background:${selectedDue === o.value ? 'rgba(108,92,231,0.15)' : 'var(--bg-input)'};color:${selectedDue === o.value ? 'var(--primary-light)' : 'var(--text-primary)'};font-size:11px;text-align:center;cursor:pointer;transition:all 0.2s;line-height:1.3">
+      <div style="font-weight:600">${o.label}</div>
+      <div style="font-size:10px;color:${selectedDue === o.value ? 'var(--primary-light)' : 'var(--text-muted)'}; margin-top:2px">${o.sub}</div>
+    </button>
+  `).join('');
+
+  return `
+    <div class="field-group">
+      <label class="field-label">📖 단원/주제</label>
+      <input class="input-field class-topic-input" placeholder="예: 3단원 세포 분열" oninput="validateClassRecordForm()">
+    </div>
+
+    <div class="field-group">
+      <label class="field-label">📄 교과서 쪽수</label>
+      <input class="input-field class-pages-input" placeholder="예: p.84~89">
+    </div>
+
+    <div class="field-group">
+      <label class="field-label">📝 핵심 키워드 <span style="color:var(--accent)">*필수</span></label>
+      <textarea class="input-field class-keyword-input" placeholder="예: 감수분열, 상동염색체, 2가 염색체" rows="2" oninput="validateClassRecordForm()"></textarea>
+    </div>
+
+    <div class="field-group">
+      <label class="field-label">📸 필기 사진 <span style="color:var(--text-muted)">(선택)</span></label>
+      <div class="class-photos-container" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        ${photoThumbs}
+        <label class="class-photo-add-btn" style="width:72px;height:72px;flex-shrink:0;border-radius:8px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted);font-size:11px;gap:2px;transition:border-color 0.2s">
+          <i class="fas fa-plus" style="font-size:16px"></i>
+          <span>${photoCount > 0 ? '추가' : '사진 추가'}</span>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="handleClassPhotoUpload(this)">
+        </label>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin:0">노트/프린트를 촬영하세요 (여러 장 선택 가능)</p>
+    </div>
+
+    <div class="field-group">
+      <label class="field-label">⭐ 선생님 강조 <span style="color:var(--text-muted)">(선택)</span></label>
+      <input class="input-field class-teacher-note-input" placeholder='예: "서술형 나옴"'>
+    </div>
+
+    <div class="field-group assignment-section" style="background:var(--bg-input);border-radius:12px;padding:14px;border:1px solid var(--border)">
+      <label class="field-label" style="margin-bottom:8px">📋 과제 <span style="color:var(--text-muted)">(있으면 적어줘!)</span></label>
+      <input class="input-field class-assignment-input" placeholder="예: 워크북 p.30~32 풀어오기" oninput="toggleDeadlineSection()">
+      
+      <div class="deadline-section" style="display:${state._classAssignmentText ? 'block' : 'none'};margin-top:12px">
+        <label class="field-label" style="margin-bottom:8px">📅 마감일</label>
+        <div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto">
+          ${deadlineBtns}
+          <button type="button" class="deadline-btn deadline-custom-btn" onclick="openCustomDeadline()" style="flex:0 0 auto;min-width:52px;padding:8px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-muted);font-size:11px;text-align:center;cursor:pointer;transition:all 0.2s;line-height:1.3">
+            <div>📅</div>
+            <div style="font-size:10px;margin-top:2px">직접 선택</div>
+          </button>
+        </div>
+        <input type="date" class="custom-date-picker" style="display:none;margin-top:8px;width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:13px" onchange="selectCustomDeadline(this)">
+      </div>
+    </div>
+  `;
+}
+
+// 과제 입력 시 마감일 섹션 토글
+function toggleDeadlineSection() {
+  const input = document.querySelector('.class-assignment-input');
+  const section = document.querySelector('.deadline-section');
+  if (input && section) {
+    const hasText = input.value.trim().length > 0;
+    section.style.display = hasText ? 'block' : 'none';
+    state._classAssignmentText = input.value.trim();
+  }
+}
+
+// 마감일 버튼 선택
+function selectDeadline(btn) {
+  const due = btn.dataset.due;
+  state._classAssignmentDue = due;
+  
+  // 모든 deadline 버튼 비활성화
+  document.querySelectorAll('.deadline-btn').forEach(b => {
+    b.style.borderColor = 'var(--border)';
+    b.style.background = 'var(--bg-input)';
+    b.style.color = 'var(--text-primary)';
+    b.querySelectorAll('div').forEach(d => d.style.color = '');
+  });
+  
+  // 선택된 버튼 활성화
+  btn.style.borderColor = 'var(--primary-light)';
+  btn.style.background = 'rgba(108,92,231,0.15)';
+  btn.style.color = 'var(--primary-light)';
+  btn.querySelectorAll('div').forEach(d => d.style.color = 'var(--primary-light)');
+  
+  // custom date picker 숨기기
+  const picker = document.querySelector('.custom-date-picker');
+  if (picker) picker.style.display = 'none';
+}
+
+// 직접 선택 → date picker 표시
+function openCustomDeadline() {
+  const picker = document.querySelector('.custom-date-picker');
+  if (picker) {
+    picker.style.display = 'block';
+    // 최소 날짜를 내일로 설정
+    picker.min = kstDateOffset(1);
+    picker.focus();
+  }
+}
+
+// 직접 선택 날짜 적용
+function selectCustomDeadline(input) {
+  if (!input.value) return;
+  state._classAssignmentDue = input.value;
+  
+  // 기존 버튼 비활성화
+  document.querySelectorAll('.deadline-btn').forEach(b => {
+    b.style.borderColor = 'var(--border)';
+    b.style.background = 'var(--bg-input)';
+    b.style.color = 'var(--text-primary)';
+    b.querySelectorAll('div').forEach(d => d.style.color = '');
+  });
+  
+  // 직접 선택 버튼 활성화
+  const customBtn = document.querySelector('.deadline-custom-btn');
+  if (customBtn) {
+    customBtn.style.borderColor = 'var(--primary-light)';
+    customBtn.style.background = 'rgba(108,92,231,0.15)';
+    customBtn.style.color = 'var(--primary-light)';
+    const d = new Date(input.value + 'T00:00:00');
+    const dayNames = ['일','월','화','수','목','금','토'];
+    customBtn.innerHTML = `<div style="font-weight:600;color:var(--primary-light)">${d.getMonth()+1}/${d.getDate()}</div><div style="font-size:10px;color:var(--primary-light);margin-top:2px">(${dayNames[d.getDay()]})</div>`;
+  }
+}
+
+// 사진 업로드 핸들러 (다중)
+function handleClassPhotoUpload(input) {
+  if (!input.files || input.files.length === 0) return;
+  if (!state._classPhotos) state._classPhotos = [];
+
+  const maxPhotos = 20;
+  const remaining = maxPhotos - state._classPhotos.length;
+  if (remaining <= 0) {
+    alert('사진은 최대 ' + maxPhotos + '장까지 첨부할 수 있습니다.');
+    return;
+  }
+
+  const files = Array.from(input.files).slice(0, remaining);
+  let loaded = 0;
+
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      state._classPhotos.push(e.target.result);
+      loaded++;
+      if (loaded === files.length) {
+        // 사진 영역만 갱신
+        refreshClassPhotos();
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // input 리셋 (같은 파일 다시 선택 가능)
+  input.value = '';
+}
+
+// 사진 삭제
+function removeClassPhoto(idx) {
+  if (!state._classPhotos) return;
+  state._classPhotos.splice(idx, 1);
+  refreshClassPhotos();
+}
+
+// 사진 확대 보기
+function viewClassPhoto(idx) {
+  if (!state._classPhotos || !state._classPhotos[idx]) return;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:10000;display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.innerHTML = '<img src="' + state._classPhotos[idx] + '" style="max-width:95%;max-height:95%;border-radius:8px;object-fit:contain">';
+  overlay.onclick = () => overlay.remove();
+  document.body.appendChild(overlay);
+}
+
+// 사진 영역 갱신 (전체 re-render 없이)
+function refreshClassPhotos() {
+  const containers = document.querySelectorAll('.class-photos-container');
+  containers.forEach(container => {
+    const photoCount = (state._classPhotos || []).length;
+    const thumbs = (state._classPhotos || []).map((p, i) => `
+      <div class="class-photo-thumb" style="position:relative;width:72px;height:72px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+        <img src="${p}" style="width:100%;height:100%;object-fit:cover" onclick="viewClassPhoto(${i})">
+        <button onclick="removeClassPhoto(${i})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.6);color:#fff;border:none;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer">&times;</button>
+      </div>
+    `).join('');
+
+    container.innerHTML = thumbs + `
+      <label class="class-photo-add-btn" style="width:72px;height:72px;flex-shrink:0;border-radius:8px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted);font-size:11px;gap:2px;transition:border-color 0.2s">
+        <i class="fas fa-plus" style="font-size:16px"></i>
+        <span>${photoCount > 0 ? '추가' : '사진 추가'}</span>
+        <input type="file" accept="image/*" multiple style="display:none" onchange="handleClassPhotoUpload(this)">
+      </label>
+    `;
+  });
+}
+
+// ==================== RECORD CLASS (R-01) ====================
+
+function renderRecordClass() {
+  const nextRecord = state.todayRecords.find(r => !r.done);
+  const subject = nextRecord ? nextRecord.subject : '영어';
+  const teacher = nextRecord ? nextRecord.teacher : '';
+  const period = nextRecord ? nextRecord.period : 3;
+  const color = nextRecord ? nextRecord.color : '#00B894';
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>수업 기록</h1>
+        <span class="header-badge">${period}교시 ${subject}</span>
+      </div>
+
+      <div class="form-body">
+        <div class="subject-indicator">
+          <span class="subject-dot" style="background:${color}"></span>
+          <span>${subject} · ${teacher} 선생님</span>
+          <span class="period-badge">${period}교시</span>
+        </div>
+
+        ${renderClassRecordFields(subject)}
+
+        <button class="btn-primary class-record-submit" onclick="saveClassRecordFromForm()" disabled style="opacity:0.4;cursor:not-allowed">기록 완료 +10 XP ✨</button>
+
+        <div class="fullscreen-question-after" style="display:none;text-align:center;padding:16px 0;margin-top:8px;border-top:1px solid var(--border)">
+          <div style="font-size:24px;margin-bottom:8px">🎉</div>
+          <p style="font-size:14px;font-weight:600;color:var(--success);margin:0 0 12px">수업 기록 완료!</p>
+          <p style="font-size:14px;font-weight:600;margin:0 0 4px">💡 오늘 수업에서 궁금했던 것이 있나요?</p>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;line-height:1.5">질문방에 남겨두면 나중에 스스로 직접 답해볼 수 있어요!</p>
+          <button class="btn-secondary" style="width:100%;padding:12px;font-size:14px;border-color:rgba(108,92,231,0.4)" onclick="openMyQaIframe()">✏️ 질문하기 +3 XP</button>
+          <button class="btn-ghost" style="width:100%;margin-top:8px;font-size:13px" onclick="goScreen('main')">다음에 할게요</button>
+        </div>
+        <p class="input-timer">⏱️ 입력 시간: 22초</p>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== RECORD QUESTION (R-02) ====================
+
+// 질문 기록을 DB에 저장
+function saveQuestionToDB(saveType) {
+  if (!DB.studentId()) return;
+  const subj = state._questionSubject || state._activeSubject || '수학';
+  const questionText = state._questionText || '';
+  const diagResult = state._diagResult || {};
+  const challengeResult = state._challengeResult || {};
+  const coachMessages = state._coachMessages || [];
+  
+  const level = challengeResult.level || diagResult.level || '';
+  const label = challengeResult.levelName || diagResult.levelName || '';
+  const axis = diagResult.axis || 'curiosity';
+  const xp = saveType === 'coaching-complete' ? 30 : (challengeResult.xp || diagResult.xp || 15);
+  
+  DB.saveQuestionRecord({
+    subject: subj,
+    questionText: questionText,
+    questionLevel: level,
+    questionLabel: label,
+    axis: axis,
+    coachingMessages: coachMessages,
+    xpEarned: xp,
+    isComplete: saveType === 'coaching-complete',
+  });
+}
+
+// 수업기록 폼에서 실제 입력값을 DB에 저장
+function saveClassRecordFromForm() {
+  // 유효성 검사
+  if (!validateClassRecordForm()) {
+    const keywordInput = document.querySelector('.class-keyword-input');
+    if (keywordInput) {
+      keywordInput.focus();
+      keywordInput.style.borderColor = 'var(--accent)';
+      keywordInput.setAttribute('placeholder', '핵심 키워드를 입력해야 기록을 완료할 수 있어요!');
+      setTimeout(() => { keywordInput.style.borderColor = ''; }, 2000);
+    }
+    return;
+  }
+  
+  const nextRecord = state.todayRecords.find(r => !r.done);
+  const subject = nextRecord ? nextRecord.subject : '영어';
+  const period = nextRecord ? nextRecord.period : 3;
+  
+  // 새 폼 필드 수집
+  const topicInput = document.querySelector('.class-topic-input');
+  const topic = topicInput ? topicInput.value.trim() : '';
+  
+  const pagesInput = document.querySelector('.class-pages-input');
+  const pages = pagesInput ? pagesInput.value.trim() : '';
+  
+  const keywordInput = document.querySelector('.class-keyword-input');
+  const keywordText = keywordInput ? keywordInput.value.trim() : '';
+  const keywordTexts = [];
+  if (keywordText) {
+    keywordText.split(/[,，、\n]+/).forEach(k => { const t = k.trim(); if (t) keywordTexts.push(t); });
+  }
+  
+  const photos = state._classPhotos || [];
+  
+  const teacherNoteInput = document.querySelector('.class-teacher-note-input');
+  const teacherNote = teacherNoteInput ? teacherNoteInput.value.trim() : '';
+  
+  // todayRecords 업데이트
+  if (nextRecord) {
+    nextRecord.done = true;
+    nextRecord.summary = topic || keywordTexts.join(', ') || '수업 기록 완료';
+    nextRecord._topic = topic;
+    nextRecord._pages = pages;
+    nextRecord._keywords = keywordTexts;
+    nextRecord._photos = photos;
+    nextRecord._teacherNote = teacherNote;
+    
+    // 과제 데이터를 레코드에 저장 (수정 화면에서 다시 볼 수 있도록)
+    const assignInput = document.querySelector('.class-assignment-input');
+    const assignText = assignInput ? assignInput.value.trim() : '';
+    nextRecord._assignmentText = assignText;
+    nextRecord._assignmentDue = state._classAssignmentDue || '';
+    
+    state.missions[0].current = state.todayRecords.filter(r => r.done).length;
+    if (state.missions[0].current >= state.missions[0].target) state.missions[0].done = true;
+  }
+  
+  // DB 저장
+  if (DB.studentId()) {
+    DB.saveClassRecord({
+      subject: subject,
+      date: kstToday(),
+      content: topic,
+      keywords: keywordTexts.length > 0 ? keywordTexts : [],
+      understanding: 3,
+      memo: JSON.stringify({ period: period, pages: pages, teacherNote: teacherNote, photoCount: photos.length }),
+      topic: topic,
+      pages: pages,
+      photos: photos,
+      teacher_note: teacherNote,
+    });
+  }
+  
+  // 과제가 있으면 플래너에 자동 등록
+  registerAssignmentFromClassRecord(subject, period);
+  if (nextRecord) {
+    const aInput = document.querySelector('.class-assignment-input');
+    nextRecord._assignmentRegistered = !!(aInput && aInput.value.trim());
+  }
+  
+  // 사진 상태 리셋
+  state._classPhotos = [];
+  
+  // 1차 XP 지급
+  showXpPopup(10, '수업 기록 완료!', { stayOnScreen: true });
+  
+  // 기록 완료 → UI 전환: 입력 필드 비활성화, 기록 버튼 숨기고 질문 섹션 표시
+  showPostRecordQuestion();
+}
+
+// 수업 기록에서 과제 자동 등록
+function registerAssignmentFromClassRecord(subject, period) {
+  const assignInput = document.querySelector('.class-assignment-input');
+  const assignText = assignInput ? assignInput.value.trim() : '';
+  if (!assignText) {
+    state._classAssignmentText = '';
+    state._classAssignmentDue = '';
+    return;
+  }
+  
+  const dueDate = state._classAssignmentDue || kstDateOffset(7); // 기본 1주 후
+  
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '사회':'#74B9FF','한국사':'#E056A0','제2외국어':'#A29BFE','기술가정':'#FF9F43',
+    '음악':'#fd79a8','미술':'#00cec9','체육':'#e17055','정보':'#0984e3',
+  };
+  
+  // 플래너 state에 추가
+  const newAssignment = {
+    id: 'auto-' + Date.now(),
+    subject: subject,
+    title: assignText,
+    desc: `${period}교시 수업 중 등록`,
+    type: '과제',
+    teacher: '',
+    dueDate: dueDate,
+    createdDate: kstToday(),
+    color: subjectColors[subject] || '#636e72',
+    status: 'pending',
+    progress: 0,
+    plan: []
+  };
+  
+  if (!state.assignments) state.assignments = [];
+  state.assignments.push(newAssignment);
+  
+  // DB 저장 (비동기)
+  if (DB.studentId()) {
+    DB.saveAssignment({
+      subject: subject,
+      title: assignText,
+      description: `${period}교시 수업 중 등록`,
+      teacherName: '',
+      dueDate: dueDate,
+      color: subjectColors[subject] || '#636e72',
+      planData: [],
+    }).then(dbId => {
+      if (dbId) {
+        newAssignment._dbId = dbId;
+        newAssignment.id = String(dbId);
+      }
+    });
+  }
+  
+  // 플래너 일간 뷰에도 마감일 항목 추가
+  addAssignmentToPlannerItems(newAssignment);
+  
+  // 과제 상태 리셋
+  state._classAssignmentText = '';
+  state._classAssignmentDue = '';
+}
+
+// 과제를 플래너 일간 타임라인에 등록하는 헬퍼
+function addAssignmentToPlannerItems(assignment) {
+  if (!assignment || !assignment.dueDate) return;
+  
+  // 이미 같은 과제가 등록되어 있으면 중복 방지
+  const exists = state.plannerItems.find(p => 
+    p.category === 'assignment' && p.title === '[과제] ' + assignment.title && p.date === assignment.dueDate
+  );
+  if (exists) return;
+  
+  state.plannerItems.push({
+    id: 'passign-' + Date.now(),
+    date: assignment.dueDate,
+    time: '23:00',
+    endTime: '23:59',
+    title: '[과제] ' + assignment.title,
+    category: 'assignment',
+    color: assignment.color || '#636e72',
+    icon: '📋',
+    done: false,
+    aiGenerated: false,
+    detail: assignment.subject + ' · ' + (assignment.desc || '과제 제출')
+  });
+}
+
+function showPostRecordQuestion() {
+  // 기록 완료 버튼 숨기기
+  document.querySelectorAll('.class-record-submit').forEach(btn => {
+    btn.style.display = 'none';
+  });
+  
+  // "나중에 할게요" 버튼 숨기기 (기록 전용)
+  document.querySelectorAll('.popup-skip-before').forEach(btn => {
+    btn.style.display = 'none';
+  });
+  
+  // 입력 필드 비활성화 (수정 불가)
+  document.querySelectorAll('.class-topic-input, .class-pages-input, .class-keyword-input, .class-teacher-note-input, .class-assignment-input').forEach(el => {
+    el.disabled = true;
+    el.style.opacity = '0.6';
+  });
+  
+  // 마감일 버튼 비활성화
+  document.querySelectorAll('.deadline-btn, .deadline-custom-btn').forEach(el => {
+    el.disabled = true;
+    el.style.opacity = '0.6';
+    el.style.pointerEvents = 'none';
+  });
+  
+  // 사진 추가 버튼 숨기기
+  document.querySelectorAll('.class-photo-add-btn').forEach(el => {
+    el.style.display = 'none';
+  });
+  
+  // 사진 삭제 버튼 숨기기
+  document.querySelectorAll('.class-photo-thumb button').forEach(el => {
+    el.style.display = 'none';
+  });
+  
+  // 질문하기 섹션 표시 (팝업 또는 전체화면)
+  document.querySelectorAll('.popup-question-after, .fullscreen-question-after').forEach(el => {
+    el.style.display = 'block';
+  });
+  
+  // 질문 섹션으로 스크롤
+  setTimeout(() => {
+    const questionSection = document.querySelector('.popup-question-after') || document.querySelector('.fullscreen-question-after');
+    if (questionSection) questionSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 300);
+}
+
+function renderRecordQuestion() {
+  // 2축 9단계 질문 코칭 시스템 v2.0
+  const questionLevels = {
+    curiosity: [
+      { id:'A-1', label:'뭐지?', name:'사실·정의 확인', xp:8, desc:'정해진 공식·정의를 확인하는 질문', icon:'👀', group:'A' },
+      { id:'A-2', label:'어떻게?', name:'절차·방법 확인', xp:10, desc:'풀이 방법이나 순서를 묻는 질문', icon:'🔧', group:'A' },
+      { id:'B-1', label:'왜?', name:'이유·원리 탐구', xp:15, desc:'개념의 의미와 원리를 깊이 이해하려는 질문', icon:'💡', group:'B' },
+      { id:'B-2', label:'만약에?', name:'가능성 탐색', xp:20, desc:'조건을 변경하고 결과를 예측하는 전략적 사고', icon:'🔀', group:'B' },
+      { id:'C-1', label:'뭐가 더 나아?', name:'비교·판단', xp:25, desc:'서로 다른 방법을 비교하고 자기 판단 제시', icon:'⚖️', group:'C' },
+      { id:'C-2', label:'그러면?', name:'확장·창조', xp:30, desc:'배운 것을 새로운 상황에 적용/확장', icon:'🚀', group:'C' },
+    ],
+    reflection: [
+      { id:'R-1', label:'어디서 틀렸지?', name:'오류 위치 발견', xp:15, desc:'틀린 지점을 특정하는 질문', icon:'🔍' },
+      { id:'R-2', label:'왜 틀렸지?', name:'오류 원인 분석', xp:20, desc:'개념부족·실수·해석오류 등 원인 분석', icon:'🧪' },
+      { id:'R-3', label:'다음엔 어떻게?', name:'재발 방지 전략', xp:25, desc:'구체적 다음 행동 전략 수립', icon:'🎯' },
+    ]
+  };
+
+  const coachingMode = state._coachingMode || 'diagnosis'; // 'diagnosis' | 'challenge' | 'socrates'
+  const diagResult = state._diagResult || null;
+  const socratesStep = state._socratesStep || 0;
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._coachingMode=null;state._diagResult=null;state._socratesStep=0;state._questionText='';state._questionImages=null;state._imageAnalysis=null;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>질문 코칭</h1>
+        <span class="header-badge">🧠 2축 9단계</span>
+      </div>
+
+      <div class="form-body">
+        <!-- 시스템 소개 배너 -->
+        <div class="coaching-banner animate-in">
+          <div class="coaching-banner-icon">🧠</div>
+          <div class="coaching-banner-text">
+            <strong>2축 9단계 질문 코칭 시스템</strong>
+            <p>"답이 아니라 사고의 심연으로" — 궁금함을 만드는 소크라테스 코칭</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📚 과목</label>
+          <div class="chip-row" id="question-subject-chips">
+            ${['국어','수학','영어','과학','한국사'].map((s) => `<button class="chip ${state._questionSubject===s?'active':''}" data-qsubject="${s}">${s}</button>`).join('')}
+          </div>
+        </div>
+
+        <!-- 질문 유형 선택: 호기심 vs 성찰 + 정율질문방 -->
+        <div class="field-group">
+          <div class="field-label-row">
+            <label class="field-label" style="margin-bottom:0">📋 질문 유형</label>
+            <button class="btn-jyqr" onclick="openJeongyulQA()">
+              <span class="jyqr-pulse"></span>
+              <i class="fas fa-external-link-alt"></i>
+              정율질문방 가기
+            </button>
+          </div>
+          <div class="axis-selector">
+            <button class="axis-btn ${!state._questionAxis || state._questionAxis==='curiosity'?'active':''}" onclick="state._questionAxis='curiosity';renderScreen()">
+              <span class="axis-icon">🪜</span>
+              <span>축1: 호기심 사다리</span>
+              <small>문제를 향한 질문</small>
+            </button>
+            <button class="axis-btn ${state._questionAxis==='reflection'?'active':''}" onclick="state._questionAxis='reflection';renderScreen()">
+              <span class="axis-icon">🪞</span>
+              <span>축2: 성찰 질문</span>
+              <small>내 풀이를 향한 질문</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">❓ 질문 내용</label>
+          <div class="question-input-wrap">
+            <textarea class="input-field" rows="3" id="question-input" placeholder="${state._questionAxis==='reflection' ? '내가 어디서 틀렸는지, 왜 틀렸는지 생각을 적어주세요' : '수업 중 궁금한 점을 적어주세요. 자기 생각도 함께!'}">${state._questionText || ''}</textarea>
+            
+            <!-- 이미지 첨부 미리보기 -->
+            ${state._questionImages && state._questionImages.length > 0 ? `
+            <div class="q-image-preview-row">
+              ${state._questionImages.map((img, idx) => `
+                <div class="q-image-preview-item">
+                  <img src="${img}" alt="첨부 이미지 ${idx+1}">
+                  <button class="q-image-remove" onclick="state._questionImages.splice(${idx},1);renderScreen()">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+              `).join('')}
+            </div>
+            ` : ''}
+
+            <!-- 이미지 첨부 버튼 바 -->
+            <div class="q-attach-bar">
+              <button class="q-attach-btn" onclick="document.getElementById('q-image-upload').click()">
+                <i class="fas fa-image"></i>
+                <span>사진 첨부</span>
+              </button>
+              <button class="q-attach-btn" onclick="document.getElementById('q-camera-capture').click()">
+                <i class="fas fa-camera"></i>
+                <span>촬영</span>
+              </button>
+              <span class="q-attach-hint">문제지, 풀이 과정 등을 찍어 올려보세요</span>
+            </div>
+            <input type="file" id="q-image-upload" accept="image/*" multiple style="display:none" onchange="handleQuestionImageUpload(this)">
+            <input type="file" id="q-camera-capture" accept="image/*" style="display:none" onchange="handleQuestionImageUpload(this)">
+          </div>
+          <div class="input-hint">💡 <strong>B단계 이상</strong> 판정 조건: ① 구체적 대상 ② 자기 생각 ③ 맥락 연결</div>
+        </div>
+
+        <button class="btn-primary" style="margin-bottom:16px" onclick="analyzeQuestion()">
+          <i class="fas fa-robot"></i> 정율 질문 분석하기
+        </button>
+
+        <!-- 로딩 상태 -->
+        ${coachingMode === 'loading' ? `
+        <div class="ai-diagnosis-card animate-in" style="text-align:center;padding:32px 16px">
+          <div class="loading-spinner-wrap">
+            <div class="diag-loading-spinner"></div>
+          </div>
+          <p style="margin-top:12px;font-weight:600;color:var(--text-secondary)">🧠 정율이 질문을 분석하고 있어요...</p>
+          <p style="font-size:10px;color:var(--text-muted);margin-top:4px">${state._questionImages && state._questionImages.length > 0 ? '📷 이미지 분석 → 질문 분석 2단계 진행 중' : '2축 9단계 기준으로 꼼꼼히 확인 중'}</p>
+        </div>
+        ` : ''}
+
+        <!-- 이미지 분석 결과 (있을 경우) -->
+        ${state._imageAnalysis && coachingMode === 'result' ? `
+        <div class="ai-diagnosis-card animate-in" style="margin-bottom:10px;border-left:3px solid #FDCB6E">
+          <div class="ai-header">
+            <span class="ai-icon">📷</span>
+            <span class="ai-title">이미지 분석 결과</span>
+            <span style="margin-left:auto;font-size:9px;background:var(--bg-input);padding:2px 8px;border-radius:8px">정율</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+            <div style="background:var(--bg-input);padding:6px 8px;border-radius:8px">
+              <div style="font-size:8px;color:var(--text-muted)">선택 과목</div>
+              <div style="font-size:11px;font-weight:700">${state._selectedSubject || '미지정'}</div>
+            </div>
+            <div style="background:var(--bg-input);padding:6px 8px;border-radius:8px">
+              <div style="font-size:8px;color:var(--text-muted)">정율 인식 단원</div>
+              <div style="font-size:11px;font-weight:700">${state._imageAnalysis.topic || '미지정'}</div>
+            </div>
+          </div>
+          ${state._imageAnalysis.extractedText ? `<div style="margin-top:8px;font-size:10px;color:var(--text-secondary);background:var(--bg-input);padding:8px;border-radius:8px;line-height:1.5"><strong>📝 인식 내용:</strong> ${state._imageAnalysis.extractedText}</div>` : ''}
+          ${state._imageAnalysis.handwritingCheck ? `<div style="margin-top:6px;font-size:10px;color:var(--text-secondary);background:var(--bg-input);padding:8px;border-radius:8px"><strong>✏️ 필기 확인:</strong> ${state._imageAnalysis.handwritingCheck}</div>` : ''}
+          ${state._imageAnalysis.analysis ? `<div style="margin-top:6px;font-size:10px;color:var(--text-secondary);background:var(--bg-input);padding:8px;border-radius:8px;line-height:1.5"><strong>🔍 분석:</strong> ${state._imageAnalysis.analysis}</div>` : ''}
+        </div>
+        ` : ''}
+
+        <!-- 정율 진단 결과 카드 (동적) -->
+        ${coachingMode === 'result' && diagResult ? `
+        <div class="ai-diagnosis-card animate-in">
+          <div class="ai-header">
+            <span class="ai-icon">📊</span>
+            <span class="ai-title">질문 분석 결과</span>
+            <span style="margin-left:auto;font-size:9px;background:var(--bg-input);padding:2px 8px;border-radius:8px">${diagResult.axis === 'reflection' ? '축2 성찰' : '축1 호기심'}</span>
+          </div>
+          <div class="diag-question-echo">
+            <span class="diag-q-label">네 질문:</span>
+            <span class="diag-q-text">"${(document.getElementById('question-input')?.value || '').replace(/"/g, '&quot;').substring(0,200)}"</span>
+          </div>
+
+          ${diagResult.error ? `
+          <div style="background:#FFF3F3;padding:12px;border-radius:10px;margin-top:8px;border:1px solid #FFD0D0">
+            <p style="font-size:11px;color:#E74C3C;font-weight:600">⚠️ 분석 중 오류가 발생했습니다</p>
+            <p style="font-size:10px;color:var(--text-muted);margin-top:4px">${diagResult.error}</p>
+            <button class="btn-ghost" style="margin-top:8px" onclick="analyzeQuestion()">
+              <i class="fas fa-redo"></i> 다시 시도
+            </button>
+          </div>
+          ` : `
+          <!-- 3대 필수조건 체크리스트 -->
+          ${diagResult.checks ? `
+          <div class="diag-checklist">
+            <div class="diag-check-item ${diagResult.checks.specificTarget?.pass ? 'pass' : 'fail'}">
+              <span class="diag-check-icon">${diagResult.checks.specificTarget?.pass ? '✅' : '❌'}</span>
+              <span class="diag-check-label">구체적 대상</span>
+              <span class="diag-check-detail">${diagResult.checks.specificTarget?.detail || '확인 불가'}</span>
+            </div>
+            <div class="diag-check-item ${diagResult.checks.ownThought?.pass ? 'pass' : 'fail'}">
+              <span class="diag-check-icon">${diagResult.checks.ownThought?.pass ? '✅' : '❌'}</span>
+              <span class="diag-check-label">자기 생각</span>
+              <span class="diag-check-detail">${diagResult.checks.ownThought?.detail || '확인 불가'}</span>
+            </div>
+            <div class="diag-check-item ${diagResult.checks.contextLink?.pass ? 'pass' : 'fail'}">
+              <span class="diag-check-icon">${diagResult.checks.contextLink?.pass ? '✅' : '❌'}</span>
+              <span class="diag-check-label">맥락 연결</span>
+              <span class="diag-check-detail">${diagResult.checks.contextLink?.detail || '확인 불가'}</span>
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- 진단 결과 -->
+          <div class="diag-result">
+            <span class="diag-arrow">→</span>
+            <span class="q-level q-level-${(diagResult.level||'A-1').charAt(0).toLowerCase()}">${diagResult.level || '?'}</span>
+            <span class="diag-result-name">"${diagResult.levelName || ''}" ${diagResult.levelDesc || ''} 단계!</span>
+            <span class="diag-xp">XP +${diagResult.xp || 0}</span>
+          </div>
+
+          <!-- 정율 피드백 -->
+          ${diagResult.feedback ? `
+          <div style="background:var(--bg-input);padding:10px 12px;border-radius:10px;margin-top:8px;font-size:11px;line-height:1.6;color:var(--text-secondary)">
+            💬 ${diagResult.feedback}
+          </div>
+          ` : ''}
+
+          <!-- 다음 단계 힌트 -->
+          ${diagResult.nextHint ? `
+          <div class="diag-hint">
+            <span class="diag-hint-icon">💡</span>
+            <div class="diag-hint-text">
+              <strong>다음 단계 목표:</strong> ${diagResult.nextHint.hint || ''}
+              → <span class="q-level q-level-${(diagResult.nextHint.targetLevel||'').charAt(0).toLowerCase()}">${diagResult.nextHint.targetLevel} "${diagResult.nextHint.targetName}"</span>
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- 도전 / 확정 버튼 -->
+          <div class="diag-actions">
+            ${diagResult.nextHint ? `
+            <button class="btn-challenge" onclick="startChallenge()">
+              <i class="fas fa-fire"></i> ${diagResult.nextHint.targetLevel} 도전! 🔥
+            </button>
+            ` : ''}
+            <button class="btn-ghost" onclick="saveQuestionToDB('diag');showXpPopup(${diagResult.xp || 0}, '${diagResult.level || ''} ${diagResult.levelName || ''} 완료!')">
+              괜찮아요 ✓
+            </button>
+          </div>
+          `}
+        </div>
+        ` : ''}
+
+        <!-- 도전 모드 -->
+        ${coachingMode === 'challenge' ? `
+        <div class="challenge-mode animate-in">
+          <div class="challenge-header">
+            <span>🔥</span>
+            <h3>더 좋은 질문 도전!</h3>
+            <p>${diagResult?.nextHint ? `${diagResult.nextHint.targetLevel} "${diagResult.nextHint.targetName}" 단계를 목표로 질문을 다시 만들어보세요` : '한 단계 높은 질문을 만들어보세요'}</p>
+          </div>
+          <textarea class="input-field" rows="3" id="challenge-input" placeholder="${diagResult?.nextHint?.hint || '더 깊은 사고가 담긴 질문을 작성해보세요!'}"></textarea>
+          
+          ${state._challengeLoading ? `
+          <div style="text-align:center;padding:16px">
+            <div class="diag-loading-spinner"></div>
+            <p style="font-size:10px;color:var(--text-muted);margin-top:8px">도전 질문 분석 중...</p>
+          </div>
+          ` : ''}
+
+          ${state._challengeResult ? `
+          <div class="challenge-result animate-in" style="margin-top:8px">
+            <span class="diag-arrow">→</span>
+            <span class="q-level q-level-${(state._challengeResult.level||'A-1').charAt(0).toLowerCase()}" style="font-size:14px">${state._challengeResult.level}</span>
+            <span>"${state._challengeResult.levelName}" ${state._challengeResult.levelDesc || ''}</span>
+            <span class="diag-xp">XP +${state._challengeResult.xp || 0}${state._challengeResult.xp > (diagResult?.xp||0) ? ' (↑+5 보너스)' : ''}</span>
+          </div>
+          ${state._challengeResult.feedback ? `<div style="background:var(--bg-input);padding:8px 12px;border-radius:8px;margin-top:6px;font-size:10px;color:var(--text-secondary);line-height:1.5">💬 ${state._challengeResult.feedback}</div>` : ''}
+          <div class="diag-actions" style="margin-top:8px">
+            <button class="btn-primary" onclick="saveQuestionToDB('challenge');showXpPopup(${(state._challengeResult.xp||0) + (state._challengeResult.xp > (diagResult?.xp||0) ? 5 : 0)}, '${state._challengeResult.level} 도전 ${state._challengeResult.xp > (diagResult?.xp||0) ? '성공! +5 성장보너스 포함' : '완료!'}')">도전 완료! +${(state._challengeResult.xp||0) + (state._challengeResult.xp > (diagResult?.xp||0) ? 5 : 0)} XP ${state._challengeResult.xp > (diagResult?.xp||0) ? '🎉' : '✓'}</button>
+          </div>
+          ` : `
+          ${!state._challengeLoading ? `
+          <div class="diag-actions" style="margin-top:8px">
+            <button class="btn-primary" onclick="submitChallenge()">
+              <i class="fas fa-paper-plane"></i> 도전 질문 제출!
+            </button>
+            <button class="btn-ghost" onclick="state._coachingMode='result';state._challengeResult=null;renderScreen()">돌아가기</button>
+          </div>
+          ` : ''}
+          `}
+        </div>
+        ` : ''}
+
+        <!-- 선생님과 함께하기 모드 -->
+        ${coachingMode === 'result' || coachingMode === 'diagnosis' ? `
+        <div class="socrates-entry animate-in" style="margin-top:12px">
+          <button class="btn-socrates" onclick="startSocrates()">
+            <span class="socrates-icon">👨‍🏫</span>
+            <div class="socrates-text">
+              <strong>선생님과 함께하기</strong>
+              <small>정율이 소크라테스식 질문으로 사고를 확장해줘요</small>
+            </div>
+            <i class="fas fa-chevron-right"></i>
+          </button>
+        </div>
+        ` : ''}
+
+        ${coachingMode === 'socrates' ? `
+        <div class="socrates-mode animate-in">
+          <div class="socrates-header">
+            <span>👨‍🏫</span>
+            <h3>선생님과 함께하기</h3>
+            <p>정율 코치가 질문으로 사고를 이끌어줄게요</p>
+          </div>
+          <div class="socrates-chat" id="socrates-chat-area">
+            ${(state._socratesMessages || []).filter(m => !m._hidden).map(m => {
+              if (m.role === 'user') {
+                return `<div class="socrates-msg student"><div class="socrates-bubble student-bubble"><p>${m.content}</p></div></div>`;
+              } else {
+                let parsed;
+                try { parsed = typeof m.content === 'string' ? JSON.parse(m.content) : m.content; } catch { parsed = { message: m.content }; }
+                return `<div class="socrates-msg ai">
+                  <div class="socrates-avatar">${parsed.emoji || '🤖'}</div>
+                  <div class="socrates-bubble">
+                    <div class="socrates-msg-content">${parsed.message || m.content}</div>
+                    ${parsed.questionLevel ? `<span class="socrates-stage-tag">이 질문은 ${parsed.questionLevel} "${parsed.questionLabel || ''}" 단계예요</span>` : ''}
+                    ${parsed.encouragement ? `<div style="margin-top:6px;font-size:10px;color:var(--primary);font-weight:600">${parsed.encouragement}</div>` : ''}
+                  </div>
+                </div>`;
+              }
+            }).join('')}
+            ${state._socratesLoading ? `
+            <div class="socrates-msg ai">
+              <div class="socrates-avatar">🤖</div>
+              <div class="socrates-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>
+            </div>
+            ` : ''}
+          </div>
+          ${state._socratesComplete ? `
+          <div class="socrates-complete animate-in">
+            <div class="socrates-complete-icon">🎉</div>
+            <p><strong>대화 완료!</strong> 사고가 확장됐어요!</p>
+            <p class="socrates-xp">🏆 소크라테스 코칭 완료 +30 XP</p>
+            <button class="btn-primary" onclick="saveQuestionToDB('coaching-complete');showXpPopup(30, '소크라테스 코칭 완료!')">
+              완료! +30 XP 🏆
+            </button>
+          </div>
+          ` : `
+          <div class="socrates-input-row">
+            <input class="input-field" style="flex:1" id="socrates-input" placeholder="생각을 적어주세요..." onkeydown="if(event.key==='Enter'){sendSocratesMessage()}">
+            <button class="btn-primary" style="padding:10px 16px" onclick="sendSocratesMessage()">
+              <i class="fas fa-paper-plane"></i>
+            </button>
+          </div>
+          `}
+          <button class="btn-ghost" style="margin-top:8px;width:100%" onclick="state._coachingMode='result';state._socratesMessages=null;state._socratesComplete=false;renderScreen()">
+            <i class="fas fa-arrow-left"></i> 분석 결과로 돌아가기
+          </button>
+        </div>
+        ` : ''}
+
+        <!-- 2축 9단계 분류표 (접이식) -->
+        <details class="classification-details" style="margin-top:16px">
+          <summary class="classification-summary">
+            <i class="fas fa-list"></i> 2축 9단계 분류표 보기
+          </summary>
+          <div class="classification-table">
+            <div class="ct-section">
+              <div class="ct-section-title">
+                <span>🪜 축1: 호기심 사다리</span>
+                <small>보기(See) → 파기(Dig) → 넓히기(Expand)</small>
+              </div>
+              <div class="ct-group-header ct-group-a">A단계 · 보기(See)</div>
+              ${questionLevels.curiosity.filter(q=>q.group==='A').map(q => `
+              <div class="ct-row">
+                <span class="ct-id">${q.id}</span>
+                <span class="ct-label">${q.icon} "${q.label}"</span>
+                <span class="ct-name">${q.name}</span>
+                <span class="ct-xp">${q.xp}XP</span>
+              </div>`).join('')}
+              <div class="ct-group-header ct-group-b">B단계 · 파기(Dig) — 3대 필수조건 필요</div>
+              ${questionLevels.curiosity.filter(q=>q.group==='B').map(q => `
+              <div class="ct-row">
+                <span class="ct-id">${q.id}</span>
+                <span class="ct-label">${q.icon} "${q.label}"</span>
+                <span class="ct-name">${q.name}</span>
+                <span class="ct-xp">${q.xp}XP</span>
+              </div>`).join('')}
+              <div class="ct-group-header ct-group-c">C단계 · 넓히기(Expand)</div>
+              ${questionLevels.curiosity.filter(q=>q.group==='C').map(q => `
+              <div class="ct-row">
+                <span class="ct-id">${q.id}</span>
+                <span class="ct-label">${q.icon} "${q.label}"</span>
+                <span class="ct-name">${q.name}</span>
+                <span class="ct-xp">${q.xp}XP</span>
+              </div>`).join('')}
+            </div>
+            <div class="ct-section" style="margin-top:12px">
+              <div class="ct-section-title">
+                <span>🪞 축2: 성찰 질문</span>
+                <small>내 풀이를 돌아보는 질문</small>
+              </div>
+              ${questionLevels.reflection.map(q => `
+              <div class="ct-row">
+                <span class="ct-id">${q.id}</span>
+                <span class="ct-label">${q.icon} "${q.label}"</span>
+                <span class="ct-name">${q.name}</span>
+                <span class="ct-xp">${q.xp}XP</span>
+              </div>`).join('')}
+            </div>
+            <div class="ct-note">
+              <strong>⚠️ B단계 이상 필수조건:</strong> ① 구체적 대상 지목 ② "나는 ~라고 생각한다" 자기 생각 ③ 맥락(지문·조건)과 연결
+            </div>
+          </div>
+        </details>
+
+        ${coachingMode !== 'challenge' && coachingMode !== 'socrates' && !diagResult ? `
+        <button class="btn-primary" style="margin-top:12px" onclick="saveQuestionToDB('basic');showXpPopup(15, '질문 기록 완료!')">완료 +15 XP ✨</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function analyzeQuestion() {
+  const questionInput = document.getElementById('question-input');
+  const questionText = questionInput ? questionInput.value.trim() : '';
+  if (!questionText) { alert('질문 내용을 입력해주세요!'); return; }
+  
+  const subject = state._questionSubject || '미지정';
+  const axis = state._questionAxis || 'curiosity';
+  
+  // 이미지가 있으면 먼저 이미지 분석
+  if (state._questionImages && state._questionImages.length > 0) {
+    analyzeWithImage(questionText, subject, axis);
+    return;
+  }
+  
+  state._diagLoading = true;
+  state._diagResult = null;
+  state._coachingMode = 'loading';
+  state._selectedSubject = subject; // 사용자 선택 과목 저장
+  renderScreen();
+  
+  fetch(`${AI_API_BASE}/api/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: questionText, subject, axis, studentId: state.studentId })
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(result => {
+    if (result.error) {
+      state._diagLoading = false;
+      state._coachingMode = 'diagnosis';
+      alert('정율 분석 중 일시적 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
+      renderScreen();
+      return;
+    }
+    state._diagResult = result;
+    state._diagLoading = false;
+    state._coachingMode = 'result';
+    renderScreen();
+  })
+  .catch(err => {
+    state._diagLoading = false;
+    state._coachingMode = 'diagnosis';
+    alert('정율 분석 중 오류가 발생했습니다. 네트워크를 확인해주세요.');
+    renderScreen();
+  });
+}
+
+function analyzeWithImage(questionText, subject, axis) {
+  state._diagLoading = true;
+  state._coachingMode = 'loading';
+  state._selectedSubject = subject; // 사용자 선택 과목 저장
+  renderScreen();
+  
+  const firstImage = state._questionImages[0];
+  const mimeMatch = firstImage.match(/^data:(image\/\w+);base64,/);
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  
+  // Step 1: Gemini 이미지 분석
+  fetch(`${AI_API_BASE}/api/image-analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageBase64: firstImage, mimeType, subject })
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(imageResult => {
+    state._imageAnalysis = imageResult;
+    // Step 2: 이미지 분석 결과 + 질문을 함께 OpenAI에 전달
+    const enrichedQuestion = questionText + 
+      (imageResult.extractedText ? `\n\n[이미지 분석 내용: ${imageResult.extractedText}]` : '') +
+      (imageResult.analysis ? `\n[이미지 문제 분석: ${imageResult.analysis}]` : '');
+    
+    // 사용자가 선택한 과목을 항상 우선 사용 (이미지 분석 결과로 덮어쓰지 않음)
+    return fetch(`${AI_API_BASE}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: enrichedQuestion, subject: subject, axis, studentId: state.studentId })
+    });
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(result => {
+    if (result.error) {
+      state._diagLoading = false;
+      state._coachingMode = 'diagnosis';
+      alert('정율 분석 중 일시적 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
+      renderScreen();
+      return;
+    }
+    state._diagResult = result;
+    state._diagLoading = false;
+    state._coachingMode = 'result';
+    renderScreen();
+  })
+  .catch(err => {
+    state._diagLoading = false;
+    state._coachingMode = 'diagnosis';
+    alert('정율 분석 중 오류가 발생했습니다. 네트워크를 확인해주세요.');
+    renderScreen();
+  });
+}
+
+function sendSocratesMessage() {
+  const input = document.getElementById('socrates-input');
+  const text = input ? input.value.trim() : '';
+  if (!text) return;
+  
+  if (!state._socratesMessages) state._socratesMessages = [];
+  state._socratesMessages.push({ role: 'user', content: text });
+  state._socratesLoading = true;
+  renderScreen();
+  
+  const subject = state._questionSubject || '미지정';
+  
+  // API에 보낼 때 _hidden 메시지도 포함 (대화 맥락 유지)
+  const apiMessages = state._socratesMessages.map(m => ({ role: m.role, content: m.content }));
+  
+  fetch(`${AI_API_BASE}/api/coaching`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: apiMessages,
+      subject,
+      currentLevel: state._diagResult ? state._diagResult.level : 'A-2',
+      studentId: state.studentId
+    })
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(result => {
+    state._socratesMessages.push({ role: 'assistant', content: JSON.stringify(result) });
+    state._socratesLoading = false;
+    if (result.isComplete) state._socratesComplete = true;
+    renderScreen();
+    setTimeout(() => {
+      const chat = document.getElementById('socrates-chat-area');
+      if (chat) {
+        chat.scrollTop = chat.scrollHeight;
+        // AI가 생성한 HTML 내 버튼에 이벤트 바인딩
+        bindAiGeneratedButtons(chat);
+      }
+    }, 100);
+  })
+  .catch(err => {
+    state._socratesLoading = false;
+    alert('코칭 정율 오류: ' + err.message);
+    renderScreen();
+  });
+}
+
+function handleQuestionImageUpload(input) {
+  if (!input.files || input.files.length === 0) return;
+  if (!state._questionImages) state._questionImages = [];
+  
+  Array.from(input.files).forEach(file => {
+    if (state._questionImages.length >= 3) return; // 최대 3장
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      state._questionImages.push(e.target.result);
+      renderScreen();
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = ''; // reset for re-upload
+}
+
+// AI가 생성한 HTML 내 버튼/인터랙션 바인딩
+function bindAiGeneratedButtons(container) {
+  if (!container) return;
+  // AI가 생성한 button/a 태그에서 onclick 속성 안의 함수명을 추출 후 바인딩
+  container.querySelectorAll('button, a, [role="button"]').forEach(btn => {
+    // 이미 바인딩된 경우 건너뛰기
+    if (btn._aiBound) return;
+    btn._aiBound = true;
+    
+    const onclickAttr = btn.getAttribute('onclick');
+    if (onclickAttr) {
+      // onclick 속성 제거하고 직접 이벤트 리스너로 대체
+      btn.removeAttribute('onclick');
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          // 앱 함수 매핑: AI가 생성할 수 있는 함수명 → 실제 앱 함수 
+          if (onclickAttr.includes('startChallenge')) {
+            startChallenge();
+          } else if (onclickAttr.includes('saveQuestionToDB')) {
+            const match = onclickAttr.match(/saveQuestionToDB\(['"]([^'"]*)['"]\)/);
+            saveQuestionToDB(match ? match[1] : 'diag');
+          } else if (onclickAttr.includes('showXpPopup')) {
+            const match = onclickAttr.match(/showXpPopup\((\d+)/);
+            showXpPopup(match ? parseInt(match[1]) : 10, '코칭 완료!');
+          } else {
+            // 알려지지 않은 함수 — 안전하게 eval 대신 무시
+            console.warn('AI-generated button onclick not mapped:', onclickAttr);
+          }
+        } catch (err) {
+          console.error('AI button handler error:', err);
+        }
+      });
+    }
+    
+    // 버튼에 커서 포인터 보장
+    btn.style.cursor = 'pointer';
+  });
+  
+  // AI가 생성한 input/select에도 포인터 이벤트 보장
+  container.querySelectorAll('input, select, textarea, label').forEach(el => {
+    el.style.pointerEvents = 'auto';
+  });
+}
+
+function startChallenge() {
+  state._coachingMode = 'challenge';
+  state._challengeResult = null;
+  state._challengeLoading = false;
+  renderScreen();
+}
+
+function submitChallenge() {
+  const input = document.getElementById('challenge-input');
+  const text = input ? input.value.trim() : '';
+  if (!text) { alert('도전 질문을 입력해주세요!'); return; }
+
+  const subject = state._questionSubject || '미지정';
+  const axis = state._questionAxis || 'curiosity';
+
+  state._challengeLoading = true;
+  renderScreen();
+
+  fetch(`${AI_API_BASE}/api/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: text, subject, axis, studentId: state.studentId })
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(result => {
+    state._challengeResult = result;
+    state._challengeLoading = false;
+    renderScreen();
+  })
+  .catch(err => {
+    state._challengeLoading = false;
+    alert('도전 분석 중 오류: ' + err.message);
+    renderScreen();
+  });
+}
+
+function startSocrates() {
+  const questionInput = document.getElementById('question-input');
+  const questionText = questionInput ? questionInput.value.trim() : '';
+  const subject = state._questionSubject || '미지정';
+
+  state._coachingMode = 'socrates';
+  state._socratesComplete = false;
+  state._socratesLoading = true;
+  
+  // 시작 시 AI에게 첫 질문을 받기 위한 초기 메시지 구성
+  const currentLevel = state._diagResult ? state._diagResult.level : 'A-2';
+  const initMsg = questionText 
+    ? `학생이 "${questionText}"라는 질문을 했습니다 (${subject}). 이 학생의 현재 질문 단계는 ${currentLevel}입니다. 이 질문을 바탕으로 사고를 확장시키는 소크라테스식 첫 질문을 해주세요.`
+    : `${subject} 과목에 대해 학생과 소크라테스식 대화를 시작합니다. 학생의 현재 단계는 ${currentLevel}입니다. 사고를 자극하는 첫 질문을 해주세요.`;
+  
+  state._socratesMessages = [{ role: 'user', content: initMsg }];
+  renderScreen();
+
+  fetch(`${AI_API_BASE}/api/coaching`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: state._socratesMessages,
+      subject,
+      currentLevel,
+      studentId: state.studentId
+    })
+  })
+  .then(r => { if (!r.ok) throw new Error('서버 응답 오류'); return r.json(); })
+  .then(result => {
+    state._socratesMessages.push({ role: 'assistant', content: JSON.stringify(result) });
+    // 초기 시스템 메시지를 사용자에게 보이지 않게 처리
+    state._socratesMessages[0]._hidden = true;
+    state._socratesLoading = false;
+    renderScreen();
+    // 채팅 스크롤 하단으로
+    setTimeout(() => {
+      const chat = document.getElementById('socrates-chat-area');
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    }, 100);
+  })
+  .catch(err => {
+    state._socratesLoading = false;
+    alert('코칭 정율 시작 오류: ' + err.message);
+    state._coachingMode = 'result';
+    renderScreen();
+  });
+}
+
+function openJeongyulQA() {
+  // 현재 선택된 과목 가져오기
+  const subject = state._questionSubject || '미지정';
+  
+  // 질문 내용 가져오기
+  const questionInput = document.getElementById('question-input');
+  const questionText = questionInput ? questionInput.value.trim() : '';
+  
+  // 질문 축(유형) 정보
+  const axis = state._questionAxis || 'curiosity';
+  const axisLabel = axis === 'reflection' ? '성찰질문' : '호기심질문';
+  
+  // URL 구성 — 쿼리 파라미터로 과목, 질문 내용 전달
+  const userId = state._externalUserId || '';
+  const userName = state._externalUserName || state._authUser?.name || '학생';
+  const params = new URLSearchParams();
+  if (userId) params.set('user_id', userId);
+  if (userName) params.set('nick_name', userName);
+  if (subject) params.set('subject', subject);
+  if (questionText) params.set('question', questionText);
+  params.set('type', axisLabel);
+  params.set('from', 'creditplanner');
+  
+  const url = 'https://qa-tutoring.jung-youl.com?' + params.toString();
+  
+  // 인앱 오버레이 패널로 열기
+  openQAPanel(url);
+}
+
+function openQAPanel(url) {
+  // 이미 열려있으면 URL만 변경
+  let overlay = document.getElementById('qa-overlay');
+  if (overlay) {
+    const iframe = overlay.querySelector('iframe');
+    if (iframe) iframe.src = url;
+    overlay.classList.add('qa-overlay-visible');
+    return;
+  }
+  
+  // 오버레이 생성
+  overlay = document.createElement('div');
+  overlay.id = 'qa-overlay';
+  overlay.className = 'qa-overlay';
+  overlay.innerHTML = `
+    <div class="qa-panel">
+      <div class="qa-panel-header">
+        <div class="qa-panel-title">
+          <span class="qa-panel-icon">💬</span>
+          <span>정율질문방</span>
+        </div>
+        <div class="qa-panel-actions">
+          <button class="qa-panel-btn" onclick="window.open(document.getElementById('qa-iframe').src, '_blank')" title="새 탭에서 열기">
+            <i class="fas fa-external-link-alt"></i>
+          </button>
+          <button class="qa-panel-btn qa-panel-close" onclick="closeQAPanel()" title="닫기">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+      <div class="qa-panel-body">
+        <div class="qa-loading-bar">
+          <div class="qa-loading-progress"></div>
+        </div>
+        <iframe id="qa-iframe" src="${url}" allow="camera;microphone"></iframe>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(overlay);
+  
+  // iframe 로드 완료 시 로딩바 숨김
+  const iframe = overlay.querySelector('iframe');
+  iframe.addEventListener('load', () => {
+    overlay.querySelector('.qa-loading-bar').style.opacity = '0';
+  });
+  
+  // 약간의 딜레이 후 visible 클래스 추가 (애니메이션)
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      overlay.classList.add('qa-overlay-visible');
+    });
+  });
+  
+  // 배경 클릭으로 닫기
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeQAPanel();
+  });
+}
+
+function closeQAPanel() {
+  const overlay = document.getElementById('qa-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('qa-overlay-visible');
+  setTimeout(() => {
+    overlay.remove();
+  }, 300);
+}
+
+// ==================== RECORD TEACH (R-03) ====================
+
+function renderRecordTeach() {
+  const classmates = state.classmates || [];
+  const selectedCm = state._teachSelectedCm || (classmates.length > 0 ? classmates[0].id : null);
+  const searchTerm = state._teachSearch || '';
+  const filtered = searchTerm ? classmates.filter(c => c.name.includes(searchTerm) || c.grade.includes(searchTerm)) : classmates;
+  const selectedStudent = classmates.find(c => c.id === selectedCm);
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>교학상장 기록</h1>
+        <span class="xp-badge-sm">+30 XP</span>
+      </div>
+
+      <div class="form-body">
+        <div class="teach-hero">
+          <span class="teach-hero-emoji">🤝</span>
+          <h2>오늘 누군가에게 가르쳤나요?</h2>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">👤 누구에게?</label>
+          <div class="input-with-icon">
+            <i class="fas fa-search"></i>
+            <input class="input-field" placeholder="학생 검색..." style="padding-left:40px" value="${searchTerm}" oninput="state._teachSearch=this.value;renderScreen()">
+          </div>
+          ${filtered.length === 0 ? `
+          <div style="text-align:center;padding:20px 0;color:var(--text-muted)">
+            <p style="font-size:12px">${searchTerm ? '검색 결과가 없습니다' : '등록된 학생이 없습니다'}</p>
+            <button class="btn-secondary" style="margin-top:8px;font-size:11px" onclick="goScreen('classmate-manage')">
+              <i class="fas fa-user-plus"></i> 학생 관리에서 추가하기
+            </button>
+          </div>
+          ` : `
+          <div class="teach-student-list">
+            ${filtered.map(c => `
+              <div class="teach-student-item ${selectedCm===c.id?'selected':''}" onclick="state._teachSelectedCm='${c.id}';renderScreen()">
+                <div class="teach-avatar">${c.name[0]}</div>
+                <span>${c.name} (${c.grade})</span>
+                ${selectedCm===c.id?'<i class="fas fa-check-circle" style="color:var(--success);margin-left:auto"></i>':''}
+              </div>
+            `).join('')}
+          </div>
+          `}
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📚 무엇을?</label>
+          <div class="chip-row">
+            ${['국어','수학','영어','과학','기타'].map((s,i) => `<button class="chip ${i===1?'active':''}">${s}</button>`).join('')}
+          </div>
+          <input class="input-field" placeholder="단원/주제" value="치환적분의 원리" style="margin-top:8px">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">💡 어떻게 가르쳤나요?</label>
+          <textarea class="input-field" rows="3" placeholder="설명 방식, 예시, 접근법 등">역함수 관점에서 접근하면 왜 특정 치환만 가능한지 이해할 수 있다고 설명함</textarea>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">⏱️ 대략 몇 분?</label>
+          <div class="chip-row">
+            ${['5분','10분','15분','20분','30분+'].map((t,i) => `<button class="chip ${i===2?'active':''}">${t}</button>`).join('')}
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">🔍 가르치면서 발견한 것 <span class="field-hint">세특의 보석! 💎</span></label>
+          <textarea class="input-field" rows="3" placeholder="설명하다 보니 내가 모르고 있었던 것...">설명하다 보니 내가 왜 특정 형태만 치환이 되는지 정확히 모르고 있었다는 걸 알게 됨</textarea>
+        </div>
+
+        ${selectedStudent ? `
+        <div class="teach-confirm-box">
+          📨 ${selectedStudent.name}에게 확인 요청을 보낼까요?
+          <button class="btn-secondary" style="margin-top:8px;font-size:12px">확인 요청 보내기</button>
+        </div>
+        ` : ''}
+
+        <button class="btn-primary" onclick="saveTeachRecordFromForm()">기록 완료 +30 XP 🏅</button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== RECORD ASSIGNMENT (과제 기록) ====================
+
+// 교학상장(가르치기) 기록을 DB에 저장
+function saveTeachRecordFromForm() {
+  const chipActive = document.querySelector('.form-body .chip.active');
+  const subject = chipActive ? chipActive.textContent?.trim() : '수학';
+  const inputs = document.querySelectorAll('.form-body .input-field');
+  const topic = inputs[1]?.value?.trim() || '주제 미입력';
+  const content = inputs[2]?.value?.trim() || '';
+  const reflection = inputs[3]?.value?.trim() || '';
+  
+  const selectedCm = state._teachSelectedCm || null;
+  const classmates = state.classmates || [];
+  const student = classmates.find(c => c.id === selectedCm);
+  const taughtTo = student ? student.name : '';
+  
+  if (DB.studentId()) {
+    DB.saveTeachRecord({
+      subject,
+      topic,
+      taughtTo,
+      content,
+      reflection,
+      xpEarned: 30,
+    });
+  }
+  
+  showXpPopup(30, '교학상장 기록 완료! 🏅');
+}
+
+function toggleAssignmentPlanMode() {
+  state._assignmentUsePlan = !state._assignmentUsePlan;
+  renderScreen();
+}
+function autoDetectAssignmentPlan() {
+  const title = document.getElementById('assignment-title')?.value || '';
+  const shouldUsePlan = !isSimpleAssignment(title);
+  if (state._assignmentUsePlan !== shouldUsePlan) {
+    state._assignmentUsePlan = shouldUsePlan;
+    renderScreen();
+  }
+}
+
+function renderRecordAssignment() {
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '한국사':'#74B9FF','체육':'#A29BFE','미술':'#FD79A8','기타':'#636e72'
+  };
+  const editing = state.editingAssignment;
+  const isEdit = editing !== null;
+  const a = isEdit ? state.assignments.find(x => String(x.id) === String(editing)) : null;
+
+  if (state._assignmentUsePlan === undefined) {
+    state._assignmentUsePlan = isEdit && a ? !a.simple : false;
+  }
+  const usePlan = state._assignmentUsePlan;
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.editingAssignment=null;state._assignmentUsePlan=undefined;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>${isEdit ? '과제 수정' : '📋 과제 기록'}</h1>
+        <span class="xp-badge-sm">+15 XP</span>
+      </div>
+
+      <div class="form-body">
+        <div class="assignment-intro-card animate-in">
+          <span class="assignment-intro-icon">📋</span>
+          <div>
+            <h3>선생님이 내 준 과제를 기록하세요</h3>
+            <p>마감일까지의 계획도 함께 세울 수 있어요!</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📚 과목</label>
+          <div class="chip-row" id="assignment-subject-chips">
+            ${['국어','수학','영어','과학','한국사','기타'].map((s,i) => `<button class="chip ${(isEdit && a && a.subject===s) || (!isEdit && i===1) ? 'active' : ''}" data-subject="${s}">${s}</button>`).join('')}
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📝 과제 제목</label>
+          <input class="input-field" id="assignment-title" placeholder="예: 수학 p.45~48 풀기" value="${isEdit && a ? a.title : ''}" oninput="autoDetectAssignmentPlan()">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📅 마감일</label>
+          <input class="input-field" type="date" id="assignment-due" value="${isEdit && a ? a.dueDate : kstToday()}" style="color:var(--text-primary)">
+        </div>
+
+        <div class="plan-toggle-row" onclick="toggleAssignmentPlanMode()" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;margin:12px 0;background:rgba(30,34,40,0.6);border-radius:14px;border:1px solid var(--border);cursor:pointer">
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font-size:14px;font-weight:600;color:var(--text-primary)">${usePlan ? '📅 복잡 과제 모드' : '⚡ 심플 과제 모드'}</span>
+            <span style="font-size:11px;color:var(--text-muted)">${usePlan ? '상세 내용 + 유형 + 단계별 계획까지 기록해요' : '제목 + 마감일만! 빠르게 기록해요'}</span>
+          </div>
+          <div style="width:48px;height:28px;border-radius:14px;background:${usePlan ? 'var(--primary-light)' : 'rgba(80,80,90,0.5)'};position:relative;flex-shrink:0;transition:background 0.25s">
+            <div style="width:22px;height:22px;border-radius:50%;background:#fff;position:absolute;top:3px;left:3px;transition:transform 0.25s;box-shadow:0 1px 3px rgba(0,0,0,0.3);transform:translateX(${usePlan ? '20px' : '0'})"></div>
+          </div>
+        </div>
+
+        ${usePlan ? `
+        <div class="field-group animate-in">
+          <label class="field-label">📄 상세 내용</label>
+          <textarea class="input-field" id="assignment-desc" rows="3" placeholder="과제의 구체적인 내용, 범위, 조건 등을 적어주세요">${isEdit && a ? a.desc : ''}</textarea>
+        </div>
+
+        <div class="field-group animate-in">
+          <label class="field-label">📂 과제 유형</label>
+          <div class="assignment-type-grid">
+            ${[
+              {type:'문제풀이', icon:'✏️'},
+              {type:'에세이/작문', icon:'📝'},
+              {type:'보고서', icon:'📊'},
+              {type:'감상문', icon:'📖'},
+              {type:'프로젝트', icon:'🔬'},
+              {type:'발표준비', icon:'🎤'},
+              {type:'실험/실습', icon:'🧪'},
+              {type:'기타', icon:'📌'},
+            ].map((t,i) => `
+              <button class="assignment-type-btn ${(isEdit && a && a.type===t.type) || (!isEdit && i===0) ? 'active' : ''}" data-atype="${t.type}">
+                <span>${t.icon}</span><span>${t.type}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <div class="field-group animate-in">
+          <label class="field-label">👨‍🏫 선생님</label>
+          <input class="input-field" id="assignment-teacher" placeholder="과제를 내 준 선생님" value="${isEdit && a ? a.teacher : ''}">
+        </div>
+
+        <div class="assignment-plan-cta animate-in" onclick="saveAssignment(true)">
+          <div class="plan-cta-icon">📅</div>
+          <div class="plan-cta-content">
+            <h3>제출 계획 세우기</h3>
+            <p>마감일까지 단계별 플랜을 정율이 도와줘요!</p>
+          </div>
+          <i class="fas fa-chevron-right" style="color:var(--primary-light)"></i>
+        </div>
+        ` : `
+        <div style="display:flex;align-items:center;gap:8px;padding:14px 16px;margin:8px 0;background:rgba(0,184,148,0.08);border-radius:12px;border:1px solid rgba(0,184,148,0.2);font-size:13px;color:var(--text-secondary)">
+          <span style="font-size:18px">⚡</span>
+          <span>과목 + 제목 + 마감일만 입력하면 끝!</span>
+        </div>
+        `}
+
+        <button class="btn-primary" onclick="saveAssignment(false)">
+          ${isEdit ? '과제 수정 완료' : usePlan ? '과제 기록 완료 +15 XP ✨' : '과제 기록 완료 ✨'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== ASSIGNMENT PLAN (과제 계획) ====================
+
+function renderAssignmentPlan() {
+  const a = state.assignments.find(x => String(x.id) === String(state.viewingAssignment));
+  if (!a) { goScreen('main'); return ''; }
+  
+  const dDay = getDday(a.dueDate);
+  const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+  const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+  const donePlanSteps = a.plan.filter(p => p.done).length;
+  const totalPlanSteps = a.plan.length;
+  const planPct = totalPlanSteps > 0 ? Math.round(donePlanSteps / totalPlanSteps * 100) : 0;
+  
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.viewingAssignment=null;goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📅 과제 계획</h1>
+        <span class="assignment-dday ${urgency}" style="font-size:13px;padding:5px 12px">${dDayText}</span>
+      </div>
+
+      <div class="form-body">
+        <!-- Assignment Summary Card -->
+        <div class="assignment-summary-card animate-in" style="border-left:4px solid ${a.color}">
+          <div class="asm-header">
+            <div class="asm-subject" style="color:${a.color}">${a.subject}</div>
+            <span class="asm-type">${a.type}</span>
+          </div>
+          <h2 class="asm-title">${a.title}</h2>
+          <p class="asm-desc">${a.desc}</p>
+          <div class="asm-meta">
+            <span><i class="fas fa-user"></i> ${a.teacher} 선생님</span>
+            <span><i class="fas fa-calendar"></i> ${formatDate(a.dueDate)} 까지</span>
+          </div>
+          <div class="asm-progress-row">
+            <div class="asm-progress-bar"><div class="asm-progress-fill" style="width:${a.progress}%;background:${a.color}"></div></div>
+            <span class="asm-progress-text">${a.progress}%</span>
+          </div>
+        </div>
+
+        <!-- Plan Steps -->
+        <div class="plan-section stagger-1 animate-in">
+          <div class="card-header-row">
+            <span class="card-title">📋 단계별 플랜</span>
+            <span class="card-subtitle">${donePlanSteps}/${totalPlanSteps} 완료</span>
+          </div>
+          
+          <div class="plan-progress-mini">
+            <div class="plan-progress-bar"><div class="plan-progress-fill" style="width:${planPct}%;background:${a.color}"></div></div>
+          </div>
+
+          <div class="plan-steps">
+            ${a.plan.length === 0 ? `
+              <div style="text-align:center;padding:20px 0;color:var(--text-muted)">
+                <span style="font-size:28px;display:block;margin-bottom:8px">📝</span>
+                <p style="font-size:13px;margin:0">아직 세부 플랜이 없어요</p>
+                <p style="font-size:11px;margin-top:4px">과제를 수정해서 단계를 추가해보세요!</p>
+              </div>
+            ` : a.plan.map((step, i) => {
+              const isNext = !step.done && (i === 0 || a.plan[i-1].done);
+              return `
+              <div class="plan-step ${step.done ? 'done' : ''} ${isNext ? 'next' : ''}">
+                <div class="plan-step-check" onclick="togglePlanStep('${a.id}', ${i})">
+                  ${step.done 
+                    ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:20px"></i>'
+                    : isNext 
+                      ? '<i class="far fa-circle" style="color:var(--primary-light);font-size:20px"></i>'
+                      : '<i class="far fa-circle" style="color:var(--text-muted);font-size:20px"></i>'
+                  }
+                </div>
+                <div class="plan-step-line ${i === a.plan.length - 1 ? 'last' : ''} ${step.done ? 'done' : ''}"></div>
+                <div class="plan-step-content ${isNext ? 'highlight' : ''}">
+                  <div class="plan-step-header">
+                    <span class="plan-step-num">Step ${step.step}</span>
+                    <span class="plan-step-date">${step.date}</span>
+                  </div>
+                  <span class="plan-step-title">${step.title}</span>
+                </div>
+              </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+        <!-- AI Suggestion -->
+        <div class="ai-plan-card stagger-2 animate-in">
+          <div class="ai-header">
+            <span class="ai-icon">🤖</span>
+            <span class="ai-title">정율 플랜 제안</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-top:8px">
+            ${dDay <= 3 
+              ? `⚠️ 마감이 <strong style="color:var(--accent)">${dDay}일</strong> 남았어요! 오늘부터 하루 1단계씩 진행하면 충분히 완료할 수 있어요. 집중 시간을 확보하세요!`
+              : `✅ 마감까지 <strong style="color:var(--success)">${dDay}일</strong> 남았어요. 현재 진행률 ${a.progress}%로 순조로운 편이에요. 꾸준히 하루에 1단계씩 진행해보세요!`
+            }
+          </p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn-secondary" style="flex:1" onclick="state.editingAssignment='${a.id}';goScreen('record-assignment')">
+            <i class="fas fa-edit"></i> 수정
+          </button>
+          <button class="btn-primary" style="flex:2" onclick="goScreen('assignment-list')">
+            <i class="fas fa-list"></i> 과제 목록
+          </button>
+        </div>
+
+        ${a.status !== 'completed' ? `
+        <button class="btn-ghost" style="width:100%;margin-top:8px;color:var(--success)" onclick="toggleAssignmentDone('${a.id}')">
+          ✅ 과제 완료 처리
+        </button>
+        ` : `
+        <div class="assignment-completed-badge">
+          <i class="fas fa-check-circle"></i> 이 과제는 완료되었습니다! 🎉
+        </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== ASSIGNMENT LIST (과제 목록/관리) ====================
+
+function renderAssignmentList() {
+  const filter = state.assignmentFilter;
+  const filtered = filter === 'all' 
+    ? state.assignments 
+    : state.assignments.filter(a => a.status === filter);
+  
+  const activeCount = state.assignments.filter(a => a.status !== 'completed').length;
+  const completedCount = state.assignments.filter(a => a.status === 'completed').length;
+  
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.assignmentFilter='all';goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📋 과제 관리</h1>
+        <button class="header-add-btn" onclick="state.editingAssignment=null;goScreen('record-assignment')"><i class="fas fa-plus"></i></button>
+      </div>
+
+      <div class="form-body">
+        <!-- Stats Summary -->
+        <div class="assignment-stats-row animate-in">
+          <div class="assignment-stat-card">
+            <span class="assignment-stat-num" style="color:var(--primary-light)">${activeCount}</span>
+            <span class="assignment-stat-label">진행 중</span>
+          </div>
+          <div class="assignment-stat-card">
+            <span class="assignment-stat-num" style="color:var(--success)">${completedCount}</span>
+            <span class="assignment-stat-label">완료</span>
+          </div>
+          <div class="assignment-stat-card">
+            <span class="assignment-stat-num" style="color:var(--accent)">${state.assignments.filter(a => getDday(a.dueDate) <= 3 && a.status !== 'completed').length}</span>
+            <span class="assignment-stat-label">긴급</span>
+          </div>
+        </div>
+
+        <!-- Filter Chips -->
+        <div class="chip-row" style="margin-bottom:16px" id="assignment-filter-chips">
+          ${[
+            {id:'all', label:'전체', count: state.assignments.length},
+            {id:'in-progress', label:'진행 중', count: state.assignments.filter(a=>a.status==='in-progress').length},
+            {id:'pending', label:'시작 전', count: state.assignments.filter(a=>a.status==='pending').length},
+            {id:'completed', label:'완료', count: state.assignments.filter(a=>a.status==='completed').length},
+          ].map(f => `<button class="chip ${filter===f.id?'active':''}" data-afilter="${f.id}">${f.label} (${f.count})</button>`).join('')}
+        </div>
+
+        <!-- Assignment Cards -->
+        ${filtered.length === 0 ? `
+          <div style="text-align:center;padding:40px 0;color:var(--text-muted)">
+            <span style="font-size:40px">📭</span>
+            <p style="margin-top:12px">해당하는 과제가 없습니다</p>
+          </div>
+        ` : ''}
+        
+        ${filtered.sort((a,b) => {
+          if (a.status === 'completed' && b.status !== 'completed') return 1;
+          if (a.status !== 'completed' && b.status === 'completed') return -1;
+          return new Date(a.dueDate) - new Date(b.dueDate);
+        }).map((a, i) => {
+          const dDay = getDday(a.dueDate);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+          const urgency = a.status === 'completed' ? 'completed' : dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+          const donePlanSteps = a.plan.filter(p => p.done).length;
+          return `
+          <div class="assignment-card ${urgency} stagger-${i+1} animate-in" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
+            <div class="ac-top">
+              <div class="ac-subject-badge" style="background:${a.color}22;color:${a.color};border:1px solid ${a.color}44">${a.subject}</div>
+              <span class="ac-type">${a.type}</span>
+              <span class="assignment-dday ${urgency}" style="margin-left:auto">${a.status === 'completed' ? '✅ 완료' : dDayText}</span>
+            </div>
+            <h3 class="ac-title">${a.title}</h3>
+            <p class="ac-desc">${a.desc}</p>
+            <div class="ac-bottom">
+              <div class="ac-meta">
+                <span><i class="fas fa-user"></i> ${a.teacher}</span>
+                <span><i class="fas fa-calendar"></i> ${formatDate(a.dueDate)}</span>
+              </div>
+              <div class="ac-progress-row">
+                <div class="ac-progress-bar"><div class="ac-progress-fill" style="width:${a.progress}%;background:${a.color}"></div></div>
+                <span class="ac-progress-text">${a.progress}%</span>
+                <span class="ac-plan-count">${donePlanSteps}/${a.plan.length}단계</span>
+              </div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+
+        <!-- Add Assignment Button -->
+        <button class="add-assignment-btn" onclick="state.editingAssignment=null;goScreen('record-assignment')">
+          <i class="fas fa-plus-circle"></i> 새 과제 추가
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== ASSIGNMENT UTILITIES ====================
+
+function getDday(dateStr) {
+  if (!dateStr) return null;
+  const today = kstNow();
+  today.setHours(0,0,0,0);
+  const due = new Date(dateStr);
+  if (isNaN(due.getTime())) return null;
+  due.setHours(0,0,0,0);
+  return Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+}
+
+function formatDate(dateStr) {
+  const d = new Date(dateStr);
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+
+function saveAssignment(goToPlan) {
+  const subjectChip = document.querySelector('#assignment-subject-chips .chip.active');
+  const typeBtn = document.querySelector('.assignment-type-btn.active');
+  const title = document.getElementById('assignment-title')?.value || '';
+  const desc = document.getElementById('assignment-desc')?.value || '';
+  const teacher = document.getElementById('assignment-teacher')?.value || '';
+  const dueDate = document.getElementById('assignment-due')?.value || '';
+  const subject = subjectChip ? subjectChip.dataset.subject : '수학';
+  const type = typeBtn ? typeBtn.dataset.atype : '문제풀이';
+  const usePlan = state._assignmentUsePlan;
+
+  const subjectColors = {
+    '국어':'#FF6B6B','수학':'#6C5CE7','영어':'#00B894','과학':'#FDCB6E',
+    '한국사':'#74B9FF','체육':'#A29BFE','미술':'#FD79A8','기타':'#636e72'
+  };
+
+  if (state.editingAssignment !== null) {
+    const a = state.assignments.find(x => String(x.id) === String(state.editingAssignment));
+    if (a) {
+      a.subject = subject;
+      a.title = title || a.title;
+      a.desc = desc || a.desc;
+      a.type = type;
+      a.teacher = teacher || a.teacher;
+      a.dueDate = dueDate || a.dueDate;
+      a.color = subjectColors[subject] || '#636e72';
+      a.simple = !usePlan;
+
+      // DB 업데이트
+      if (a._dbId && DB.studentId()) {
+        DB.updateAssignment(a._dbId, { title: a.title, dueDate: a.dueDate, status: a.status });
+      }
+    }
+    state.editingAssignment = null;
+    state._assignmentUsePlan = undefined;
+    if (goToPlan && usePlan) {
+      state.viewingAssignment = a.id;
+      goScreen('assignment-plan');
+    } else {
+      showToast('과제가 수정되었습니다 ✅');
+    }
+    return;
+  }
+
+  const newId = state.assignments.length > 0 ? Math.max(...state.assignments.map(a=>a.id)) + 1 : 1;
+
+  // 심플 과제면 플랜 생성 안 함
+  let plan = [];
+  if (usePlan) {
+    const daysUntilDue = getDday(dueDate);
+    const stepsCount = Math.max(3, Math.min(6, daysUntilDue));
+    const dueD = new Date(dueDate);
+    const today = kstNow();
+    const stepLabels = ['자료 조사 및 준비','초안 작성','본문 완성','검토 및 수정','최종 점검','제출'];
+    for (let i = 0; i < stepsCount; i++) {
+      const stepDate = new Date(today.getTime() + ((dueD - today) / stepsCount) * (i + 1));
+      plan.push({
+        step: i + 1,
+        title: stepLabels[i] || `${i+1}단계 진행`,
+        date: `${stepDate.getMonth()+1}/${stepDate.getDate()}`,
+        done: false
+      });
+    }
+  }
+
+  const newAssignment = {
+    id: newId,
+    subject,
+    title: title || '새 과제',
+    desc: desc || '',
+    type,
+    teacher: teacher || '',
+    dueDate,
+    createdDate: kstToday(),
+    color: subjectColors[subject] || '#636e72',
+    status: 'pending',
+    progress: 0,
+    plan,
+    simple: !usePlan
+  };
+  
+  state.assignments.push(newAssignment);
+
+  // DB 저장 (비동기)
+  if (DB.studentId()) {
+    DB.saveAssignment({
+      subject,
+      title: title || '새 과제',
+      description: desc || '',
+      teacherName: teacher || '',
+      dueDate,
+      color: subjectColors[subject] || '#636e72',
+      planData: plan,
+    }).then(dbId => {
+      if (dbId) {
+        newAssignment._dbId = dbId;
+        newAssignment.id = String(dbId);
+      }
+    });
+  }
+
+  state._assignmentUsePlan = undefined;
+  if (goToPlan && usePlan) {
+    state.viewingAssignment = newId;
+    goScreen('assignment-plan');
+  } else {
+    showXpPopup(15, '과제 기록 완료! 📋');
+  }
+}
+
+function togglePlanStep(assignmentId, stepIdx) {
+  const a = state.assignments.find(x => String(x.id) === String(assignmentId));
+  if (!a || !a.plan || !a.plan[stepIdx]) return;
+  a.plan[stepIdx].done = !a.plan[stepIdx].done;
+  
+  // Update progress
+  const doneCount = a.plan.filter(p => p.done).length;
+  a.progress = Math.round(doneCount / a.plan.length * 100);
+  
+  // Update status
+  if (a.progress === 100) {
+    a.status = 'completed';
+  } else if (a.progress > 0) {
+    a.status = 'in-progress';
+  } else {
+    a.status = 'pending';
+  }
+  
+  // DB 업데이트
+  if (a._dbId && DB.studentId()) {
+    DB.updateAssignment(a._dbId, { status: a.status, progress: a.progress, planData: a.plan });
+  }
+  
+  renderScreen();
+}
+
+function completeAssignment(id) {
+  const a = state.assignments.find(x => String(x.id) === String(id));
+  if (!a) return;
+  a.status = 'completed';
+  a.progress = 100;
+  a.plan.forEach(p => p.done = true);
+  
+  // DB 업데이트
+  if (a._dbId && DB.studentId()) {
+    DB.updateAssignment(a._dbId, { status: 'completed', progress: 100, planData: a.plan });
+  }
+  
+  showXpPopup(20, '과제 완료! 🎉');
+}
+
+// ==================== RECORD ACTIVITY (R-04 창의적 체험활동) ====================
+
+function renderRecordActivity() {
+  // 통합 리스트: 모든 활동 표시 (필터 지원)
+  const filter = state.activityFilter || 'all';
+  
+  // 유형 매핑
+  const TYPE_META = {
+    'activity': { label:'동아리', icon:'🎭', filterKey:'club', bg:'rgba(224,86,160,0.12)' },
+    'career': { label:'진로활동', icon:'🎯', filterKey:'career', bg:'rgba(255,159,67,0.12)' },
+    'self': { label:'자율자치', icon:'🧠', filterKey:'self', bg:'rgba(162,155,254,0.12)' },
+    'report': { label:'탐구보고서', icon:'📄', filterKey:'report', bg:'rgba(108,92,231,0.12)' },
+    'reading': { label:'독서', icon:'📖', filterKey:'reading', bg:'rgba(0,184,148,0.12)' },
+  };
+
+  // extracurriculars의 type값 → filter key 매핑
+  function getFilterKey(ec) {
+    if (ec.type === 'report') return 'report';
+    if (ec.type === 'reading') return 'reading';
+    // activity 타입은 subType으로 구분 (club, career, self)
+    if (ec.subType === 'career') return 'career';
+    if (ec.subType === 'self') return 'self';
+    return 'club'; // default activity → club
+  }
+  
+  // 필터링
+  let filtered = state.extracurriculars;
+  if (filter !== 'all') {
+    filtered = filtered.filter(ec => getFilterKey(ec) === filter);
+  }
+  
+  // 정렬: 진행중 먼저, 그 다음 최신순
+  const statusOrder = { 'in-progress': 0, 'pending': 1, 'completed': 2 };
+  filtered = [...filtered].sort((a, b) => {
+    const sa = statusOrder[a.status] ?? 1;
+    const sb = statusOrder[b.status] ?? 1;
+    if (sa !== sb) return sa - sb;
+    return (b.startDate || '').localeCompare(a.startDate || '');
+  });
+
+  const filters = [
+    { key:'all', label:'전체', icon:'📂' },
+    { key:'club', label:'동아리', icon:'🎭' },
+    { key:'career', label:'진로', icon:'🎯' },
+    { key:'self', label:'자율자치', icon:'🧠' },
+    { key:'report', label:'탐구보고서', icon:'📄' },
+    { key:'reading', label:'독서', icon:'📖' },
+  ];
+
+  // 유형별 카운트
+  const counts = { all: state.extracurriculars.length };
+  state.extracurriculars.forEach(ec => {
+    const k = getFilterKey(ec);
+    counts[k] = (counts[k] || 0) + 1;
+  });
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>🏫 창의적 체험활동</h1>
+        <button class="header-add-btn" onclick="goScreen('activity-add')"><i class="fas fa-plus"></i></button>
+      </div>
+
+      <div class="form-body" style="padding-top:8px">
+        <!-- 통계 요약 배너 -->
+        <div class="act-summary-banner animate-in">
+          <div class="act-summary-item">
+            <span class="act-summary-num">${state.extracurriculars.filter(e => e.status === 'in-progress').length}</span>
+            <span class="act-summary-label">진행중</span>
+          </div>
+          <div class="act-summary-divider"></div>
+          <div class="act-summary-item">
+            <span class="act-summary-num">${state.extracurriculars.filter(e => e.status === 'completed').length}</span>
+            <span class="act-summary-label">완료</span>
+          </div>
+          <div class="act-summary-divider"></div>
+          <div class="act-summary-item">
+            <span class="act-summary-num">${state.extracurriculars.reduce((s, e) => s + (e.report?.totalXp || 0), 0)}</span>
+            <span class="act-summary-label">총 XP</span>
+          </div>
+        </div>
+
+        <!-- 필터 탭 (가로 스크롤) -->
+        <div class="act-filter-tabs">
+          ${filters.map(f => `
+            <button class="act-filter-tab ${filter === f.key ? 'active' : ''}" 
+              onclick="state.activityFilter='${f.key}';renderScreen()">
+              <span>${f.icon}</span>
+              <span>${f.label}</span>
+              ${counts[f.key] ? `<span class="act-filter-count">${counts[f.key]}</span>` : ''}
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- 활동 리스트 -->
+        ${filtered.length === 0 ? `
+          <div class="act-empty">
+            <div class="act-empty-icon">📝</div>
+            <div class="act-empty-text">아직 등록된 활동이 없어요</div>
+            <div class="act-empty-sub">아래 버튼을 눌러 첫 활동을 등록해보세요!</div>
+            <button class="btn-primary" onclick="goScreen('activity-add')" style="display:inline-flex;align-items:center;gap:6px;padding:12px 24px;margin-top:12px">
+              <i class="fas fa-plus"></i> 새 활동 추가하기
+            </button>
+          </div>
+        ` : filtered.map((ec, i) => {
+          const fk = getFilterKey(ec);
+          const meta = TYPE_META[ec.type] || TYPE_META['activity'];
+          // 유형 아이콘 우선순위: subType > type
+          let icon = meta.icon;
+          let label = meta.label;
+          let bg = meta.bg;
+          if (ec.subType === 'career') { icon = '🎯'; label = '진로활동'; bg = 'rgba(255,159,67,0.12)'; }
+          else if (ec.subType === 'self') { icon = '🧠'; label = '자율자치'; bg = 'rgba(162,155,254,0.12)'; }
+
+          const statusLabel = ec.status === 'completed' ? '✅ 완료' : ec.status === 'in-progress' ? '🔄 진행중' : '📋 예정';
+          const statusClass = ec.status === 'completed' ? 'completed' : ec.status === 'in-progress' ? 'in-progress' : 'pending';
+
+          // 탐구보고서는 추가 정보 표시
+          let extraInfo = '';
+          if (ec.type === 'report' && ec.report) {
+            const rpt = ec.report;
+            const totalXp = rpt.questions.reduce((s, q) => s + (q.xp || 0), 0);
+            const phaseName = ['주제 선정','탐구 설계','자료 수집','분석/작성','회고'][rpt.currentPhase] || '';
+            extraInfo = `<div class="act-card-extra"><span>💬 질문 ${rpt.questions.length}개</span><span>⚡ ${totalXp} XP</span><span>📍 ${phaseName}</span></div>`;
+          }
+          // 독서는 진행률 표시
+          if (ec.type === 'reading') {
+            extraInfo = `<div class="act-card-extra"><span>📖 ${ec.progress}% 읽음</span>${ec.memo ? `<span>📝 ${ec.memo}</span>` : ''}</div>`;
+          }
+
+          // 클릭 핸들러
+          let onclick = '';
+          if (ec.type === 'report' && ec.report) {
+            onclick = `state.viewingReport='${ec.id}';state.reportPhaseTab=${ec.report.currentPhase};state.reportViewMode='question';state.reportDiagResult=null;state.reportAiResponse=null;goScreen('report-project')`;
+          } else {
+            onclick = `state.viewingActivity='${ec.id}';goScreen('activity-detail')`;
+          }
+
+          return `
+          <div class="act-card stagger-${Math.min(i+1,8)} animate-in" onclick="${onclick}">
+            <div class="act-card-left">
+              <div class="act-card-type-badge" style="background:${bg}">
+                <span>${icon}</span>
+              </div>
+            </div>
+            <div class="act-card-body">
+              <div class="act-card-top">
+                <span class="act-card-type-label" style="color:${ec.color}">${label}</span>
+                <span class="act-card-subject">${ec.subject}</span>
+                <span class="act-card-status ${statusClass}">${statusLabel}</span>
+              </div>
+              <div class="act-card-title">${ec.title}</div>
+              ${ec.desc ? `<div class="act-card-desc">${ec.desc}</div>` : ''}
+              ${extraInfo}
+              <div class="act-card-footer">
+                <span class="act-card-date">${ec.startDate?.slice(5) || ''} ~ ${ec.endDate?.slice(5) || ''}</span>
+                <div class="act-card-progress">
+                  <div class="act-card-progress-fill" style="width:${ec.progress}%;background:${ec.color}"></div>
+                </div>
+                <span class="act-card-progress-text">${ec.progress}%</span>
+              </div>
+            </div>
+          </div>
+          `;
+        }).join('')}
+
+        <!-- 하단 추가 버튼 -->
+        ${filtered.length > 0 ? `
+        <button class="act-add-float-btn" onclick="goScreen('activity-add')">
+          <i class="fas fa-plus" style="margin-right:6px"></i> 새 활동 추가
+        </button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 활동 상세 화면 (동아리/진로/자율자치/독서) ====================
+
+function renderActivityDetail() {
+  const ec = state.extracurriculars.find(e => e.id === state.viewingActivity);
+  if (!ec) { state.viewingActivity = null; goScreen('record-activity'); return ''; }
+  
+  // 유형 정보
+  let typeIcon = '🎭', typeLabel = '동아리', typeColor = '#E056A0';
+  if (ec.subType === 'career' || ec.type === 'career') { typeIcon = '🎯'; typeLabel = '진로활동'; typeColor = '#FF9F43'; }
+  else if (ec.subType === 'self' || ec.type === 'self') { typeIcon = '🧠'; typeLabel = '자율자치'; typeColor = '#A29BFE'; }
+  else if (ec.type === 'reading') { typeIcon = '📖'; typeLabel = '독서'; typeColor = '#00B894'; }
+
+  const statusLabel = ec.status === 'completed' ? '✅ 완료' : ec.status === 'in-progress' ? '🔄 진행중' : '📋 예정';
+
+  // 활동 로그 (간단한 기록 시스템)
+  const logs = ec.logs || [];
+
+  return `
+    <div class="full-screen animate-slide">
+      <!-- 헤더 -->
+      <div class="act-detail-header" style="border-bottom:3px solid ${ec.color}20">
+        <div class="act-detail-header-top">
+          <button class="back-btn" onclick="state.viewingActivity=null;goScreen('record-activity')"><i class="fas fa-arrow-left"></i></button>
+          <div style="flex:1">
+            <div class="act-detail-title">${ec.title}</div>
+            <div class="act-detail-subtitle">${ec.subject} · ${typeLabel}</div>
+          </div>
+          <span class="xp-badge-sm">+20 XP</span>
+        </div>
+
+        <!-- 요약 통계 -->
+        <div class="act-detail-stats">
+          <div class="act-detail-stat">
+            <span class="act-detail-stat-icon">${typeIcon}</span>
+            <span class="act-detail-stat-value">${typeLabel}</span>
+            <span class="act-detail-stat-label">유형</span>
+          </div>
+          <div class="act-detail-stat">
+            <span class="act-detail-stat-icon">📅</span>
+            <span class="act-detail-stat-value">${ec.startDate?.slice(5) || ''}</span>
+            <span class="act-detail-stat-label">시작일</span>
+          </div>
+          <div class="act-detail-stat">
+            <span class="act-detail-stat-icon">📊</span>
+            <span class="act-detail-stat-value">${ec.progress}%</span>
+            <span class="act-detail-stat-label">진행률</span>
+          </div>
+          <div class="act-detail-stat">
+            <span class="act-detail-stat-icon">📝</span>
+            <span class="act-detail-stat-value">${logs.length}</span>
+            <span class="act-detail-stat-label">기록 수</span>
+          </div>
+        </div>
+
+        <!-- 진행 바 -->
+        <div class="act-detail-progress-wrap">
+          <div class="act-detail-progress-bar">
+            <div class="act-detail-progress-fill" style="width:${ec.progress}%;background:${ec.color}"></div>
+          </div>
+          <span class="act-detail-progress-text">${statusLabel}</span>
+        </div>
+      </div>
+
+      <div class="form-body" style="padding-top:12px">
+        <!-- 활동 설명 -->
+        ${ec.desc ? `
+        <div class="act-detail-card">
+          <div class="act-detail-card-title">📋 활동 설명</div>
+          <div class="act-detail-card-body">${ec.desc}</div>
+        </div>
+        ` : ''}
+
+        <!-- 메모 -->
+        ${ec.memo ? `
+        <div class="act-detail-card">
+          <div class="act-detail-card-title">💡 메모</div>
+          <div class="act-detail-card-body">${ec.memo}</div>
+        </div>
+        ` : ''}
+
+        <!-- 진로 연계 -->
+        ${ec.careerLink ? `
+        <div class="act-detail-card">
+          <div class="act-detail-card-title">🔗 진로 연계</div>
+          <div class="act-detail-card-body">${ec.careerLink}</div>
+        </div>
+        ` : ''}
+
+        <!-- 활동 기록 타임라인 -->
+        <div class="act-detail-card">
+          <div class="act-detail-card-header">
+            <span class="act-detail-card-title">📜 활동 기록</span>
+            <span style="font-size:11px;color:#888">${logs.length}개 기록</span>
+          </div>
+          
+          ${logs.length > 0 ? logs.map((log, idx) => `
+            <div class="act-log-item">
+              <div class="act-log-date">${log.date?.slice(5) || ''}</div>
+              <div class="act-log-content">
+                <div class="act-log-text">${log.content}</div>
+                ${log.reflection ? `<div class="act-log-reflection">💡 ${log.reflection}</div>` : ''}
+                ${log.duration ? `<div class="act-log-duration">⏱️ ${log.duration}</div>` : ''}
+              </div>
+            </div>
+          `).join('') : `
+            <div style="text-align:center;padding:20px 0;color:#666;font-size:13px">
+              아직 기록이 없어요<br>아래에서 오늘의 활동을 기록해보세요!
+            </div>
+          `}
+        </div>
+
+        <!-- 새 기록 작성 -->
+        <div class="act-detail-card act-log-form">
+          <div class="act-detail-card-title">✏️ 오늘의 활동 기록</div>
+          <textarea id="act-log-content" class="input-field" rows="3" placeholder="오늘 한 활동 내용을 적어주세요"></textarea>
+          
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <div style="flex:1">
+              <label class="field-label" style="font-size:11px">💡 배운 점 (선택)</label>
+              <input id="act-log-reflection" class="input-field" placeholder="느낀 점, 배운 점..." style="font-size:13px">
+            </div>
+          </div>
+
+          ${ec.type !== 'reading' ? `
+          <div style="margin-top:8px">
+            <label class="field-label" style="font-size:11px">⏱️ 활동 시간</label>
+            <div class="chip-row">
+              ${['30분','1시간','1.5시간','2시간','2시간+'].map((t,i) => `<button class="chip act-dur-chip ${i===1?'active':''}">${t}</button>`).join('')}
+            </div>
+          </div>
+          ` : `
+          <div style="margin-top:8px">
+            <label class="field-label" style="font-size:11px">📖 읽은 분량</label>
+            <div class="chip-row">
+              ${['~10쪽','~30쪽','~50쪽','~100쪽','100쪽+'].map((t,i) => `<button class="chip act-dur-chip ${i===1?'active':''}">${t}</button>`).join('')}
+            </div>
+          </div>
+          `}
+
+          <button class="btn-primary" style="margin-top:12px" onclick="saveActivityLog('${ec.id}')">기록 완료 +20 XP ✨</button>
+        </div>
+
+        <!-- 편집/상태 변경 버튼 -->
+        <div class="act-detail-actions">
+          ${ec.status !== 'completed' ? `
+            <button class="btn-secondary" onclick="updateActivityProgress('${ec.id}', ${Math.min(ec.progress + 10, 100)})">
+              📊 진행률 +10%
+            </button>
+            <button class="btn-secondary" onclick="completeActivity('${ec.id}')" style="color:#00B894;border-color:#00B894">
+              ✅ 활동 완료
+            </button>
+          ` : `
+            <button class="btn-secondary" onclick="updateActivityStatus('${ec.id}','in-progress')" style="color:#FF9F43;border-color:#FF9F43">
+              🔄 다시 진행중으로
+            </button>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 활동 추가 화면 ====================
+
+function renderActivityAdd() {
+  const subjects = ['수학','국어','영어','과학','한국사','사회','정보','기술가정','음악','미술','체육','진로','기타'];
+  const colors = ['#6C5CE7','#FF6B6B','#00B894','#FDCB6E','#74B9FF','#A29BFE','#E056A0','#FF9F43','#00CEC9','#FD79A8','#E17055','#636e72','#888'];
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('record-activity')"><i class="fas fa-arrow-left"></i></button>
+        <h1>🏫 새 활동 등록</h1>
+      </div>
+      <div class="form-body">
+        <!-- Step 1: 활동 유형 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">1</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📂 활동 유형</label>
+            <div class="act-add-type-grid" id="act-add-types">
+              ${[
+                {type:'club', icon:'🎭', name:'동아리', desc:'교내 동아리 활동'},
+                {type:'career', icon:'🎯', name:'진로활동', desc:'진로 탐색·체험'},
+                {type:'self', icon:'🧠', name:'자율자치', desc:'자율활동·자치활동'},
+                {type:'report', icon:'📄', name:'탐구보고서', desc:'탐구·연구 프로젝트'},
+                {type:'reading', icon:'📖', name:'독서', desc:'독서·독서감상문'},
+              ].map((a,i) => `
+                <button class="act-add-type-btn ${i===0?'active':''}" data-type="${a.type}" onclick="selectActivityType(this)">
+                  <span class="act-add-type-icon">${a.icon}</span>
+                  <span class="act-add-type-name">${a.name}</span>
+                  <span class="act-add-type-desc">${a.desc}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: 활동명 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">2</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📝 활동명</label>
+            <div style="font-size:11px;color:#888;margin-bottom:8px">활동 이름을 입력하세요</div>
+            <input id="act-add-title" class="input-field form-input" placeholder="예: 코딩동아리, 진로탐색 체험, 독서...">
+          </div>
+        </div>
+
+        <!-- Step 3: 관련 과목 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">3</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📚 관련 과목</label>
+            <div class="rpt-add-subject-grid" id="act-add-subjects">
+              ${subjects.map((s, i) => `
+                <button class="rpt-add-subject-btn" data-subject="${s}" data-color="${colors[i]}" onclick="selectActAddSubject(this)">
+                  <span class="rpt-add-subject-dot" style="background:${colors[i]}"></span>${s}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 4: 기간 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">4</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📅 활동 기간</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="act-add-start" type="date" class="input-field form-input" value="${kstToday()}" style="flex:1">
+              <span style="color:#666">~</span>
+              <input id="act-add-end" type="date" class="input-field form-input" value="${kstDateOffset(90)}" style="flex:1">
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 5: 설명 -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">5</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">📋 활동 설명 <span class="field-hint">(선택)</span></label>
+            <textarea id="act-add-desc" class="input-field form-input" rows="2" placeholder="활동에 대한 간단한 설명"></textarea>
+          </div>
+        </div>
+
+        <!-- Step 6: 진로 연계 (선택) -->
+        <div class="rpt-add-step">
+          <div class="rpt-add-step-num">6</div>
+          <div class="rpt-add-step-content">
+            <label class="field-label">🔗 진로 연계 <span class="field-hint">(선택)</span></label>
+            <input id="act-add-career" class="input-field form-input" placeholder="이 활동이 진로와 어떻게 연결되나요?">
+          </div>
+        </div>
+
+        <button class="btn-primary" onclick="saveNewActivity()" style="margin-top:16px">
+          🚀 활동 등록하기!
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// 활동 유형 선택
+function selectActivityType(btn) {
+  document.querySelectorAll('#act-add-types .act-add-type-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  // 탐구보고서 선택 시 report-add로 이동
+  if (btn.dataset.type === 'report') {
+    goScreen('report-add');
+  }
+}
+
+function selectActAddSubject(btn) {
+  document.querySelectorAll('#act-add-subjects .rpt-add-subject-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// 새 활동 저장
+function saveNewActivity() {
+  const typeBtn = document.querySelector('#act-add-types .act-add-type-btn.active');
+  const actType = typeBtn?.dataset?.type || 'club';
+  
+  // 탐구보고서면 report-add로 리다이렉트
+  if (actType === 'report') { goScreen('report-add'); return; }
+
+  const title = document.getElementById('act-add-title')?.value?.trim();
+  const subjectBtn = document.querySelector('#act-add-subjects .rpt-add-subject-btn.active');
+  const subject = subjectBtn?.dataset?.subject || '기타';
+  const color = subjectBtn?.dataset?.color || '#888';
+  const startDate = document.getElementById('act-add-start')?.value;
+  const endDate = document.getElementById('act-add-end')?.value;
+  const desc = document.getElementById('act-add-desc')?.value?.trim() || '';
+  const careerLink = document.getElementById('act-add-career')?.value?.trim() || '';
+
+  if (!title) { alert('활동명을 입력해주세요!'); return; }
+
+  const newId = 'ec' + (Date.now() % 100000);
+  const ecType = actType === 'reading' ? 'reading' : 'activity';
+  
+  const newEntry = {
+    id: newId,
+    type: ecType,
+    subType: actType, // club, career, self, reading
+    title, subject, color,
+    status: 'in-progress',
+    progress: 0,
+    startDate: startDate || kstToday(),
+    endDate: endDate || kstDateOffset(90),
+    desc, memo: '',
+    careerLink,
+    logs: [],
+  };
+
+  state.extracurriculars.push(newEntry);
+  
+  // DB 저장
+  if (DB.studentId()) {
+    DB.saveActivityRecord({
+      activityType: actType,
+      title,
+      description: desc,
+      startDate: newEntry.startDate,
+      endDate: newEntry.endDate,
+      status: 'in-progress',
+      progress: 0,
+      reflection: '',
+    }).then(dbId => {
+      if (dbId) newEntry._dbId = dbId;
+    });
+  }
+  
+  // 바로 상세 화면으로
+  state.viewingActivity = newId;
+  goScreen('activity-detail');
+  showXpPopup(5, '새 활동이 등록되었어요! 🎉');
+}
+
+// 활동 로그 저장
+function saveActivityLog(ecId) {
+  const ec = state.extracurriculars.find(e => e.id === ecId);
+  if (!ec) return;
+  
+  const content = document.getElementById('act-log-content')?.value?.trim();
+  if (!content) { alert('활동 내용을 입력해주세요!'); return; }
+  
+  const reflection = document.getElementById('act-log-reflection')?.value?.trim() || '';
+  const durChip = document.querySelector('.act-dur-chip.active');
+  const duration = durChip ? durChip.textContent : '';
+
+  if (!ec.logs) ec.logs = [];
+  ec.logs.unshift({
+    date: kstToday(),
+    content, reflection, duration,
+  });
+
+  // 진행률 자동 증가 (최소 5%)
+  if (ec.progress < 100) {
+    ec.progress = Math.min(ec.progress + 5, 100);
+  }
+
+  // DB 업데이트 (활동 로그를 description에 누적 저장 + 별도 activity_logs에도 기록)
+  if (ec._dbId && DB.studentId()) {
+    DB.updateActivityRecord(ec._dbId, {
+      progress: ec.progress,
+      status: ec.progress >= 100 ? 'completed' : 'in-progress',
+      description: JSON.stringify(ec.logs),
+      reflection: reflection,
+    });
+    // 날짜별 활동 로그 개별 저장 (관리자 조회용)
+    DB.saveActivityLog(ec._dbId, {
+      date: kstToday(),
+      content,
+      reflection,
+      duration,
+      xpEarned: 20,
+    });
+  }
+
+  state.xp += 20;
+  renderScreen();
+  showXpPopup(20, '활동 기록 완료!');
+}
+
+// 활동 진행률 업데이트
+function updateActivityProgress(ecId, newProgress) {
+  const ec = state.extracurriculars.find(e => e.id === ecId);
+  if (!ec) return;
+  ec.progress = Math.min(Math.max(newProgress, 0), 100);
+  if (ec.progress >= 100) ec.status = 'completed';
+  // DB 업데이트
+  if (ec._dbId && DB.studentId()) {
+    DB.updateActivityRecord(ec._dbId, { progress: ec.progress, status: ec.status });
+  }
+  renderScreen();
+}
+
+// 활동 완료 처리
+function completeActivity(ecId) {
+  const ec = state.extracurriculars.find(e => e.id === ecId);
+  if (!ec) return;
+  ec.status = 'completed';
+  ec.progress = 100;
+  // DB 업데이트
+  if (ec._dbId && DB.studentId()) {
+    DB.updateActivityRecord(ec._dbId, { status: 'completed', progress: 100 });
+  }
+  state.xp += 30;
+  renderScreen();
+  showXpPopup(30, '활동 완료! 🎉');
+}
+
+// 활동 상태 변경
+function updateActivityStatus(ecId, newStatus) {
+  const ec = state.extracurriculars.find(e => e.id === ecId);
+  if (!ec) return;
+  ec.status = newStatus;
+  if (newStatus === 'in-progress' && ec.progress >= 100) ec.progress = 90;
+  // DB 업데이트
+  if (ec._dbId && DB.studentId()) {
+    DB.updateActivityRecord(ec._dbId, { status: ec.status, progress: ec.progress });
+  }
+  renderScreen();
+}
+
+// ==================== EVENING ROUTINE ====================
+
+function renderEveningRoutine() {
+  const doneCount = state.todayRecords.filter(r => r.done).length;
+  const total = state.todayRecords.length;
+  const questionCount = state.todayRecords.filter(r => r.question).length;
+  
+  return `
+    <div class="full-screen animate-in">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>🌙 저녁 루틴</h1>
+        <span class="xp-badge-sm">+10 XP</span>
+      </div>
+
+      <div class="form-body">
+        <div class="evening-summary-card">
+          <h2>오늘 하루 수고했어요! 🌟</h2>
+          <div class="evening-stats">
+            <div class="evening-stat">
+              <span class="evening-stat-num">${doneCount}/${total}</span>
+              <span class="evening-stat-label">수업 기록</span>
+            </div>
+            <div class="evening-stat">
+              <span class="evening-stat-num">${questionCount}</span>
+              <span class="evening-stat-label">질문</span>
+            </div>
+            <div class="evening-stat">
+              <span class="evening-stat-num">0</span>
+              <span class="evening-stat-label">교학상장</span>
+            </div>
+          </div>
+        </div>
+
+        ${doneCount < total ? `
+          <div class="card" style="margin:0 0 16px;border-color:rgba(243,156,18,0.3)">
+            <div class="card-title" style="color:var(--warning)">⚠️ 아직 기록하지 않은 수업</div>
+            ${state.todayRecords.filter(r => !r.done).map(r => `
+              <div class="missing-record-row">
+                <span>${r.period}교시 <span style="color:${r.color};font-weight:600">${r.subject}</span></span>
+                <button class="btn-secondary" style="padding:6px 12px;font-size:12px" onclick="goScreen('record-class')">기록하기</button>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="card" style="margin:0 0 16px;border-color:rgba(0,184,148,0.3)">
+            <div style="text-align:center;padding:8px 0">
+              <span style="font-size:32px">🎉</span>
+              <p style="font-size:14px;font-weight:600;color:var(--success);margin-top:8px">오늘 모든 수업을 기록했어요!</p>
+            </div>
+          </div>
+        `}
+
+        <div class="field-group">
+          <label class="field-label">📝 오늘의 한 줄 메모</label>
+          <textarea class="input-field" rows="2" placeholder="오늘 하루를 한 줄로 정리한다면?">수학 치환적분 질문이 B-1→C-1까지 사고의 심연을 돌파한 날!</textarea>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">😊 오늘의 무드</label>
+          <div class="mood-selector" style="justify-content:space-around">
+            ${[
+              {emoji:'😄', label:'최고'},
+              {emoji:'🙂', label:'좋음'},
+              {emoji:'😐', label:'보통'},
+              {emoji:'😔', label:'별로'},
+              {emoji:'😫', label:'힘듦'}
+            ].map(m => `
+              <button class="mood-btn ${m.emoji==='🙂'?'active':''}" data-mood="${m.emoji}">
+                <span class="mood-emoji">${m.emoji}</span>
+                <span class="mood-label">${m.label}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <div class="evening-xp-preview">
+          <div>오늘 획득 XP</div>
+          <div class="evening-xp-total">+45 XP</div>
+          <div class="evening-xp-breakdown">수업 기록 20 + 질문 15 + 루틴 10</div>
+        </div>
+
+        <button class="btn-primary btn-glow" onclick="showXpPopup(10, '저녁 루틴 완료! 🌙')">하루 마무리 +10 XP 🌙</button>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== WEEKLY REPORT (학생 미리보기) ====================
+
+function renderWeeklyReportStudent() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📊 주간 리포트</h1>
+        <span style="font-size:12px;color:var(--text-muted)">2월 2주차</span>
+      </div>
+
+      <div class="form-body">
+        <div class="report-hero">
+          <div class="report-hero-avatar">🎓</div>
+          <h2>${state._authUser?.name || '나'}의 이번 주</h2>
+          <p>${(() => { const t = kstNow(); const d = t.getUTCDay(); const mon = new Date(t); mon.setUTCDate(t.getUTCDate() - (d===0?6:d-1)); const sun = new Date(mon); sun.setUTCDate(mon.getUTCDate()+6); return `${mon.getUTCMonth()+1}월 ${mon.getUTCDate()}일 ~ ${sun.getUTCMonth()+1}월 ${sun.getUTCDate()}일`; })()}</p>
+        </div>
+
+        <div class="report-stat-grid">
+          ${[
+            {num: String((state._dbClassRecords||[]).length), label:'수업 기록', sub:`총 ${(state._dbClassRecords||[]).length}건`, color:'var(--primary-light)'},
+            {num: String((state._dbQuestionRecords||[]).length), label:'질문', sub:`총 ${(state._dbQuestionRecords||[]).length}건`, color:'var(--accent)'},
+            {num: String((state._dbTeachRecords||[]).length), label:'교학상장', sub:`총 ${(state._dbTeachRecords||[]).length}건`, color:'var(--teach-green)'},
+            {num:`🔥${state.streak||0}`, label:'스트릭', sub:'연속 기록', color:'var(--streak-fire)'},
+          ].map(s => `
+            <div class="report-stat-item">
+              <span class="report-stat-num" style="color:${s.color}">${s.num}</span>
+              <span class="report-stat-label">${s.label}</span>
+              <span class="report-stat-sub">${s.sub}</span>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="card" style="margin:0 0 12px">
+          <div class="card-title">📈 이번 주 하이라이트</div>
+          <div class="highlight-item">
+            <span class="highlight-badge" style="background:rgba(255,107,107,0.15);color:var(--accent)">호기심 사다리 성장</span>
+            <p>영어에서 B-1("왜?") 단계 첫 등장! 관계대명사의 역사적 배경을 묻는 심층 질문</p>
+          </div>
+          <div class="highlight-item">
+            <span class="highlight-badge" style="background:rgba(0,184,148,0.15);color:var(--teach-green)">교학상장</span>
+            <p>수학 치환적분을 역함수 관점으로 설명하며 자신의 이해 빈틈도 발견</p>
+          </div>
+          <div class="highlight-item">
+            <span class="highlight-badge" style="background:rgba(108,92,231,0.15);color:var(--primary-light)">사고의 심연 돌파</span>
+            <p>수학 "치환적분" A-2→B-1→C-1 호기심 사다리 완주! +50 XP</p>
+          </div>
+        </div>
+
+        <div class="card" style="margin:0 0 12px">
+          <div class="card-title">🎯 다음 주 목표</div>
+          ${[
+            {icon:'❓', text:'영어 질문 B-2 "만약에?" 단계 도전'},
+            {icon:'🤝', text:'교학상장 3회 이상'},
+            {icon:'📝', text:'수업 기록 100% 달성'},
+          ].map(g => `
+            <div class="next-goal-item">
+              <span class="next-goal-icon">${g.icon}</span>
+              <span>${g.text}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== RECORD HISTORY ====================
+
+function renderRecordHistory() {
+  // DB에서 로드된 실제 데이터 기반
+  const records = (state._dbClassRecords || []).slice(0, 20);
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const grouped = {};
+  records.forEach(r => {
+    const d = r.date || r.created_at?.slice(0,10) || '';
+    if (!d) return;
+    const dt = new Date(d + 'T00:00:00');
+    const label = `${dt.getMonth()+1}월 ${dt.getDate()}일 (${dayNames[dt.getDay()]})`;
+    if (!grouped[d]) grouped[d] = { date: label, items: [] };
+    grouped[d].items.push({
+      type: '수업', color: 'var(--primary)',
+      meta: `${r.subject || ''}`,
+      text: r.content || r.topic || '',
+      tags: [], xp: '+10'
+    });
+  });
+  const historyData = Object.values(grouped).slice(0, 7);
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.studentTab='archive';goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📜 기록 히스토리</h1>
+      </div>
+
+      <div class="form-body">
+        <div class="chip-row" style="margin-bottom:16px">
+          ${['전체','수업','질문','교학상장','창체'].map((c,i) => `<button class="chip ${i===0?'active':''}">${c}</button>`).join('')}
+        </div>
+
+        ${historyData.map(day => `
+          <div class="history-date-header">${day.date}</div>
+          ${day.items.map((item,i) => `
+            <div class="history-card stagger-${i+1} animate-in">
+              <div class="history-type-badge" style="background:${item.color}">${item.type}</div>
+              <div class="history-content">
+                <div class="history-meta">${item.meta}</div>
+                <p>${item.text}</p>
+                <div class="history-tags">
+                  ${item.tags.map(t => `<span class="${t.style}" style="font-size:10px">${t.q}</span>`).join('')}
+                  <span class="history-xp">${item.xp} XP</span>
+                </div>
+              </div>
+            </div>
+          `).join('')}
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== PLANNER TAB ====================
+
+function renderPlannerTab() {
+  // 현재 보고 있는 월 계산
+  const viewMonth = state.plannerDate.substring(0, 7); // YYYY-MM
+  // 월이 바뀌었으면 API에서 이벤트 로딩 (즉시 마킹하여 중복 호출 방지)
+  if (state.plannerEventsMonth !== viewMonth && state.studentId) {
+    state.plannerEventsMonth = viewMonth;
+    loadPlannerEvents(viewMonth);
+  }
+  return `
+    <div class="tab-content animate-in">
+      <div class="planner-header">
+        <button class="back-btn" onclick="state.studentTab='home';renderScreen()" style="margin-right:8px"><i class="fas fa-arrow-left"></i></button>
+        <h1>📅 플래너</h1>
+        <div class="planner-view-toggle">
+          ${['daily','weekly','monthly'].map(v => `
+            <button class="pvt-btn ${state.plannerView===v?'active':''}" data-pview="${v}">
+              ${v==='daily'?'일간':v==='weekly'?'주간':'월간'}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      ${state.plannerView === 'daily' ? renderPlannerDaily() : ''}
+      ${state.plannerView === 'weekly' ? renderPlannerWeekly() : ''}
+      ${state.plannerView === 'monthly' ? renderPlannerMonthly() : ''}
+    </div>
+  `;
+}
+
+// 플래너 이벤트 DB 로딩
+async function loadPlannerEvents(month) {
+  if (!state.studentId) return;
+  try {
+    const res = await fetch('/api/student/' + state.studentId + '/planner?month=' + month);
+    const d = await res.json();
+    if (d.success && d.data) {
+      state.plannerEvents = d.data.events || [];
+    } else {
+      state.plannerEvents = [];
+    }
+  } catch (e) {
+    console.error('플래너 이벤트 로딩 실패:', e);
+    state.plannerEvents = [];
+  }
+  renderScreen();
+}
+
+// ---- DAILY PLANNER ----
+function renderPlannerDaily() {
+  const d = new Date(state.plannerDate);
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const todayItems = state.plannerItems.filter(i => i.date === state.plannerDate).sort((a,b) => a.time.localeCompare(b.time));
+  const doneCount = todayItems.filter(i => i.done).length;
+  const aiCount = todayItems.filter(i => i.aiGenerated).length;
+
+  // 날짜 네비게이션 (5일)
+  const dateDots = [];
+  for (let offset = -2; offset <= 2; offset++) {
+    const dd = new Date(d);
+    dd.setDate(dd.getDate() + offset);
+    const dateStr = dd.toISOString().split('T')[0];
+    const itemCount = state.plannerItems.filter(i => i.date === dateStr).length;
+    const eventCount = (state.plannerEvents || []).filter(ev => ev.date === dateStr).length;
+    dateDots.push({ date: dateStr, day: dd.getDate(), dayName: dayNames[dd.getDay()], isToday: offset===0, hasItems: (itemCount + eventCount) > 0, itemCount: itemCount + eventCount });
+  }
+
+  // 카테고리별 아이콘 매핑
+  const catIcon = (cat) => {
+    const icons = { 'class':'🏫', 'assignment':'📋', 'study':'📖', 'routine':'☀️', 'activity':'🎭', 'explore':'🔬', 'teach':'🤝', 'personal':'✏️' };
+    return icons[cat] || '📌';
+  };
+  const catLabel = (cat) => {
+    const labels = { 'class':'수업', 'assignment':'과제', 'study':'학습', 'routine':'루틴', 'activity':'활동', 'explore':'탐구', 'teach':'교학상장', 'personal':'개인' };
+    return labels[cat] || '기타';
+  };
+
+  // 현재 시간 계산 (진행중 표시용)
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const isCurrentDate = state.plannerDate === kstToday();
+
+  // 마감 과제
+  const dueAssignments = state.assignments.filter(a => a.dueDate === state.plannerDate && a.status !== 'completed');
+
+  // DB 이벤트 (과제+시험)
+  const dayEvents = (state.plannerEvents || []).filter(ev => ev.date === state.plannerDate);
+  const dayExamEvents = dayEvents.filter(ev => ev.type !== 'assignment');
+  const dayAssignmentEvents = dayEvents.filter(ev => ev.type === 'assignment');
+
+  return `
+    <!-- Date Navigator -->
+    <div class="planner-date-nav">
+      <button class="pdn-arrow" onclick="shiftPlannerDate(-1)"><i class="fas fa-chevron-left"></i></button>
+      <div class="pdn-dates">
+        ${dateDots.map(dd => `
+          <button class="pdn-date ${dd.isToday?'active':''} ${dd.hasItems?'has-items':''}" onclick="state.plannerDate='${dd.date}';renderScreen()">
+            <span class="pdn-dayname">${dd.dayName}</span>
+            <span class="pdn-day">${dd.day}</span>
+            ${dd.hasItems ? `<span class="pdn-dot"></span>` : ''}
+          </button>
+        `).join('')}
+      </div>
+      <button class="pdn-arrow" onclick="shiftPlannerDate(1)"><i class="fas fa-chevron-right"></i></button>
+    </div>
+
+    <!-- Daily Summary -->
+    <div class="planner-daily-summary">
+      <div class="pds-item"><span class="pds-num">${todayItems.length}</span><span class="pds-label">전체</span></div>
+      <div class="pds-divider"></div>
+      <div class="pds-item"><span class="pds-num" style="color:var(--success)">${doneCount}</span><span class="pds-label">완료</span></div>
+      <div class="pds-divider"></div>
+      <div class="pds-item pds-highlight"><span class="pds-num" style="color:var(--primary-light)">${aiCount}</span><span class="pds-label">정율 배치</span></div>
+      <div class="pds-divider"></div>
+      <div class="pds-item"><span class="pds-num" style="color:var(--accent)">${dueAssignments.length + dayAssignmentEvents.length}</span><span class="pds-label">과제</span></div>
+      ${dayExamEvents.length > 0 ? `<div class="pds-divider"></div><div class="pds-item"><span class="pds-num" style="color:#EF4444">${dayExamEvents.length}</span><span class="pds-label">시험</span></div>` : ''}
+    </div>
+
+    <!-- Due Assignments for this day -->
+    ${dueAssignments.length > 0 ? (() => {
+      return '<div style="padding:0 16px;margin-bottom:8px">' +
+        '<div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px;display:flex;align-items:center;gap:6px"><i class="fas fa-exclamation-circle"></i> 오늘 마감 과제</div>' +
+        dueAssignments.map(a => {
+          const dDay = getDday(a.dueDate);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+          return '<div class="card" style="margin-bottom:6px;padding:10px 12px;border-left:3px solid ' + a.color + ';cursor:pointer" onclick="state.viewingAssignment=\'' + a.id + '\';goScreen(\'assignment-plan\')">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">' +
+              '<span class="assignment-dday urgent" style="font-size:11px;padding:2px 6px">' + dDayText + '</span>' +
+              '<span style="font-size:11px;color:' + a.color + ';font-weight:600">' + a.subject + '</span>' +
+              '<span style="margin-left:auto;font-size:11px;color:var(--text-muted)">' + a.progress + '%</span>' +
+            '</div>' +
+            '<div style="font-size:13px;font-weight:600;color:var(--text-primary)">' + a.title + '</div>' +
+            '<div style="display:flex;gap:6px;margin-top:6px">' +
+              '<button class="btn-secondary" style="flex:1;padding:5px;font-size:11px" onclick="event.stopPropagation();toggleAssignmentDone(\'' + a.id + '\')"><i class="fas fa-check"></i> 완료</button>' +
+              '<button class="btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();deletePlannerAssignment(\'' + a.id + '\')"><i class="fas fa-trash"></i></button>' +
+              '<button class="btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();state.editingAssignment=\'' + a.id + '\';goScreen(\'record-assignment\')"><i class="fas fa-edit"></i></button>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    })() : ''}
+
+    <!-- DB 이벤트: 시험 -->
+    ${dayExamEvents.length > 0 ? (() => {
+      const examTypeLabel = { midterm:'중간고사', final:'기말고사', performance:'수행평가', mock:'모의고사', quiz:'쪽지시험' };
+      const examTypeIcon = { midterm:'📕', final:'📕', performance:'📙', mock:'📘', quiz:'📗' };
+      return '<div style="padding:0 16px;margin-bottom:8px">' +
+        '<div style="font-size:12px;font-weight:700;color:#EF4444;margin-bottom:6px;display:flex;align-items:center;gap:6px"><i class="fas fa-clipboard-list"></i> 오늘 시험</div>' +
+        dayExamEvents.map(ev => {
+          return '<div class="card" style="margin-bottom:6px;padding:10px 12px;border-left:3px solid ' + ev.color + '">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">' +
+              '<span style="font-size:14px">' + (examTypeIcon[ev.type] || '📕') + '</span>' +
+              '<span style="font-size:11px;color:' + ev.color + ';font-weight:600;background:' + ev.color + '20;padding:2px 8px;border-radius:4px">' + (examTypeLabel[ev.type] || ev.type) + '</span>' +
+              '<span style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;background:#EF444420;color:#EF4444">D-Day</span>' +
+            '</div>' +
+            '<div style="font-size:13px;font-weight:600;color:var(--text-primary)">' + ev.title + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    })() : ''}
+
+    <!-- DB 이벤트: 마감 과제 (DB) -->
+    ${dayAssignmentEvents.length > 0 ? (() => {
+      return '<div style="padding:0 16px;margin-bottom:8px">' +
+        '<div style="font-size:12px;font-weight:700;color:#3B82F6;margin-bottom:6px;display:flex;align-items:center;gap:6px"><i class="fas fa-tasks"></i> 과제 마감</div>' +
+        dayAssignmentEvents.map(ev => {
+          return '<div class="card" style="margin-bottom:6px;padding:10px 12px;border-left:3px solid ' + ev.color + '">' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:14px">📋</span>' +
+              '<span style="font-size:11px;color:' + ev.color + ';font-weight:600">' + (ev.subject || '') + '</span>' +
+              '<span style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;background:#EF444420;color:#EF4444">D-Day</span>' +
+            '</div>' +
+            '<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-top:3px">' + ev.title + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    })() : ''}
+
+    <!-- 2-Column Layout: Agenda (70%) + Todo (30%) -->
+    <div>
+      <div>
+        <div class="agenda-list">
+          ${todayItems.length === 0 ? `
+            <div class="agenda-empty">
+              <div class="agenda-empty-icon">📅</div>
+              <div class="agenda-empty-text">오늘 일정이 없습니다</div>
+            </div>
+          ` : todayItems.map((item, idx) => {
+            const startH = parseInt(item.time.split(':')[0]);
+            const startM = parseInt(item.time.split(':')[1]);
+            const endH = parseInt(item.endTime.split(':')[0]);
+            const endM = parseInt(item.endTime.split(':')[1]);
+            const itemStart = startH * 60 + startM;
+            const itemEnd = endH * 60 + endM;
+            const isNow = isCurrentDate && nowMinutes >= itemStart && nowMinutes < itemEnd;
+            const isPast = isCurrentDate && nowMinutes >= itemEnd;
+            const isClassOrAcademy = item.category === 'class';
+            return `
+              <div class="agenda-item ${item.done?'done':''} ${isNow?'now':''} ${isPast&&!item.done?'past':''} cat-${item.category}" onclick="togglePlannerItem('${item.id}')">
+                <div class="agenda-time-col">
+                  <span class="agenda-time-start">${item.time}</span>
+                  <span class="agenda-time-end">${item.endTime}</span>
+                </div>
+                <div class="agenda-bar" style="background:${item.color}"></div>
+                <div class="agenda-body">
+                  <div class="agenda-title-row">
+                    <span class="agenda-check">
+                      ${item.done
+                        ? '<i class="fas fa-check-circle" style="color:var(--success)"></i>'
+                        : isNow
+                          ? '<i class="fas fa-dot-circle" style="color:var(--accent-warm)"></i>'
+                          : '<i class="far fa-circle"></i>'
+                      }
+                    </span>
+                    <span class="agenda-cat-icon">${item.icon || catIcon(item.category)}</span>
+                    <span class="agenda-title">${item.title}</span>
+                    ${item.aiGenerated ? '<span class="pt-ai-badge">정율</span>' : ''}
+                  </div>
+                  ${item.detail ? `<div class="agenda-detail">${item.detail}</div>` : ''}
+                  <div class="agenda-tags">
+                    <span class="agenda-cat-tag" style="color:${item.color};border-color:${item.color}">${catLabel(item.category)}</span>
+                    ${isNow ? '<span class="agenda-now-tag">진행중</span>' : ''}
+                  </div>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+
+        <!-- Add Button -->
+        <div class="agenda-add-row">
+          <button class="agenda-add-btn" onclick="openPlannerAdd('${state.plannerDate}','')">
+            <i class="fas fa-plus-circle"></i> 일정 추가
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ---- WEEKLY PLANNER ----
+function renderPlannerWeekly() {
+  const d = new Date(state.plannerDate);
+  const dayOfWeek = d.getDay(); // 0=일 ~ 6=토
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  const dayNames = ['월','화','수','목','금','토','일'];
+
+  const weekDays = [];
+  for (let i = 0; i < 7; i++) {
+    const dd = new Date(monday);
+    dd.setDate(monday.getDate() + i);
+    const dateStr = dd.toISOString().split('T')[0];
+    const items = state.plannerItems.filter(it => it.date === dateStr).sort((a,b) => a.time.localeCompare(b.time));
+    const assignments = items.filter(it => it.category === 'assignment');
+    // 이 날 마감인 과제
+    const deadlines = state.assignments.filter(a => a.dueDate === dateStr && a.status !== 'completed');
+    // DB 이벤트
+    const dbEvents = (state.plannerEvents || []).filter(ev => ev.date === dateStr);
+    weekDays.push({ date: dateStr, day: dd.getDate(), dayName: dayNames[i], items, assignments, deadlines, dbEvents, isToday: dateStr === state.plannerDate });
+  }
+
+  const monthStr = `${monday.getFullYear()}.${String(monday.getMonth()+1).padStart(2,'0')}`;
+
+  return `
+    <div class="planner-week-header">
+      <button class="pdn-arrow" onclick="shiftPlannerWeek(-1)"><i class="fas fa-chevron-left"></i></button>
+      <span class="pw-month">${monthStr} · ${monday.getMonth()+1}/${monday.getDate()}~${weekDays[6].day}</span>
+      <button class="pdn-arrow" onclick="shiftPlannerWeek(1)"><i class="fas fa-chevron-right"></i></button>
+    </div>
+
+    <div class="planner-week-grid">
+      ${weekDays.map(wd => `
+        <div class="pw-day ${wd.isToday?'today':''}" onclick="state.plannerDate='${wd.date}';state.plannerView='daily';renderScreen()">
+          <div class="pw-day-header">
+            <span class="pw-dayname">${wd.dayName}</span>
+            <span class="pw-daynum ${wd.isToday?'today':''}">${wd.day}</span>
+          </div>
+          <div class="pw-items">
+            ${wd.dbEvents.filter(ev => ev.type !== 'assignment').map(ev => {
+              const typeIcon = { midterm:'📕', final:'📕', performance:'📙', mock:'📘', quiz:'📗' };
+              return '<div class="pw-item pw-deadline" style="border-left:2px solid ' + ev.color + ';background:' + ev.color + '10">' + (typeIcon[ev.type]||'📕') + ' ' + ev.title + '</div>';
+            }).join('')}
+            ${wd.dbEvents.filter(ev => ev.type === 'assignment').map(ev => `
+              <div class="pw-item" style="border-left:2px solid ${ev.color}">
+                <span class="pw-item-time">📋</span>
+                <span class="pw-item-title">${ev.subject ? ev.subject + ' · ' : ''}${ev.title}</span>
+              </div>
+            `).join('')}
+            ${wd.deadlines.map(dl => `
+              <div class="pw-item pw-deadline">🚨 ${dl.subject} 마감</div>
+            `).join('')}
+            ${wd.items.slice(0, 4).map(item => `
+              <div class="pw-item" style="border-left:2px solid ${item.color}">
+                <span class="pw-item-time">${item.time.substring(0,5)}</span>
+                <span class="pw-item-title">${item.title.replace('[과제] ','📋').replace('[탐구] ','🔬')}</span>
+              </div>
+            `).join('')}
+            ${wd.items.length > 4 ? `<div class="pw-more">+${wd.items.length - 4}개 더</div>` : ''}
+            ${wd.items.length === 0 && wd.deadlines.length === 0 && wd.dbEvents.length === 0 ? `<div class="pw-empty">—</div>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <!-- Weekly Assignment Overview -->
+    <div class="card" style="margin:12px 16px">
+      <div class="card-header-row">
+        <span class="card-title">📋 이번 주 과제 현황</span>
+      </div>
+      ${state.assignments.filter(a => {
+        const due = new Date(a.dueDate);
+        return due >= monday && due <= new Date(weekDays[6].date + 'T23:59:59') && a.status !== 'completed';
+      }).map(a => {
+        const dDay = getDday(a.dueDate);
+        const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+        const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+        return `
+        <div class="pw-assignment-row" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
+          <span class="assignment-dday ${urgency}">${dDayText}</span>
+          <span style="font-weight:600;flex:1;margin-left:8px">${a.subject} · ${a.title}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${a.progress}%</span>
+        </div>`;
+      }).join('') || '<p style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px">이번 주 마감 과제 없음 ✅</p>'}
+    </div>
+
+    <!-- Weekly Exam Overview -->
+    ${(() => {
+      const weekExams = (state.plannerEvents || []).filter(ev => {
+        if (ev.type === 'assignment') return false;
+        return ev.date >= weekDays[0].date && ev.date <= weekDays[6].date;
+      });
+      if (weekExams.length === 0) return '';
+      const examTypeLabel = { midterm:'중간고사', final:'기말고사', performance:'수행평가', mock:'모의고사', quiz:'쪽지시험' };
+      return '<div class="card" style="margin:0 16px 12px">' +
+        '<div class="card-header-row"><span class="card-title">📝 이번 주 시험</span></div>' +
+        weekExams.map(ev => {
+          const dDay = getDday(ev.date);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+          const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+          return '<div class="pw-assignment-row">' +
+            '<span class="assignment-dday ' + urgency + '" style="background:' + ev.color + '20;color:' + ev.color + '">' + dDayText + '</span>' +
+            '<span style="font-weight:600;flex:1;margin-left:8px">' + (examTypeLabel[ev.type] || ev.type) + ' · ' + ev.title + '</span>' +
+            '<span style="font-size:11px;color:var(--text-muted)">' + ev.date.substring(5) + '</span>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    })()}
+  `;
+}
+
+// ---- MONTHLY PLANNER ----
+function renderPlannerMonthly() {
+  const d = new Date(state.plannerDate);
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const firstDay = new Date(year, month, 1).getDay(); // 0=일
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = state.plannerDate;
+
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const cells = [];
+  
+  // 빈 셀
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const items = state.plannerItems.filter(it => it.date === dateStr);
+    const deadlines = state.assignments.filter(a => a.dueDate === dateStr && a.status !== 'completed');
+    const dbEvents = (state.plannerEvents || []).filter(ev => ev.date === dateStr);
+    cells.push({ day, dateStr, items, deadlines, dbEvents, isToday: dateStr === todayStr });
+  }
+
+  return `
+    <div class="planner-month-header">
+      <button class="pdn-arrow" onclick="shiftPlannerMonth(-1)"><i class="fas fa-chevron-left"></i></button>
+      <span class="pm-title">${year}년 ${month+1}월</span>
+      <button class="pdn-arrow" onclick="shiftPlannerMonth(1)"><i class="fas fa-chevron-right"></i></button>
+    </div>
+
+    <div class="planner-month-grid">
+      ${dayNames.map(dn => `<div class="pm-day-header ${dn==='일'?'sun':dn==='토'?'sat':''}">${dn}</div>`).join('')}
+      ${cells.map(cell => {
+        if (!cell) return '<div class="pm-cell empty"></div>';
+        const hasAssignment = cell.items.some(i => i.category === 'assignment') || cell.dbEvents.some(ev => ev.type === 'assignment');
+        const hasClass = cell.items.some(i => i.category === 'class');
+        const hasDeadline = cell.deadlines.length > 0;
+        const hasExam = cell.dbEvents.some(ev => ev.type !== 'assignment');
+        const examTypes = cell.dbEvents.filter(ev => ev.type !== 'assignment');
+        const dDay = getDday(cell.dateStr);
+        const isD7 = dDay > 0 && dDay <= 7 && (hasExam || hasDeadline);
+        const isDDay = dDay === 0 && (hasExam || hasDeadline);
+        const totalCount = cell.items.length + cell.dbEvents.length;
+
+        // 시험 dot 색상 결정
+        let examDotColor = '';
+        if (examTypes.length > 0) {
+          const t = examTypes[0].type;
+          examDotColor = t === 'performance' ? '#F59E0B' : t === 'mock' ? '#1D4ED8' : t === 'quiz' ? '#10B981' : '#EF4444';
+        }
+
+        return `
+          <div class="pm-cell ${cell.isToday?'today':''} ${hasDeadline?'deadline':''} ${isDDay?'pm-dday':''} ${isD7?'pm-d7':''}" onclick="state.plannerDate='${cell.dateStr}';state.plannerView='daily';renderScreen()">
+            <span class="pm-day-num">${cell.day}</span>
+            <div class="pm-dots">
+              ${hasExam ? '<span class="pm-dot" style="background:' + examDotColor + '"></span>' : ''}
+              ${hasAssignment ? '<span class="pm-dot" style="background:#3B82F6"></span>' : ''}
+              ${hasClass ? '<span class="pm-dot" style="background:var(--primary)"></span>' : ''}
+              ${cell.items.some(i => i.category === 'academy') ? '<span class="pm-dot" style="background:#E056A0"></span>' : ''}
+              ${hasDeadline ? '<span class="pm-dot" style="background:var(--accent)"></span>' : ''}
+            </div>
+            ${totalCount > 0 ? `<span class="pm-count">${totalCount}</span>` : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+
+    <!-- Legend -->
+    <div class="pm-legend">
+      <span><span class="pm-dot-lg" style="background:#EF4444"></span>정기고사</span>
+      <span><span class="pm-dot-lg" style="background:#F59E0B"></span>수행평가</span>
+      <span><span class="pm-dot-lg" style="background:#10B981"></span>쪽지시험</span>
+      <span><span class="pm-dot-lg" style="background:#3B82F6"></span>과제</span>
+      <span><span class="pm-dot-lg" style="background:var(--accent)"></span>마감</span>
+    </div>
+
+    <!-- Upcoming Exams this month -->
+    ${(() => {
+      const examTypeLabel = { midterm:'중간고사', final:'기말고사', performance:'수행평가', mock:'모의고사', quiz:'쪽지시험' };
+      const monthExams = (state.plannerEvents || []).filter(ev => ev.type !== 'assignment');
+      if (monthExams.length === 0) return '';
+      return '<div class="card" style="margin:12px 16px">' +
+        '<div class="card-title">📝 이번 달 시험</div>' +
+        monthExams.sort((a,b) => a.date.localeCompare(b.date)).map(ev => {
+          const dDay = getDday(ev.date);
+          const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? 'D-' + dDay : 'D+' + Math.abs(dDay);
+          const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+          const isPast = dDay < 0;
+          return '<div class="pw-assignment-row" style="' + (isPast ? 'opacity:0.5' : '') + '">' +
+            '<span class="assignment-dday ' + urgency + '" style="background:' + ev.color + '20;color:' + ev.color + '">' + dDayText + '</span>' +
+            '<span style="font-weight:600;flex:1;margin-left:8px">' + (examTypeLabel[ev.type] || ev.type) + ' · ' + ev.title + '</span>' +
+            '<span style="font-size:11px;color:var(--text-muted)">' + ev.date.substring(5) + '</span>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    })()}
+
+    <!-- Upcoming Deadlines -->
+    <div class="card" style="margin:12px 16px">
+      <div class="card-title">🚨 이번 달 마감 과제</div>
+      ${state.assignments.filter(a => {
+        const due = new Date(a.dueDate);
+        return due.getMonth() === month && due.getFullYear() === year && a.status !== 'completed';
+      }).sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate)).map(a => {
+        const dDay = getDday(a.dueDate);
+        const dDayText = dDay === 0 ? 'D-Day' : dDay > 0 ? `D-${dDay}` : `D+${Math.abs(dDay)}`;
+        const urgency = dDay <= 1 ? 'urgent' : dDay <= 3 ? 'warning' : 'normal';
+        return `
+        <div class="pw-assignment-row" onclick="state.viewingAssignment='${a.id}';goScreen('assignment-plan')">
+          <span class="assignment-dday ${urgency}">${dDayText}</span>
+          <span style="font-weight:600;flex:1;margin-left:8px">${a.subject} · ${a.title}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${formatDate(a.dueDate)}</span>
+        </div>`;
+      }).join('') || '<p style="font-size:12px;color:var(--text-muted);text-align:center;padding:8px">이번 달 마감 과제 없음 ✅</p>'}
+    </div>
+  `;
+}
+
+// ---- AI FLOATING ASSISTANT ----
+function renderPlannerAiFloat() {
+  if (state.plannerAiOpen) {
+    return `
+      <div class="planner-ai-panel animate-in">
+        <div class="pai-header">
+          <div class="pai-avatar">🤖</div>
+          <div>
+            <span class="pai-title">정율 플래너 도우미</span>
+            <span class="pai-status">항상 대기 중</span>
+          </div>
+          <button class="pai-close" onclick="state.plannerAiOpen=false;renderScreen()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="pai-messages">
+          ${state.plannerAiMessages.map(m => `
+            <div class="pai-msg ${m.role}">
+              ${m.role==='ai' ? '<span class="pai-msg-avatar">🤖</span>' : ''}
+              <div class="pai-msg-bubble">${m.text}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="pai-suggestions">
+          ${[
+            '오늘 남은 일정 정리해줘',
+            '내일 공부 계획 짜줘',
+            '과제 마감 일정 확인',
+            '이번 주 비는 시간 찾아줘',
+          ].map(s => `<button class="pai-suggestion" onclick="sendAiMessage('${s}')">${s}</button>`).join('')}
+        </div>
+        <div class="pai-input-row">
+          <input class="pai-input" placeholder="정율에게 물어보세요..." id="pai-input-field" onkeypress="if(event.key==='Enter'){sendAiMessage(this.value);this.value=''}">
+          <button class="pai-send" onclick="const inp=document.getElementById('pai-input-field');sendAiMessage(inp.value);inp.value=''"><i class="fas fa-paper-plane"></i></button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <button class="planner-ai-fab" onclick="state.plannerAiOpen=true;renderScreen()">
+      <span class="pai-fab-icon">🤖</span>
+      <span class="pai-fab-pulse"></span>
+    </button>
+  `;
+}
+
+// ---- PLANNER ADD ITEM ----
+function renderPlannerAddItem() {
+  const prefillDate = state.plannerDate || kstToday();
+  const d = new Date(prefillDate);
+  const dateLabel = `${d.getMonth()+1}월 ${d.getDate()}일`;
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+        <h1>📅 ${dateLabel} 일정 추가</h1>
+      </div>
+      <div class="form-body" style="padding-top:24px">
+        <div class="field-group">
+          <input class="input-field" id="planner-add-title" placeholder="일정 내용을 입력하세요 (예: 수학 복습)" style="font-size:15px;padding:14px 16px" onkeydown="if(event.key==='Enter')addPlannerItem()">
+        </div>
+
+        <div class="field-group" style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:13px;color:var(--text-muted);white-space:nowrap">날짜</span>
+          <input class="input-field" type="date" id="planner-add-date" value="${prefillDate}" style="color:var(--text-primary);flex:1">
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn-secondary" onclick="goScreen('main')" style="flex:1">취소</button>
+          <button class="btn-primary" onclick="addPlannerItem()" style="flex:1">추가 완료</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ---- PLANNER UTILITIES ----
+
+function shiftPlannerDate(offset) {
+  const d = new Date(state.plannerDate);
+  d.setDate(d.getDate() + offset);
+  state.plannerDate = d.toISOString().split('T')[0];
+  renderScreen();
+}
+
+function shiftPlannerWeek(offset) {
+  const d = new Date(state.plannerDate);
+  d.setDate(d.getDate() + (offset * 7));
+  state.plannerDate = d.toISOString().split('T')[0];
+  renderScreen();
+}
+
+function shiftPlannerMonth(offset) {
+  const d = new Date(state.plannerDate);
+  d.setMonth(d.getMonth() + offset);
+  state.plannerDate = d.toISOString().split('T')[0];
+  renderScreen();
+}
+
+function togglePlannerItem(id) {
+  const item = state.plannerItems.find(i => i.id === id);
+  if (item) {
+    item.done = !item.done;
+    renderScreen();
+  }
+}
+
+// 과제 완료/미완료 토글
+function toggleAssignmentDone(assignmentId) {
+  const a = state.assignments.find(x => String(x.id) === String(assignmentId));
+  if (!a) return;
+  a.status = a.status === 'completed' ? 'pending' : 'completed';
+  a.progress = a.status === 'completed' ? 100 : 0;
+  
+  // DB 업데이트
+  if (a._dbId && DB.studentId()) {
+    DB.updateAssignment(a._dbId, { status: a.status, progress: a.progress });
+  }
+  
+  // plannerItems에서도 동기화
+  const pItem = state.plannerItems.find(p => 
+    p.category === 'assignment' && p.title === '[과제] ' + a.title && p.date === a.dueDate
+  );
+  if (pItem) pItem.done = a.status === 'completed';
+  
+  renderScreen();
+  if (a.status === 'completed') {
+    showXpPopup(5, '과제 완료! 📋');
+  }
+}
+
+// 과제 삭제
+function deletePlannerAssignment(assignmentId) {
+  if (!confirm('이 과제를 삭제하시겠어요?')) return;
+  
+  const a = state.assignments.find(x => String(x.id) === String(assignmentId));
+  if (!a) return;
+  
+  // state에서 삭제
+  state.assignments = state.assignments.filter(x => String(x.id) !== String(assignmentId));
+  
+  // plannerItems에서도 삭제
+  state.plannerItems = state.plannerItems.filter(p => 
+    !(p.category === 'assignment' && p.title === '[과제] ' + a.title && p.date === a.dueDate)
+  );
+  
+  // DB에서 삭제
+  if (a._dbId && DB.studentId()) {
+    fetch(`/api/student/assignments/${a._dbId}`, { method: 'DELETE' }).catch(() => {});
+  }
+  
+  renderScreen();
+}
+
+function openPlannerAdd(date, time) {
+  state.plannerDate = date;
+  state._addTime = time;
+  goScreen('planner-add');
+}
+
+function addHour(timeStr) {
+  if (!timeStr) return '16:30';
+  const [h, m] = timeStr.split(':').map(Number);
+  return `${String(Math.min(h + 1, 23)).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+function addPlannerItem() {
+  const title = document.getElementById('planner-add-title')?.value?.trim() || '';
+  if (!title) return;
+  const date = document.getElementById('planner-add-date')?.value || state.plannerDate;
+
+  const newId = 'p' + (state.plannerItems.length + Date.now());
+  state.plannerItems.push({
+    id: newId, date, time: '09:00', endTime: '10:00',
+    title: title,
+    category: 'personal', color: '#6C5CE7', icon: '📌',
+    done: false, aiGenerated: false,
+  });
+
+  state.plannerDate = date;
+  state.plannerView = 'daily';
+  showXpPopup(5, '일정이 추가되었어요!');
+}
+
+function sendAiMessage(text) {
+  if (!text || !text.trim()) return;
+  state.plannerAiMessages.push({ role:'user', text: text.trim() });
+
+  // AI 응답 - 실제 state 데이터 기반 동적 생성
+  const todayItems = state.plannerItems.filter(i => i.date === state.plannerDate && !i.done);
+  const pendingAssignments = state.assignments.filter(a => a.status !== 'completed');
+  const responses = {
+    '오늘 남은 일정 정리해줘': todayItems.length > 0
+      ? `오늘 남은 일정이에요 📋\n\n${todayItems.map(i => `• ${i.time} ${i.title}`).join('\n')}\n\n하나씩 해나가면 충분히 할 수 있어요! 💪`
+      : '오늘 등록된 일정이 없어요! 📋\n\n플래너에 일정을 추가해보세요 ✅',
+    '내일 공부 계획 짜줘': '내일 계획을 짜봤어요 📅\n\n시간표에 맞춰 학습 계획을 세우면 좋겠어요!\n과제가 있다면 우선순위를 정해서 처리하세요 ✅',
+    '과제 마감 일정 확인': pendingAssignments.length > 0
+      ? `진행 중인 과제 마감일이에요 🚨\n\n${pendingAssignments.map(a => `• ${a.title} → ${a.dueDate}`).join('\n')}\n\n가장 가까운 마감부터 처리하세요! 👍`
+      : '현재 진행 중인 과제가 없어요! 🎉\n\n새 과제가 나오면 바로 등록해보세요.',
+    '이번 주 비는 시간 찾아줘': `이번 주 자유 시간이에요 ⏰\n\n• 토(오늘) 18:30~19:00 (30분)\n• 일 12:00~14:00 (2시간)\n• 일 17:00~ (자유)\n• 월 방과후 15:10~${state.timetable.academy.find(a=>a.day==='월')?state.timetable.academy.find(a=>a.day==='월').startTime:'자유'}\n• 화 방과후 16:00~\n${state.timetable.academy.length > 0 ? '\n⚠️ 학원 일정 고려: ' + state.timetable.academy.map(a=>a.day+' '+a.startTime+'~'+a.endTime).join(', ') : ''}\n\n학원 일정을 제외한 비는 시간에 과제나 복습을 추천해요! 📚`,
+  };
+
+  const academyToday = state.timetable.academy.length > 0 ? `\n학원 일정: ${state.timetable.academy.map(a=>`${a.day} ${a.name}(${a.startTime})`).join(', ')}` : '';
+  const aiReply = responses[text.trim()] || `"${text.trim()}" 에 대해 확인해볼게요! 🔍\n\n현재 ${state.assignments.filter(a=>a.status!=='completed').length}개의 진행 중 과제와 ${state.plannerItems.filter(i=>i.date===state.plannerDate&&!i.done).length}개의 오늘 일정이 있어요.${academyToday}\n\n구체적으로 어떤 부분을 도와줄까요?`;
+
+  setTimeout(() => {
+    state.plannerAiMessages.push({ role:'ai', text: aiReply });
+    renderScreen();
+    // 스크롤 하단
+    const msgBox = document.querySelector('.pai-messages');
+    if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+  }, 500);
+
+  renderScreen();
+}
+
+// ==================== GROWTH TAB (G-01~G-05) ====================
+
+function renderGrowthTab() {
+  // 2축 9단계 기반 성장 데이터
+  const curiosityDist = [
+    {id:'A-1', label:'A-1 뭐지?', pct:10, color:'var(--question-a)'},
+    {id:'A-2', label:'A-2 어떻게?', pct:8, color:'var(--question-a)'},
+    {id:'B-1', label:'B-1 왜?', pct:30, color:'var(--question-b)'},
+    {id:'B-2', label:'B-2 만약에?', pct:22, color:'var(--question-b)'},
+    {id:'C-1', label:'C-1 뭐가 더 나아?', pct:18, color:'var(--question-c)'},
+    {id:'C-2', label:'C-2 그러면?', pct:12, color:'var(--question-c)'},
+  ];
+  const reflectionDist = [
+    {id:'R-1', label:'R-1 어디서 틀렸지?', pct:35, color:'#E056A0'},
+    {id:'R-2', label:'R-2 왜 틀렸지?', pct:40, color:'#C044CC'},
+    {id:'R-3', label:'R-3 다음엔 어떻게?', pct:25, color:'#9B59B6'},
+  ];
+  const bcPct = 30 + 22 + 18 + 12; // B+C = 82%
+  const r23Pct = 40 + 25; // R-2 + R-3 = 65%
+  const curiosityStars = bcPct >= 80 ? 5 : bcPct >= 60 ? 4 : bcPct >= 40 ? 3 : bcPct >= 20 ? 2 : 1;
+  const analysisStars = r23Pct >= 80 ? 5 : r23Pct >= 60 ? 4 : r23Pct >= 40 ? 3 : r23Pct >= 20 ? 2 : 1;
+
+  return `
+    <div class="tab-content animate-in">
+      <div class="screen-header">
+        <h1>📈 나의 성장</h1>
+      </div>
+
+      <!-- 성장 아하 리포트 -->
+      <div class="card stagger-1 animate-in">
+        <div class="card-title">📊 성장 아하 리포트</div>
+        <div id="growth-aha-report-list" style="margin-top:8px">
+          ${state._growthAhaClasses === null ? '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>' :
+            state._growthAhaClasses.length === 0 ? '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>' :
+            state._growthAhaClasses.map(cls => `
+              <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
+                <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
+                  <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
+                </div>
+                <div class="my-menu-text">
+                  <span class="my-menu-title">${escapeHtml(cls.class_name)}</span>
+                  <span class="my-menu-desc">성장 분석 리포트 보기</span>
+                </div>
+                <i class="fas fa-external-link-alt" style="color:var(--text-muted);font-size:12px"></i>
+              </div>
+            `).join('')}
+        </div>
+      </div>
+
+      <!-- 성장 카드 스탯 (2축 기반) -->
+      <div class="card stagger-2 animate-in">
+        <div class="card-title">🃏 2축 성장 카드</div>
+        <div class="growth-stats-2axis">
+          <div class="growth-stat-box">
+            <div class="growth-stat-header">
+              <span class="growth-stat-icon">🪜</span>
+              <span>탐구력</span>
+            </div>
+            <div class="growth-stat-stars">
+              ${'★'.repeat(curiosityStars)}${'☆'.repeat(5-curiosityStars)}
+            </div>
+            <div class="growth-stat-detail">B+C 비율: ${bcPct}%</div>
+            <div class="growth-stat-sub">호기심 사다리 분포</div>
+          </div>
+          <div class="growth-stat-box">
+            <div class="growth-stat-header">
+              <span class="growth-stat-icon">🪞</span>
+              <span>분석력</span>
+            </div>
+            <div class="growth-stat-stars">
+              ${'★'.repeat(analysisStars)}${'☆'.repeat(5-analysisStars)}
+            </div>
+            <div class="growth-stat-detail">R-2+R-3 비율: ${r23Pct}%</div>
+            <div class="growth-stat-sub">성찰 질문 분포</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 축1: 호기심 사다리 분포 -->
+      <div class="card stagger-3 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">🪜 호기심 사다리 분포</span>
+          <span class="card-subtitle">이번 달</span>
+        </div>
+        ${curiosityDist.map(q => `
+          <div class="q-dist-row">
+            <span class="q-dist-label">${q.label}</span>
+            <div class="q-dist-bar"><div class="q-dist-fill" style="width:${q.pct}%;background:${q.color}"></div></div>
+            <span class="q-dist-pct">${q.pct}%</span>
+          </div>
+        `).join('')}
+        <div class="success-badge">B+C 비율: ${bcPct}% 🎯 (목표 40% 달성!)</div>
+      </div>
+
+      <!-- 축2: 성찰 질문 분포 -->
+      <div class="card stagger-4 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">🪞 성찰 질문 분포</span>
+          <span class="card-subtitle">이번 달</span>
+        </div>
+        ${reflectionDist.map(q => `
+          <div class="q-dist-row">
+            <span class="q-dist-label">${q.label}</span>
+            <div class="q-dist-bar"><div class="q-dist-fill" style="width:${q.pct}%;background:${q.color}"></div></div>
+            <span class="q-dist-pct">${q.pct}%</span>
+          </div>
+        `).join('')}
+        <div class="success-badge" style="background:rgba(192,68,204,0.12);color:#C044CC">R-2+R-3 비율: ${r23Pct}% 🎯</div>
+      </div>
+
+      <!-- 질문 진화 콤보 (2축 기반) -->
+      <div class="card stagger-5 animate-in">
+        <div class="card-title">🏆 질문 진화 콤보</div>
+        <div class="combo-card">
+          <div class="combo-header">
+            <span>수학 "치환적분" — 사고의 심연 돌파! 🎉</span>
+            <span class="combo-complete">+50 XP</span>
+          </div>
+          <div class="combo-flow">
+            <span class="q-level q-level-a">A-2 어떻게?</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="q-level q-level-b">B-1 왜?</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="q-level q-level-c">C-1 뭐가 더 나아?</span>
+            <span class="combo-bonus">🏆 레어 뱃지!</span>
+          </div>
+        </div>
+        <div class="combo-card" style="margin-top:8px;border-color:rgba(192,68,204,0.3)">
+          <div class="combo-header">
+            <span>영어 "관계대명사" — 완벽한 성찰! 🪞</span>
+            <span class="combo-complete" style="color:#C044CC">+40 XP</span>
+          </div>
+          <div class="combo-flow">
+            <span class="q-level" style="background:rgba(224,86,160,0.15);color:#E056A0">R-1</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="q-level" style="background:rgba(192,68,204,0.15);color:#C044CC">R-2</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="q-level" style="background:rgba(155,89,182,0.15);color:#9B59B6">R-3</span>
+            <span class="combo-bonus">🔍 분석력 뱃지!</span>
+          </div>
+        </div>
+        <div class="combo-card" style="margin-top:8px;border-color:rgba(253,203,110,0.3)">
+          <div class="combo-header">
+            <span>과학 "산화환원" — 진행 중...</span>
+            <span class="combo-progress">B-1까지</span>
+          </div>
+          <div class="combo-flow">
+            <span class="q-level q-level-a">A-1</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="q-level q-level-b">B-1</span>
+            <i class="fas fa-arrow-right combo-arrow"></i>
+            <span class="combo-next">다음: B-2+ 도전!</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 효과 측정 지표 -->
+      <div class="card stagger-6 animate-in">
+        <div class="card-title">📊 핵심 효과 지표</div>
+        <div class="kpi-grid">
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--question-c)">${bcPct}%</span>
+            <span class="kpi-label">B+C 질문 비율</span>
+            <span class="kpi-target">목표 40%</span>
+          </div>
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--primary-light)">68%</span>
+            <span class="kpi-label">자기 생각 동반률</span>
+            <span class="kpi-target">목표 60%</span>
+          </div>
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--accent)">54%</span>
+            <span class="kpi-label">도전 선택률</span>
+            <span class="kpi-target">목표 50%</span>
+          </div>
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--teach-green)">45%</span>
+            <span class="kpi-label">자발적 B+ 비율</span>
+            <span class="kpi-target">목표 40%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 나만의 질문방 통계 -->
+      <div class="card stagger-7 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">❓ 나만의 질문방</span>
+          <button class="card-link" onclick="state.studentTab='myqa';goScreen('main')">전체보기 →</button>
+        </div>
+        <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--primary-light)">${state.myQaStats?.total || 0}</span>
+            <span class="kpi-label">총 질문</span>
+          </div>
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--accent)">${state.myQaStats?.unanswered || 0}</span>
+            <span class="kpi-label">미답변</span>
+          </div>
+          <div class="kpi-item">
+            <span class="kpi-value" style="color:var(--success)">${state.myQaStats?.avgResolveDays || '-'}</span>
+            <span class="kpi-label">평균 해결일</span>
+          </div>
+        </div>
+        ${(state.myQaStats?.subjectStats || []).length > 0 ? `
+        <div style="margin-top:10px;font-size:11px;color:var(--text-muted)">
+          가장 많이 질문한 과목: ${(state.myQaStats.subjectStats || []).map(s => `${s.subject}(${s.cnt})`).slice(0,3).join(', ')}
+        </div>` : ''}
+      </div>
+
+      <div class="card stagger-8 animate-in">
+        <div class="card-title">🤝 교학상장 통계</div>
+        <div class="teach-stat-grid">
+          <div class="teach-stat-item">
+            <span class="teach-stat-num" style="color:var(--teach-green)">12</span>
+            <span>이번 달 가르침</span>
+          </div>
+          <div class="teach-stat-item">
+            <span class="teach-stat-num" style="color:var(--primary-light)">7</span>
+            <span>도움 준 친구</span>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">주로 가르치는 과목: 수학(8), 과학(4)</p>
+      </div>
+
+      <div class="card stagger-9 animate-in">
+        <div class="card-title">📚 과목별 기록 현황</div>
+        ${[
+          {subject:'수학', records:32, questions:15, bc:'72%', color:'#6C5CE7'},
+          {subject:'영어', records:28, questions:8, bc:'48%', color:'#00B894'},
+          {subject:'과학', records:24, questions:10, bc:'60%', color:'#FDCB6E'},
+          {subject:'국어', records:26, questions:6, bc:'42%', color:'#FF6B6B'},
+          {subject:'한국사', records:20, questions:3, bc:'20%', color:'#74B9FF'},
+        ].map(s => `
+          <div class="subject-record-row">
+            <div class="subject-dot" style="background:${s.color}"></div>
+            <span class="subject-name">${s.subject}</span>
+            <span class="subject-stat">기록 ${s.records}</span>
+            <span class="subject-stat">질문 ${s.questions}</span>
+            <span class="subject-bc">B+C ${s.bc}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== 나만의 질문방 (qa-tutoring.jung-youl.com 연결) ====================
+
+const QA_APP_URL = 'https://qa-tutoring.jung-youl.com';
+
+// 질문 통계 (홈/성장 탭 표시용)
+if (!state.myQaStats) state.myQaStats = { total: 0, unanswered: 0, answered: 0, weeklyQuestions: 0, weeklyAnswered: 0 };
+
+async function loadMyQaStats() {
+  const studentId = state._authUser?.id;
+  if (!studentId) return;
+  try {
+    const res = await fetch(`/api/my-questions/stats?studentId=${studentId}`);
+    if (res.ok) state.myQaStats = await res.json();
+  } catch (e) {}
+}
+
+// QA 웹사이트를 새 탭으로 열기
+// 원격 DB의 user_id와 name을 파라미터로 전달
+function openMyQaIframe(targetPath) {
+  const userId = state._externalUserId || _urlParams?.user_id || '';
+  const userName = state._externalUserName || state._authUser?.name || '학생';
+
+  if (!userId) {
+    // 외부 로그인이 아닌 경우 (일반 로그인) → user_id 없이 열기
+    window.open(QA_APP_URL, '_blank');
+    return;
+  }
+
+  const params = new URLSearchParams({
+    user_id: userId,
+    nick_name: userName
+  });
+
+  const url = QA_APP_URL + '?' + params.toString();
+  window.open(url, '_blank');
+}
+
+// 시간표에서 질문 등록 시 QA앱 iframe으로 이동
+function openQuestionFromTimetable(subject, period) {
+  openMyQaIframe();
+}
+
+
+// ==================== COMMUNITY TAB (In-App) ====================
+
+// Community notification polling
+let _communityNotifPollTimer = null;
+function startCommunityNotifPoll() {
+  if (_communityNotifPollTimer) return;
+  DB.getUnreadNotificationCount();
+  _communityNotifPollTimer = setInterval(() => {
+    if (state._authUser) DB.getUnreadNotificationCount();
+  }, 30000);
+}
+function stopCommunityNotifPoll() {
+  if (_communityNotifPollTimer) { clearInterval(_communityNotifPollTimer); _communityNotifPollTimer = null; }
+}
+
+// Community sub-screen navigation helper
+function goCommScreen(screen) {
+  state._communityScreen = screen;
+  state.studentTab = 'community';
+  state.currentScreen = 'main';
+  renderScreen();
+}
+
+function renderCommunityTab() {
+  // Nickname gate
+  if (state._authUser && !state._authUser.nickname && state._communityScreen !== 'nickname-setup') {
+    state._communityScreen = 'nickname-setup';
+  }
+  switch (state._communityScreen) {
+    case 'nickname-setup': return renderCommunityNicknameSetup();
+    case 'home': return renderCommunityHome();
+    case 'board': return renderCommunityBoard();
+    case 'post-detail': return renderPostDetail();
+    case 'post-editor': return renderPostEditor();
+    case 'friends': return renderFriendsList();
+    case 'friend-profile': return renderFriendProfile();
+    case 'share-settings': return renderShareSettings();
+    case 'reports': return renderReportList();
+    case 'notifications': return renderNotificationList();
+    default: return renderCommunityHome();
+  }
+}
+
+// Nickname setup (fully implemented — gates community access)
+function renderCommunityNicknameSetup() {
+  const nick = state._communityNicknameInput || '';
+  const err = state._communityNicknameError || '';
+  return `<div class="tab-content animate-in" style="display:flex;align-items:center;justify-content:center;min-height:60vh">
+    <div class="community-nickname-card">
+      <div style="font-size:48px;margin-bottom:16px;text-align:center">👤</div>
+      <h2 style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:700;color:var(--text-primary)">닉네임 설정</h2>
+      <p style="text-align:center;color:var(--text-muted);font-size:14px;margin-bottom:24px">커뮤니티에서 사용할 닉네임을 설정해주세요</p>
+      <div style="position:relative;margin-bottom:8px">
+        <input type="text" class="community-nickname-input" maxlength="12" placeholder="닉네임 (2~12자)" value="${escapeHtml(nick)}"
+          oninput="state._communityNicknameInput=this.value;state._communityNicknameError='';document.getElementById('comm-nick-counter').textContent=this.value.length+'/12'">
+        <span id="comm-nick-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${nick.length}/12</span>
+      </div>
+      ${err ? `<div class="community-nickname-error">${escapeHtml(err)}</div>` : ''}
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">한글, 영문, 숫자, 공백 사용 가능</p>
+      <button class="btn-primary" style="width:100%;padding:12px" onclick="submitCommunityNickname()">
+        설정 완료
+      </button>
+    </div>
+  </div>`;
+}
+
+async function submitCommunityNickname() {
+  const nickname = (state._communityNicknameInput || '').trim();
+  if (nickname.length < 2 || nickname.length > 12) {
+    state._communityNicknameError = '닉네임은 2~12자여야 합니다';
+    renderScreen(); return;
+  }
+  if (!/^[가-힣a-zA-Z0-9\s]+$/.test(nickname)) {
+    state._communityNicknameError = '한글, 영문, 숫자, 공백만 사용 가능합니다';
+    renderScreen(); return;
+  }
+  const result = await DB.setNickname(nickname);
+  if (result.success) {
+    state._communityNicknameError = '';
+    state._communityScreen = 'home';
+    DB.loadCommunityBoards();
+    renderScreen();
+    showToast('닉네임이 설정되었습니다');
+  } else {
+    state._communityNicknameError = result.error || '닉네임 설정에 실패했습니다';
+    renderScreen();
+  }
+}
+
+// ==================== COMMUNITY: BOARD & POSTS ====================
+
+// Helpers
+function _relativeTime(dateStr) {
+  if (!dateStr) return '';
+  const now = new Date();
+  const d = new Date(dateStr);
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return '방금 전';
+  if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  if (diff < 172800) return '어제';
+  if (diff < 604800) return `${Math.floor(diff / 86400)}일 전`;
+  return d.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\. /g, '.').replace(/\.$/, '');
+}
+
+function _stripHtmlPreview(html, maxLen = 100) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  const text = (tmp.textContent || '').trim();
+  return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+}
+
+function _safeHtml(html) {
+  return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html || '') : escapeHtml(html || '');
+}
+
+let _communityLoadingMore = false;
+
+function _renderPostCard(p) {
+  const preview = _stripHtmlPreview(p.content);
+  return `<div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="openPostDetail(${p.id})">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:20px">${p.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(p.authorNickname || '익명')}</span>
+      <span style="font-size:12px;color:var(--text-muted);margin-left:auto">${_relativeTime(p.created_at)}</span>
+    </div>
+    ${p.title ? `<div style="font-weight:700;font-size:15px;color:var(--text-primary);margin-bottom:4px">${escapeHtml(p.title)}</div>` : ''}
+    ${preview ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${escapeHtml(preview)}</div>` : ''}
+    ${p.photoCount > 0 ? `<div style="font-size:12px;color:var(--primary);margin-bottom:8px"><i class="fas fa-camera"></i> ${p.photoCount}장</div>` : ''}
+    <div style="display:flex;gap:16px;font-size:13px;color:var(--text-muted)">
+      <span><i class="${p.isLikedByMe ? 'fas' : 'far'} fa-heart" style="${p.isLikedByMe ? 'color:#ef4444' : ''}"></i> ${p.like_count || 0}</span>
+      <span><i class="far fa-comment"></i> ${p.comment_count || 0}</span>
+    </div>
+  </div>`;
+}
+
+// Board home (board list + header)
+function renderCommunityHome() {
+  const boards = state._communityBoards || [];
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <h2 style="font-size:20px;font-weight:700;color:var(--text-primary)">소통</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="goCommScreen('notifications')" style="position:relative">
+          <i class="fas fa-bell"></i>
+          ${state._communityUnreadCount > 0 ? `<span style="position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;font-size:10px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center">${state._communityUnreadCount > 99 ? '99+' : state._communityUnreadCount}</span>` : ''}
+        </button>
+        <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-user-group"></i></button>
+        <button class="btn-icon" onclick="goCommScreen('share-settings')"><i class="fas fa-gear"></i></button>
+      </div>
+    </div>
+    ${boards.length > 0 ? boards.map(b => `
+      <div class="glass-card" style="padding:16px;margin-bottom:12px;cursor:pointer" onclick="selectCommunityBoard(${b.id})">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:40px;height:40px;border-radius:12px;background:${b.board_type==='academy'?'linear-gradient(135deg,#6366f1,#8b5cf6)':'linear-gradient(135deg,#06b6d4,#3b82f6)'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px">
+            ${b.board_type === 'academy' ? '<i class="fas fa-school"></i>' : '<i class="fas fa-users"></i>'}
+          </div>
+          <div style="flex:1">
+            <div style="font-weight:600;color:var(--text-primary)">${escapeHtml(b.name)}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${b.board_type === 'academy' ? '학원 게시판' : '반 게시판'}</div>
+          </div>
+          <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+        </div>
+      </div>
+    `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted)">게시판이 없습니다</div>'}
+  </div>`;
+}
+
+async function selectCommunityBoard(boardId) {
+  state._communityCurrentBoard = boardId;
+  state._communityPage = 1;
+  state._communityPosts = [];
+  state._communityHasMore = false;
+  state._communityScreen = 'board';
+  renderScreen();
+  await DB.loadCommunityPosts(boardId, 1);
+  renderScreen();
+  setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+}
+
+// Board post list
+function renderCommunityBoard() {
+  const posts = state._communityPosts || [];
+  const boardId = state._communityCurrentBoard;
+  const board = (state._communityBoards || []).find(b => b.id === boardId);
+  const boardName = board ? board.name : '게시판';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(boardName)}</h2>
+    </div>
+    <div id="community-post-list">
+      ${posts.length > 0 ? posts.map(p => _renderPostCard(p)).join('') : `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px">📝</div>
+          <p style="font-size:15px;font-weight:600;margin-bottom:4px">아직 게시글이 없어요</p>
+          <p style="font-size:13px">첫 번째 게시글을 작성해보세요!</p>
+        </div>`}
+      <div id="community-scroll-sentinel" style="height:40px;display:flex;align-items:center;justify-content:center">
+        ${state._communityHasMore ? '<div class="spinner" style="width:24px;height:24px"></div>' : (posts.length > 0 ? '<span style="font-size:12px;color:var(--text-muted)">모든 게시글을 불러왔어요</span>' : '')}
+      </div>
+    </div>
+    <button onclick="goCommScreen('post-editor')" style="position:fixed;bottom:80px;right:20px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;font-size:24px;cursor:pointer;box-shadow:0 4px 16px rgba(99,102,241,0.4);z-index:50;display:flex;align-items:center;justify-content:center">
+      <i class="fas fa-plus"></i>
+    </button>
+  </div>`;
+}
+
+function _setupCommunityInfiniteScroll() {
+  const sentinel = document.getElementById('community-scroll-sentinel');
+  if (!sentinel) return;
+  const observer = new IntersectionObserver(async (entries) => {
+    if (entries[0].isIntersecting && state._communityHasMore && !_communityLoadingMore) {
+      _communityLoadingMore = true;
+      await DB.loadCommunityPosts(state._communityCurrentBoard, state._communityPage + 1);
+      _communityLoadingMore = false;
+      renderScreen();
+      setTimeout(() => _setupCommunityInfiniteScroll(), 100);
+    }
+  }, { threshold: 0.1 });
+  observer.observe(sentinel);
+}
+
+// Post detail
+async function openPostDetail(postId) {
+  state._communityCurrentPost = null;
+  state._communityComments = [];
+  state._communityScreen = 'post-detail';
+  renderScreen();
+  await Promise.all([DB.loadPostDetail(postId), DB.loadComments(postId, 1)]);
+  renderScreen();
+}
+
+function renderPostDetail() {
+  const post = state._communityCurrentPost;
+  if (!post) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">게시글</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div><p style="margin-top:12px;color:var(--text-muted)">로딩 중...</p></div>
+    </div>`;
+  }
+
+  const isAuthor = (post.author_type === DB._communityUserType() && post.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  const comments = state._communityComments || [];
+  const photos = post.photos || [];
+  const safeContent = _safeHtml(post.content);
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('board')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${escapeHtml(post.title || '')}</h2>
+      <div style="position:relative">
+        <button class="btn-icon" onclick="document.getElementById('comm-post-menu').style.display=document.getElementById('comm-post-menu').style.display==='block'?'none':'block'"><i class="fas fa-ellipsis-v"></i></button>
+        <div id="comm-post-menu" style="display:none;position:absolute;right:0;top:40px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:140px;z-index:100;overflow:hidden">
+          <button onclick="reportCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit">신고하기</button>
+          ${canDelete ? `<button onclick="deleteCommunityPost(${post.id});document.getElementById('comm-post-menu').style.display='none'" style="display:block;width:100%;text-align:left;padding:12px 16px;border:none;background:none;font-size:14px;color:#ef4444;cursor:pointer;border-top:1px solid var(--border);font-family:inherit">삭제하기</button>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <span style="font-size:24px">${post.authorEmoji || '🐻'}</span>
+      <div>
+        <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(post.authorNickname || '익명')}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${_relativeTime(post.created_at)}</div>
+      </div>
+    </div>
+
+    ${photos.length > 0 ? `<div class="community-photo-gallery" style="margin-bottom:16px">
+      ${photos.map((ph, i) => {
+        const src = ph.r2_key ? `/api/community/photo/${ph.r2_key}` : (ph.thumbnail || ph.photo_data || '');
+        return `<img src="${escapeHtml(src)}" alt="사진 ${i+1}" onclick="openCommunityLightbox('${escapeHtml(src)}')" style="cursor:pointer">`;
+      }).join('')}
+    </div>` : ''}
+
+    <div class="community-post-content" style="font-size:15px;line-height:1.7;color:var(--text-primary);margin-bottom:20px">${safeContent}</div>
+
+    <div style="display:flex;align-items:center;gap:16px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:20px">
+      <button id="comm-like-btn" onclick="togglePostLike(${post.id})" style="display:flex;align-items:center;gap:6px;background:none;border:none;font-size:14px;color:${post.isLikedByMe ? '#ef4444' : 'var(--text-muted)'};cursor:pointer;font-family:inherit">
+        <i class="${post.isLikedByMe ? 'fas' : 'far'} fa-heart"></i>
+        <span id="comm-like-count">${post.like_count || 0}</span>
+      </button>
+      <span style="font-size:14px;color:var(--text-muted)"><i class="far fa-comment"></i> <span id="comm-comment-count">${post.comment_count || 0}</span></span>
+    </div>
+
+    <div id="comm-comments-area">
+      <h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>
+      ${comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>'}
+    </div>
+
+    <div class="community-comment-bar">
+      <input id="community-comment-input" type="text" placeholder="댓글을 입력하세요..." maxlength="1000" style="flex:1;padding:10px 16px;border-radius:20px;border:1px solid var(--border);background:var(--bg-primary);font-size:14px;font-family:inherit;color:var(--text-primary);outline:none">
+      <button onclick="submitComment(${post.id})" style="width:40px;height:40px;border-radius:50%;background:var(--primary);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-paper-plane" style="font-size:14px"></i></button>
+    </div>
+  </div>`;
+}
+
+function _renderCommentCard(c) {
+  const isAuthor = (c.author_type === DB._communityUserType() && c.author_id === DB._communityUserId());
+  const isMentor = state.mode === 'mentor';
+  const canDelete = isAuthor || isMentor;
+  return `<div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04)">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="font-size:16px">${c.authorEmoji || '🐻'}</span>
+      <span style="font-weight:600;font-size:13px;color:var(--text-primary)">${escapeHtml(c.authorNickname || '익명')}</span>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${_relativeTime(c.created_at)}</span>
+      ${canDelete ? `<button onclick="deleteCommunityComment(${c.id})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px"><i class="fas fa-trash-alt"></i></button>` : ''}
+    </div>
+    <div style="font-size:14px;color:var(--text-secondary);line-height:1.5;padding-left:22px">${escapeHtml(c.content)}</div>
+  </div>`;
+}
+
+async function togglePostLike(postId) {
+  const result = await DB.toggleLike(postId);
+  if (result) {
+    if (state._communityCurrentPost) {
+      state._communityCurrentPost.isLikedByMe = result.liked;
+      state._communityCurrentPost.like_count = result.likeCount;
+    }
+    const btn = document.getElementById('comm-like-btn');
+    const cnt = document.getElementById('comm-like-count');
+    if (btn) {
+      btn.style.color = result.liked ? '#ef4444' : 'var(--text-muted)';
+      btn.querySelector('i').className = result.liked ? 'fas fa-heart' : 'far fa-heart';
+    }
+    if (cnt) cnt.textContent = result.likeCount;
+    const listPost = (state._communityPosts || []).find(p => p.id === postId);
+    if (listPost) listPost.like_count = result.likeCount;
+  }
+}
+
+async function submitComment(postId) {
+  const input = document.getElementById('community-comment-input');
+  const content = (input?.value || '').trim();
+  if (!content) return;
+  if (content.length > 1000) { showToast('댓글은 1,000자까지 입력할 수 있어요'); return; }
+  input.value = '';
+  const result = await DB.saveComment(postId, content);
+  if (result) {
+    await DB.loadComments(postId, 1);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = (state._communityCurrentPost.comment_count || 0) + 1;
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function deleteCommunityComment(commentId) {
+  if (!confirm('댓글을 삭제하시겠어요?')) return;
+  const result = await DB.deleteComment(commentId);
+  if (result) {
+    state._communityComments = (state._communityComments || []).filter(c => c.id !== commentId);
+    if (state._communityCurrentPost) state._communityCurrentPost.comment_count = Math.max(0, (state._communityCurrentPost.comment_count || 0) - 1);
+    const cnt = document.getElementById('comm-comment-count');
+    if (cnt) cnt.textContent = state._communityCurrentPost?.comment_count || '';
+    const area = document.getElementById('comm-comments-area');
+    if (area) {
+      const comments = state._communityComments || [];
+      area.innerHTML = `<h3 style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:12px">댓글</h3>` +
+        (comments.length > 0 ? comments.map(c => _renderCommentCard(c)).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 댓글이 없어요</div>');
+    }
+  }
+}
+
+async function reportCommunityPost(postId) {
+  const reason = prompt('신고 사유를 입력해주세요:');
+  if (!reason) return;
+  const ok = await DB.reportContent('post', postId, reason);
+  if (ok) showToast('신고가 접수되었습니다');
+  else showToast('이미 신고한 콘텐츠입니다');
+}
+
+async function deleteCommunityPost(postId) {
+  if (!confirm('게시글을 삭제하시겠어요?')) return;
+  const result = await DB.deletePost(postId);
+  if (result) {
+    state._communityPosts = (state._communityPosts || []).filter(p => p.id !== postId);
+    goCommScreen('board');
+    showToast('게시글이 삭제되었습니다');
+  }
+}
+
+function openCommunityLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'community-lightbox';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `<img src="${src}">`;
+  document.body.appendChild(overlay);
+}
+
+// ==================== COMMUNITY: POST EDITOR & PHOTOS ====================
+
+// Photo compression
+function compressCommunityPhoto(file, maxWidth = 1200, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) { resolve(e.target.result); return; }
+        const ratio = maxWidth / img.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = Math.round(img.height * ratio);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPostEditor() {
+  const editingPostId = state._communityEditingPostId || null;
+  const isEdit = !!editingPostId;
+  const photos = state._editorPhotos || [];
+  const existingTitle = state._editorTitle || '';
+  const existingContent = state._editorContent || '';
+
+  return `<div class="tab-content animate-in" style="padding:20px;padding-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="cancelPostEditor()"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);flex:1">${isEdit ? '글 수정' : '글쓰기'}</h2>
+      <button onclick="submitCommunityPost()" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
+        ${isEdit ? '수정' : '게시'}
+      </button>
+    </div>
+
+    <div style="margin-bottom:12px;position:relative">
+      <input id="comm-editor-title" type="text" maxlength="100" placeholder="제목" value="${escapeHtml(existingTitle)}"
+        oninput="state._editorTitle=this.value;document.getElementById('comm-title-counter').textContent=this.value.length+'/100'"
+        style="width:100%;padding:12px 60px 12px 16px;border:1px solid var(--border);border-radius:12px;font-size:16px;font-weight:600;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);outline:none;box-sizing:border-box">
+      <span id="comm-title-counter" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted)">${existingTitle.length}/100</span>
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:12px;background:var(--bg-primary)">
+      <div class="community-editor-toolbar">
+        <button onclick="document.execCommand('bold')" title="굵게"><i class="fas fa-bold"></i></button>
+        <button onclick="document.execCommand('italic')" title="기울임"><i class="fas fa-italic"></i></button>
+        <button onclick="var u=prompt('링크 URL:');if(u)document.execCommand('createLink',false,u)" title="링크"><i class="fas fa-link"></i></button>
+        <button onclick="document.execCommand('insertUnorderedList')" title="목록"><i class="fas fa-list-ul"></i></button>
+      </div>
+      <div id="comm-editor-content" class="community-editor-content" contenteditable="true" data-placeholder="내용을 입력하세요..."
+        oninput="state._editorContent=this.innerHTML;document.getElementById('comm-content-counter').textContent=this.innerText.length+'/10000'">
+        ${existingContent ? _safeHtml(existingContent) : ''}
+      </div>
+      <div style="padding:4px 16px 8px;text-align:right">
+        <span id="comm-content-counter" style="font-size:12px;color:var(--text-muted)">0/10000</span>
+      </div>
+    </div>
+
+    <div class="community-photo-strip">
+      ${photos.map((p, i) => `
+        <div class="community-photo-thumb">
+          <img src="${p.data}">
+          <button class="remove-btn" onclick="removeEditorPhoto(${i})"><i class="fas fa-times" style="font-size:10px"></i></button>
+        </div>
+      `).join('')}
+      ${photos.length < 5 ? `
+        <label class="community-photo-add">
+          <i class="fas fa-camera"></i>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="handleEditorPhotos(this.files)">
+        </label>
+      ` : ''}
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">사진 ${photos.length}/5</div>
+  </div>`;
+}
+
+function cancelPostEditor() {
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  state._communityEditingPostId = null;
+  goCommScreen('board');
+}
+
+async function handleEditorPhotos(files) {
+  const photos = state._editorPhotos || [];
+  const remaining = 5 - photos.length;
+  if (remaining <= 0) { showToast('사진은 최대 5장까지 첨부할 수 있어요'); return; }
+  const toProcess = Array.from(files).slice(0, remaining);
+  for (const file of toProcess) {
+    try {
+      const data = await compressCommunityPhoto(file);
+      photos.push({ data, mimeType: file.type || 'image/jpeg' });
+    } catch (e) { console.error('Photo compress error:', e); }
+  }
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+function removeEditorPhoto(idx) {
+  const photos = state._editorPhotos || [];
+  photos.splice(idx, 1);
+  state._editorPhotos = photos;
+  renderScreen();
+}
+
+async function submitCommunityPost() {
+  const titleEl = document.getElementById('comm-editor-title');
+  const contentEl = document.getElementById('comm-editor-content');
+  const title = (titleEl?.value || '').trim();
+  const rawHtml = contentEl?.innerHTML || '';
+  const textLen = (contentEl?.innerText || '').trim().length;
+  const photos = state._editorPhotos || [];
+
+  if (!title && textLen === 0 && photos.length === 0) {
+    showToast('제목, 내용, 또는 사진 중 하나는 입력해주세요');
+    return;
+  }
+  if (title.length > 100) { showToast('제목은 100자까지 입력할 수 있어요'); return; }
+  if (textLen > 10000) { showToast('내용은 10,000자까지 입력할 수 있어요'); return; }
+
+  const cleanHtml = typeof DOMPurify !== 'undefined'
+    ? DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['b', 'i', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'br', 'p', 'div'], ALLOWED_ATTR: ['href', 'target'] })
+    : rawHtml;
+
+  const editingPostId = state._communityEditingPostId;
+  const boardId = state._communityCurrentBoard;
+
+  if (editingPostId) {
+    const ok = await DB.updatePost(editingPostId, { title, content: cleanHtml });
+    if (ok) {
+      cancelPostEditor();
+      showToast('게시글이 수정되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('수정에 실패했습니다');
+    }
+  } else {
+    const payload = {
+      title,
+      content: cleanHtml,
+      photos: photos.map(p => ({ data: p.data, mime_type: p.mimeType })),
+    };
+    const result = await DB.savePost(boardId, payload);
+    if (result) {
+      cancelPostEditor();
+      showToast('게시글이 작성되었습니다');
+      if (boardId) DB.loadCommunityPosts(boardId, 1);
+    } else {
+      showToast('작성에 실패했습니다');
+    }
+  }
+}
+
+async function openPostEditorForEdit(postId) {
+  state._communityEditingPostId = postId;
+  state._editorPhotos = [];
+  state._editorTitle = '';
+  state._editorContent = '';
+  await DB.loadPostDetail(postId);
+  const post = state._communityCurrentPost;
+  if (post) {
+    state._editorTitle = post.title || '';
+    state._editorContent = post.content || '';
+    if (post.photos) {
+      state._editorPhotos = post.photos.map(p => ({
+        data: p.r2_key ? `/api/community/photo/${p.r2_key}` : (p.thumbnail || p.photo_data || ''),
+        mimeType: p.mime_type || 'image/jpeg',
+      }));
+    }
+  }
+  goCommScreen('post-editor');
+}
+
+// ==================== COMMUNITY: FRIENDS & SETTINGS ====================
+
+function renderFriendsList() {
+  const tab = state._communityFriendsTab || 'list';
+  const friends = state._communityFriends || [];
+  const code = state._communityMyInviteCode;
+
+  if (!friends.length && tab === 'list') { DB.loadFriends(); }
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구</h2>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:20px">
+      <button onclick="state._communityFriendsTab='list';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='list'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">내 친구</button>
+      <button onclick="state._communityFriendsTab='invite';renderScreen()" style="padding:8px 16px;border-radius:20px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;${tab==='invite'?'background:#6366f1;color:#fff':'background:rgba(0,0,0,0.06);color:var(--text-secondary)'}">초대하기</button>
+    </div>
+
+    ${tab === 'list' ? `
+      ${friends.length > 0 ? friends.map(f => `
+        <div class="glass-card" style="padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="communityViewFriend(${f.friendId})">
+          <span style="font-size:28px">${f.emoji || '🐻'}</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${escapeHtml(f.nickname || f.name || '학생')}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(f.school || '')}</div>
+          </div>
+          <button onclick="event.stopPropagation();communityUnfriend(${f.friendshipId})" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:8px"><i class="fas fa-user-minus"></i></button>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:14px">아직 친구가 없습니다.<br>초대 코드를 공유해보세요!</div>'}
+    ` : `
+      <div class="glass-card" style="padding:24px;text-align:center;margin-bottom:20px">
+        ${code ? `
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">내 초대 코드</div>
+          <div style="font-size:24px;font-weight:700;font-family:monospace;color:var(--text-primary);letter-spacing:2px;margin-bottom:16px">${escapeHtml(code)}</div>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button onclick="copyInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-copy" style="margin-right:4px"></i>복사</button>
+            <button onclick="shareInviteCode('${escapeHtml(code)}')" style="padding:8px 20px;border-radius:20px;background:rgba(0,0,0,0.06);color:var(--text-primary);border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-share" style="margin-right:4px"></i>공유</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:12px">7일 후 만료 · 최대 5회 사용</div>
+        ` : `
+          <button onclick="communityGenerateInviteCode()" style="padding:12px 32px;border-radius:20px;background:var(--primary);color:#fff;border:none;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit"><i class="fas fa-ticket" style="margin-right:8px"></i>초대 코드 생성</button>
+        `}
+      </div>
+
+      <div class="glass-card" style="padding:20px">
+        <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:12px">친구 코드 입력</div>
+        <div style="display:flex;gap:8px">
+          <input id="comm-friend-code" type="text" placeholder="JYCC-XXXX-XXXX" value="${escapeHtml(state._communityFriendCodeInput || '')}"
+            oninput="state._communityFriendCodeInput=this.value"
+            style="flex:1;padding:10px 16px;border-radius:12px;border:1px solid var(--border);font-size:14px;font-family:monospace;background:var(--bg-primary);color:var(--text-primary);outline:none">
+          <button onclick="communityAcceptFriendCode()" style="padding:10px 20px;border-radius:12px;background:var(--primary);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">추가</button>
+        </div>
+      </div>
+    `}
+  </div>`;
+}
+
+async function communityGenerateInviteCode() {
+  const result = await DB.generateFriendInviteCode();
+  if (result) {
+    state._communityMyInviteCode = result.code;
+    renderScreen();
+  } else {
+    showToast('초대 코드 생성에 실패했습니다');
+  }
+}
+
+async function communityAcceptFriendCode() {
+  const code = (state._communityFriendCodeInput || '').trim();
+  if (!code) return;
+  const res = await DB.acceptFriendCode(code);
+  if (res.success) {
+    showToast('친구가 추가되었습니다!');
+    state._communityFriendCodeInput = '';
+    await DB.loadFriends();
+    state._communityFriendsTab = 'list';
+    renderScreen();
+  } else {
+    showToast(res.error || '친구 추가에 실패했습니다');
+  }
+}
+
+async function communityUnfriend(friendshipId) {
+  if (!confirm('친구를 삭제하시겠어요?')) return;
+  const ok = await DB.removeFriend(friendshipId);
+  if (ok) {
+    await DB.loadFriends();
+    renderScreen();
+    showToast('친구가 삭제되었습니다');
+  }
+}
+
+async function communityViewFriend(friendStudentId) {
+  state._communityViewingFriendId = friendStudentId;
+  state._communityFriendProfile = null;
+  goCommScreen('friend-profile');
+  state._communityFriendProfile = await DB.loadFriendProfile(friendStudentId);
+  renderScreen();
+}
+
+async function copyInviteCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('초대 코드가 복사되었습니다');
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = code;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('초대 코드가 복사되었습니다');
+  }
+}
+
+async function shareInviteCode(code) {
+  if (navigator.share) {
+    try { await navigator.share({ title: '정율 플래너 친구 초대', text: `정율 플래너에서 친구가 되어요! 초대 코드: ${code}` }); } catch(_) {}
+  } else {
+    copyInviteCode(code);
+  }
+}
+
+function renderFriendProfile() {
+  const profile = state._communityFriendProfile;
+  if (!profile) {
+    return `<div class="tab-content animate-in" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
+      </div>
+      <div style="text-align:center;padding:40px"><div class="spinner" style="width:32px;height:32px;margin:0 auto"></div></div>
+    </div>`;
+  }
+
+  const sections = [];
+  if (profile.classRecordCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">수업 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.classRecordCount}개</div></div>`);
+  if (profile.questionCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">질문 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.questionCount}개</div></div>`);
+  if (profile.teachCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">가르침 기록</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.teachCount}개</div></div>`);
+  if (profile.completedAssignmentCount !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">완료한 미션</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">${profile.completedAssignmentCount}개</div></div>`);
+  if (profile.xp !== undefined) sections.push(`<div class="glass-card" style="padding:16px;margin-bottom:10px"><div style="font-size:13px;color:var(--text-muted)">레벨 / 경험치</div><div style="font-size:20px;font-weight:700;color:var(--text-primary)">Lv.${profile.level || 1} · ${profile.xp || 0} XP</div></div>`);
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('friends')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">친구 프로필</h2>
+    </div>
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="font-size:56px;margin-bottom:8px">${profile.emoji || '🐻'}</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${escapeHtml(profile.nickname || profile.name || '학생')}</div>
+      <div style="font-size:13px;color:var(--text-muted)">${escapeHtml(profile.school || '')}</div>
+    </div>
+    ${sections.length > 0 ? sections.join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:14px">이 친구는 학습 정보를 공유하지 않고 있습니다</div>'}
+  </div>`;
+}
+
+function renderShareSettings() {
+  const s = state._communityShareSettings || {};
+  if (!state._communityShareSettings) { DB.loadShareSettings(); }
+  const fields = [
+    { key: 'share_class_records', label: '수업 기록 공유' },
+    { key: 'share_question_count', label: '질문 기록 수 공유' },
+    { key: 'share_teach_count', label: '가르침 기록 수 공유' },
+    { key: 'share_mission_status', label: '미션 현황 공유' },
+    { key: 'share_xp_level', label: '레벨/경험치 공유' },
+  ];
+
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">학습 공유 설정</h2>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px">친구에게 공개할 학습 정보를 선택하세요</p>
+
+    ${fields.map(f => `
+      <div class="glass-card" style="padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:14px;font-weight:500;color:var(--text-primary)">${f.label}</span>
+        <label style="position:relative;width:44px;height:24px;cursor:pointer">
+          <input type="checkbox" ${s[f.key] ? 'checked' : ''} onchange="toggleShareSetting('${f.key}',this.checked)"
+            style="opacity:0;width:0;height:0;position:absolute">
+          <span style="position:absolute;inset:0;border-radius:12px;background:${s[f.key] ? '#6366f1' : 'rgba(0,0,0,0.15)'};transition:all 0.3s"></span>
+          <span style="position:absolute;top:2px;left:${s[f.key] ? '22px' : '2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:all 0.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></span>
+        </label>
+      </div>
+    `).join('')}
+
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+      <button onclick="state._communityNicknameInput=state._authUser?.nickname||'';goCommScreen('nickname-setup')" style="display:block;width:100%;text-align:left;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;font-size:14px;color:var(--text-primary);cursor:pointer;font-family:inherit;margin-bottom:8px">
+        <i class="fas fa-user-edit" style="margin-right:8px;color:var(--text-muted)"></i>닉네임 변경
+      </button>
+    </div>
+  </div>`;
+}
+
+async function toggleShareSetting(field, value) {
+  const s = state._communityShareSettings || {};
+  s[field] = value ? 1 : 0;
+  state._communityShareSettings = s;
+  await DB.updateShareSettings(s);
+}
+
+// Report list (mentors)
+function renderReportList() {
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">신고 관리</h2>
+    </div>
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">신고 관리 (멘토 전용)</div>
+  </div>`;
+}
+
+// Notifications
+function renderNotificationList() {
+  const notifications = state._communityNotifications || [];
+  DB.loadNotifications();
+  DB.markNotificationsRead();
+  return `<div class="tab-content animate-in" style="padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <button class="btn-icon" onclick="goCommScreen('home')"><i class="fas fa-arrow-left"></i></button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary)">알림</h2>
+    </div>
+    <div id="comm-notifications-list">
+      ${notifications.length > 0 ? notifications.map(n => `
+        <div style="padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04);cursor:pointer${!n.is_read ? ';background:rgba(99,102,241,0.04);border-radius:8px;padding:12px' : ''}" onclick="if(${n.post_id}){openPostDetail(${n.post_id})}">
+          <div style="font-size:14px;color:var(--text-primary)">
+            ${n.type === 'comment' ? '<i class="fas fa-comment" style="color:#6366f1;margin-right:6px"></i>' : '<i class="fas fa-heart" style="color:#ef4444;margin-right:6px"></i>'}
+            ${escapeHtml(n.actorNickname || '알 수 없음')}님이 ${n.type === 'comment' ? '댓글을 남겼습니다' : '좋아요를 눌렀습니다'}
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${_relativeTime(n.created_at)}</div>
+        </div>
+      `).join('') : '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:13px">알림이 없습니다</div>'}
+    </div>
+  </div>`;
+}
+
+// ==================== 성장 아하 리포트 ====================
+
+let _growthAhaLoading = false;
+async function loadGrowthAhaClasses() {
+  if (_growthAhaLoading) return;
+  // 이미 로드된 데이터가 있으면 스킵 (null이면 아직 로드 안 됨, []면 로드했지만 데이터 없음)
+  if (state._growthAhaClasses !== null && state._growthAhaClasses.length > 0) return;
+  _growthAhaLoading = true;
+  state._growthAhaClasses = null; // 로딩 상태
+  _updateGrowthAhaReportList();
+  try {
+    const extId = state._externalUserId || state._authUser?.external_user_id;
+    if (!extId) {
+      state._growthAhaClasses = [];
+      _growthAhaLoading = false;
+      _updateGrowthAhaReportList();
+      return;
+    }
+    const res = await fetch(`/api/student/classes?user_id=${extId}`);
+    const data = await res.json();
+    state._growthAhaClasses = data.success ? (data.classes || []) : [];
+  } catch (e) {
+    console.error('[GrowthAha] Failed to load classes:', e);
+    state._growthAhaClasses = [];
+  }
+  _growthAhaLoading = false;
+  _updateGrowthAhaReportList();
+}
+
+// 성장 아하 리포트 리스트 DOM 직접 업데이트
+function _updateGrowthAhaReportList() {
+  const container = document.getElementById('growth-aha-report-list');
+  if (!container) return;
+
+  if (state._growthAhaClasses === null) {
+    container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> 클래스 로딩 중...</div>';
+  } else if (state._growthAhaClasses.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-muted)">속한 클래스가 없습니다</div>';
+  } else {
+    container.innerHTML = state._growthAhaClasses.map(cls => `
+      <div class="my-menu-item" style="cursor:pointer" data-aha-class-id="${cls.class_id}" data-aha-class-name="${escapeHtml(cls.class_name)}" onclick="openGrowthAhaReportFromData(this)">
+        <div class="my-menu-icon" style="background:${['rgba(108,92,231,0.15)','rgba(0,184,148,0.15)','rgba(255,159,67,0.15)','rgba(234,67,53,0.15)','rgba(52,152,219,0.15)'][cls.genre_id % 5]}">
+          <i class="fas ${cls.genre_id===1?'fa-book':cls.genre_id===2?'fa-calculator':cls.genre_id===3?'fa-globe':cls.genre_id===4?'fa-flask':cls.genre_id===5?'fa-landmark':'fa-graduation-cap'}" style="color:${['var(--primary-light)','#00B894','#FF9F43','#EA4335','#3498DB'][cls.genre_id % 5]}"></i>
+        </div>
+        <div class="my-menu-text">
+          <span class="my-menu-title">${escapeHtml(cls.class_name)}</span>
+          <span class="my-menu-desc">성장 분석 리포트 보기</span>
+        </div>
+        <i class="fas fa-external-link-alt" style="color:var(--text-muted);font-size:12px"></i>
+      </div>
+    `).join('');
+  }
+}
+
+function openGrowthAhaReport(classId, className) {
+  const extId = state._externalUserId || state._authUser?.external_user_id;
+  if (!extId) { alert('로그인 정보를 확인할 수 없습니다.'); return; }
+  const url = `https://meta-view-639571255676.asia-northeast3.run.app/dashboard/${extId}/${classId}/`;
+  window.open(url, '_blank');
+}
+
+// ==================== MY TAB (M-01~M-05) ====================
+
+async function handleStudentCareerPdfUpload(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  if (file.type !== 'application/pdf') {
+    alert('PDF 파일만 업로드할 수 있습니다.');
+    input.value = '';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert('파일 크기가 10MB를 초과합니다.');
+    input.value = '';
+    return;
+  }
+  const sid = state.studentId || state._authUser?.id;
+  if (!sid) { alert('로그인 정보를 확인할 수 없습니다.'); return; }
+
+  const statusEl = document.getElementById('student-career-upload-status');
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PDF를 이미지로 변환 중...';
+    statusEl.style.color = 'var(--text-secondary)';
+  }
+
+  try {
+    // PDF.js 로드 (CDN)
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      document.head.appendChild(script);
+      await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; });
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // PDF → 페이지별 이미지 변환
+    const arrayBuf = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuf }).promise;
+    const pageImages = [];
+    const maxPages = Math.min(pdf.numPages, 3); // 최대 3페이지
+    for (let i = 1; i <= maxPages; i++) {
+      if (statusEl) statusEl.innerHTML = `<i class="fas fa-spinner fa-spin"></i> 페이지 ${i}/${maxPages} 변환 중...`;
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pageImages.push(canvas.toDataURL('image/jpeg', 0.6).replace(/^data:image\/jpeg;base64,/, ''));
+    }
+
+    if (statusEl) statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> AI 분석 중... (최대 30초 소요)';
+
+    const res = await fetch(`/api/student/${sid}/career-profile/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageImages }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (statusEl) {
+        statusEl.innerHTML = '✅ 진로 프로파일 등록 완료!';
+        statusEl.style.color = '#10b981';
+      }
+      // 새 프로파일 로드 후 화면 갱신
+      await DB.loadCareerProfile();
+      setTimeout(() => renderScreen(), 800);
+    } else {
+      if (statusEl) {
+        statusEl.innerHTML = '❌ ' + (data.error || '업로드 실패');
+        statusEl.style.color = '#ef4444';
+      }
+    }
+  } catch (e) {
+    console.error('Career PDF upload error:', e);
+    if (statusEl) {
+      statusEl.innerHTML = '❌ 네트워크 오류';
+      statusEl.style.color = '#ef4444';
+    }
+  }
+  input.value = '';
+}
+
+function _renderCareerCard(cp) {
+  if (!cp) return '';
+  const dream = cp.dream_department || {};
+  const topDepts = cp.top_departments || [];
+  const fieldProfile = cp.field_profile || {};
+  const majorProfile = cp.major_profile || {};
+
+  // 계열 적성 상위 3개
+  const topFields = Object.entries(fieldProfile)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 4);
+
+  // 핵심 키워드 추출 (역량 + 개인특성 + 가치)
+  const keywords = [
+    ...(majorProfile.abilities || []).slice(0, 2),
+    ...(majorProfile.personality || []).slice(0, 1),
+    ...(majorProfile.values || []).slice(0, 1),
+  ];
+
+  return `
+    <div class="card stagger-2 animate-in" style="background:linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.08) 100%);border:1px solid rgba(99,102,241,0.2)">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="width:48px;height:48px;border-radius:14px;background:rgba(99,102,241,0.15);display:flex;align-items:center;justify-content:center;font-size:24px">🧭</div>
+        <div style="flex:1">
+          <div style="font-size:13px;color:var(--text-secondary);font-weight:600">꿈의 전공</div>
+          <div style="font-size:20px;font-weight:800;color:#a5b4fc">${dream.department || '미등록'}</div>
+        </div>
+        ${dream.score ? `<div style="font-size:24px;font-weight:800;color:#6366f1">${dream.score}%</div>` : ''}
+      </div>
+
+      ${topDepts.length > 0 ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">TOP 학과 적합도</div>
+        ${topDepts.slice(0, 5).map((d, i) => `
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="font-size:12px;font-weight:700;color:${i===0?'#fbbf24':'var(--text-secondary)'};min-width:18px">${d.rank || i+1}</span>
+            <span style="font-size:13px;color:var(--text-primary);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${d.department}</span>
+            <div style="width:60px;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${d.score}%;background:${i===0?'#6366f1':i<3?'#818cf8':'#a5b4fc'};border-radius:3px"></div>
+            </div>
+            <span style="font-size:11px;color:var(--text-secondary);min-width:28px;text-align:right">${d.score}%</span>
+          </div>
+        `).join('')}
+      </div>` : ''}
+
+      ${topFields.length > 0 ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">계열 적성</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${topFields.map(([k, v], i) => `
+            <span style="font-size:12px;padding:4px 10px;border-radius:12px;background:${i===0?'rgba(99,102,241,0.15)':'rgba(255,255,255,0.06)'};color:${i===0?'#a5b4fc':'var(--text-secondary)'};font-weight:${i===0?700:500}">${k} ${v}</span>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      ${keywords.length > 0 ? `
+      <div style="display:flex;flex-wrap:wrap;gap:4px">
+        ${keywords.map(k => `<span style="font-size:11px;padding:3px 8px;border-radius:8px;background:rgba(139,92,246,0.1);color:#c4b5fd">🔑 ${k}</span>`).join('')}
+      </div>` : ''}
+
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn-ghost" style="flex:1;font-size:13px;color:#818cf8"
+          onclick="state.studentTab='archive';state._archiveScreen='career-detail';renderScreen();">
+          상세 보기 →
+        </button>
+        <label style="display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 14px;border-radius:8px;background:rgba(99,102,241,0.1);color:#a5b4fc;font-size:12px;cursor:pointer;transition:background 0.2s" onmouseover="this.style.background='rgba(99,102,241,0.2)'" onmouseout="this.style.background='rgba(99,102,241,0.1)'">
+          <input type="file" accept="application/pdf" style="display:none" onchange="handleStudentCareerPdfUpload(this)">
+          <i class="fas fa-sync-alt"></i> 재업로드
+        </label>
+      </div>
+      <div id="student-career-upload-status" style="display:none;padding:6px 0;margin-top:6px;text-align:center;font-size:13px;color:var(--text-secondary)"></div>
+    </div>`;
+}
+
+function renderMyTab() {
+  const userName = state._authUser?.name || '학생';
+  const userEmoji = state._authUser?.emoji || '🎓';
+  const userSchool = state._authUser?.school_name || '';
+  const userGrade = state._authUser?.grade || '';
+  const schoolInfo = userSchool ? `${userSchool}${userGrade ? ' ' + userGrade : ''}` : '';
+
+  // 레벨 계산
+  const currentLevel = state.level || 1;
+  const xpPerLevel = 100;
+  const currentLevelXp = state.xp % xpPerLevel;
+  const nextLevelRemain = xpPerLevel - currentLevelXp;
+  const levelPct = Math.round((currentLevelXp / xpPerLevel) * 100);
+  const tierNames = ['탐험가','학습자','연구자','멘토','설계자','개척자'];
+  const tierIdx = Math.min(Math.floor((currentLevel - 1) / 5), 5);
+  const currentTierName = tierNames[tierIdx] || '탐험가';
+
+  return `
+    <div class="tab-content animate-in">
+      <div class="screen-header">
+        <h1>🎮 마이</h1>
+      </div>
+
+      <div class="card profile-card stagger-1 animate-in">
+        <div class="profile-academy-badge">
+          <img src="/static/logo.png" alt="정율사관학원" class="profile-academy-logo">
+        </div>
+        <div class="profile-avatar">
+          <span>${userEmoji}</span>
+        </div>
+        <h2 class="profile-name">${userName}</h2>
+        <p class="profile-title">Lv.${currentLevel} ${currentTierName}</p>
+        ${schoolInfo ? `<p class="profile-school">${schoolInfo}</p>` : ''}
+        <div class="profile-stats">
+          <div class="profile-stat">
+            <span class="profile-stat-value" style="color:var(--xp-gold)">${state.xp.toLocaleString()}</span>
+            <span class="profile-stat-label">총 XP</span>
+          </div>
+          <div class="profile-stat">
+            <span class="profile-stat-value" style="color:var(--streak-fire)">🔥${state.streak}</span>
+            <span class="profile-stat-label">스트릭</span>
+          </div>
+          <div class="profile-stat">
+            <span class="profile-stat-value" id="my-total-records">-</span>
+            <span class="profile-stat-label">총 기록</span>
+          </div>
+        </div>
+      </div>
+
+      ${state._careerProfile ? _renderCareerCard(state._careerProfile) : `
+      <div class="card stagger-2 animate-in" style="border:1px dashed rgba(255,255,255,0.15);text-align:center;padding:24px">
+        <div style="font-size:32px;margin-bottom:8px">🧭</div>
+        <div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:4px">진로 프로파일 미등록</div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">앱티핏 전공적성 검사 결과 PDF를 업로드하세요</div>
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:12px;background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:14px;font-weight:600;cursor:pointer;transition:background 0.2s" onmouseover="this.style.background='rgba(99,102,241,0.25)'" onmouseout="this.style.background='rgba(99,102,241,0.15)'">
+          <input type="file" accept="application/pdf" style="display:none" onchange="handleStudentCareerPdfUpload(this)">
+          <i class="fas fa-file-pdf"></i> PDF 업로드
+        </label>
+        <div id="student-career-upload-status" style="display:none;padding:8px 0;margin-top:8px;font-size:13px;color:var(--text-secondary)"></div>
+      </div>`}
+
+      <div class="card stagger-3 animate-in">
+        <div class="card-title">🏅 레벨 진행</div>
+        <div class="level-progress-header">
+          <span>Lv.${currentLevel} ${currentTierName}</span>
+          <span style="color:var(--text-muted)">Lv.${currentLevel+1}까지 ${nextLevelRemain} XP</span>
+        </div>
+        <div class="progress-bar" style="height:12px;border-radius:6px">
+          <div class="progress-fill level-fill" style="width:${levelPct}%"></div>
+        </div>
+        <div class="level-tier-row">
+          ${[
+            {range:'1-5', name:'탐험가'},
+            {range:'6-10', name:'학습자'},
+            {range:'11-15', name:'연구자'},
+            {range:'16-20', name:'멘토'},
+            {range:'21-25', name:'설계자'},
+            {range:'26-30', name:'개척자'},
+          ].map((t,i) => `
+            <span class="level-tier ${i===tierIdx?'active':''}">${t.name}</span>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- XP 상세 내역 -->
+      <div class="card stagger-3 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">💰 XP 적립 내역</span>
+          <button class="btn-ghost" style="font-size:12px" onclick="loadXpHistory()">새로고침</button>
+        </div>
+        
+        <!-- 소스별 요약 -->
+        <div id="xp-summary" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+          <div style="padding:6px 12px;border-radius:8px;background:rgba(108,92,231,0.1);color:var(--text-muted);font-size:11px">로딩 중...</div>
+        </div>
+
+        <!-- 내역 리스트 -->
+        <div id="xp-history-list" style="display:flex;flex-direction:column;gap:2px;max-height:400px;overflow-y:auto">
+        </div>
+        
+        <div id="xp-history-more" style="display:none;text-align:center;padding:8px">
+          <button class="btn-ghost" style="font-size:12px" onclick="loadMoreXpHistory()">더보기</button>
+        </div>
+      </div>
+
+      <div class="card stagger-4 animate-in">
+        <div class="card-header-row">
+          <span class="card-title">🏆 업적 뱃지</span>
+          <span class="card-subtitle">5/9 획득</span>
+        </div>
+        <div class="badge-grid">
+          ${[
+            {icon:'❓', name:'첫 질문', earned:true},
+            {icon:'🔥', name:'7일 스트릭', earned:true},
+            {icon:'🤝', name:'첫 번째 스승', earned:true},
+            {icon:'🏆', name:'사고의 심연 돌파', earned:true, desc:'A→B→C 완주'},
+            {icon:'🔍', name:'완벽한 성찰', earned:true, desc:'R-1→R-2→R-3'},
+            {icon:'🌟', name:'완전한 사고자', earned:false, desc:'C-2 + R-3'},
+            {icon:'⏰', name:'10시간 나눔', earned:false},
+            {icon:'🔒', name:'30일 스트릭', earned:false, locked:true},
+            {icon:'🔒', name:'질문 마스터', earned:false, locked:true, desc:'B+ 100개'},
+          ].map(b => `
+            <div class="badge-item ${b.earned?'earned':''} ${b.locked?'locked':''}">
+              <span class="badge-icon">${b.icon}</span>
+              <span class="badge-name">${b.name}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="card stagger-4 animate-in">
+        <div class="card-title">🔥 스트릭 현황</div>
+        <div class="streak-display">
+          <span class="streak-number">🔥 ${state.streak}일</span>
+          <p>연속 기록 중! 대단해요!</p>
+        </div>
+        <div class="streak-milestones">
+          ${[3,7,14,30].map(d => `
+            <div class="streak-milestone ${state.streak>=d?'reached':''}">
+              ${d}일 ${state.streak>=d?'✅':'🔒'}
+            </div>
+          `).join('')}
+        </div>
+        <div class="pause-card-info">
+          😴 쉼표 카드 (주 1회) — 하루 쉬어도 스트릭 유지!
+        </div>
+      </div>
+
+      <!-- 시간표 관리 메뉴 -->
+      <div class="card stagger-5 animate-in">
+        <div class="card-title">⚙️ 관리</div>
+        <div class="my-menu-list">
+          <div class="my-menu-item" onclick="goScreen('timetable-manage')">
+            <div class="my-menu-icon" style="background:rgba(108,92,231,0.15)"><i class="fas fa-calendar-alt" style="color:var(--primary-light)"></i></div>
+            <div class="my-menu-text">
+              <span class="my-menu-title">📋 시간표 관리</span>
+              <span class="my-menu-desc">학교 시간표 수정 & 학원 스케줄 관리</span>
+            </div>
+            <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+          </div>
+          <div class="my-menu-item" onclick="goScreen('assignment-list')">
+            <div class="my-menu-icon" style="background:rgba(255,159,67,0.15)"><i class="fas fa-clipboard-list" style="color:#FF9F43"></i></div>
+            <div class="my-menu-text">
+              <span class="my-menu-title">📋 과제 관리</span>
+              <span class="my-menu-desc">진행중 ${state.assignments.filter(a=>a.status!=='completed').length}개</span>
+            </div>
+            <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+          </div>
+          <div class="my-menu-item" onclick="goScreen('classmate-manage')">
+            <div class="my-menu-icon" style="background:rgba(0,184,148,0.15)"><i class="fas fa-users" style="color:#00B894"></i></div>
+            <div class="my-menu-text">
+              <span class="my-menu-title">👥 학생 관리</span>
+              <span class="my-menu-desc">교학상장 대상 ${state.classmates.length}명</span>
+            </div>
+            <i class="fas fa-chevron-right" style="color:var(--text-muted)"></i>
+          </div>
+        </div>
+      </div>
+
+      <div class="card stagger-6 animate-in">
+        <div class="card-title">🃏 성장 카드</div>
+        <div class="growth-card-preview">
+          ${[
+            {label:'탐구력 (B+C)', pct:82, color:'var(--question-c)'},
+            {label:'분석력 (R-2+3)', pct:65, color:'#C044CC'},
+            {label:'리더십', pct:82, color:'var(--teach-green)'},
+            {label:'지구력', pct:90, color:'var(--streak-fire)'},
+            {label:'자기생각률', pct:68, color:'var(--primary-light)'},
+          ].map(s => `
+            <div class="gc-stat">
+              <span class="gc-label">${s.label}</span>
+              <div class="gc-bar"><div class="gc-fill" style="width:${s.pct}%;background:${s.color}"></div></div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== XP HISTORY (XP 적립 내역) ====================
+
+let _xpHistoryOffset = 0;
+const _xpHistoryLimit = 20;
+let _xpHistoryHasMore = false;
+
+const XP_SOURCE_META = {
+  '수업 기록':     { icon: '📝', color: '#6C5CE7' },
+  '질문 코칭':     { icon: '🧠', color: '#E17055' },
+  '교학상장':      { icon: '🤝', color: '#00B894' },
+  '창의적 체험활동': { icon: '🎨', color: '#FDCB6E' },
+  '질문 등록':     { icon: '❓', color: '#0984E3' },
+  '답변 등록':     { icon: '💬', color: '#00CEC9' },
+  '과제 기록':     { icon: '📋', color: '#FF9F43' },
+  '시험 관리':     { icon: '📊', color: '#A29BFE' },
+};
+
+function getXpSourceMeta(source) {
+  return XP_SOURCE_META[source] || { icon: '⭐', color: '#8B949E' };
+}
+
+function formatXpDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHr = Math.floor(diffMs / 3600000);
+  const diffDay = Math.floor(diffMs / 86400000);
+  if (diffMin < 1) return '방금 전';
+  if (diffMin < 60) return `${diffMin}분 전`;
+  if (diffHr < 24) return `${diffHr}시간 전`;
+  if (diffDay < 7) return `${diffDay}일 전`;
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+
+async function loadXpHistory() {
+  const sid = DB.studentId();
+  if (!sid) {
+    const summaryEl = document.getElementById('xp-summary');
+    const listEl = document.getElementById('xp-history-list');
+    if (summaryEl) summaryEl.innerHTML = '<div style="padding:6px 12px;border-radius:8px;background:rgba(139,148,158,0.1);color:var(--text-muted);font-size:11px">로그인 후 확인할 수 있습니다</div>';
+    if (listEl) listEl.innerHTML = '';
+    return;
+  }
+
+  _xpHistoryOffset = 0;
+  try {
+    const res = await fetch(`/api/student/${sid}/xp-history?limit=${_xpHistoryLimit}&offset=0`);
+    if (!res.ok) throw new Error('XP 히스토리 로드 실패');
+    const data = await res.json();
+
+    // 소스별 요약 렌더링
+    const summaryEl = document.getElementById('xp-summary');
+    if (summaryEl) {
+      if (data.summary && data.summary.length > 0) {
+        summaryEl.innerHTML = data.summary.map(s => {
+          const meta = getXpSourceMeta(s.source);
+          return `<div style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:8px;background:rgba(${hexToRgb(meta.color)},0.12);font-size:11px;font-weight:600;color:${meta.color}">
+            <span>${meta.icon}</span>
+            <span>${s.source}</span>
+            <span style="font-weight:700">+${s.total_xp}</span>
+            <span style="opacity:0.6;font-size:10px">(${s.count}회)</span>
+          </div>`;
+        }).join('');
+      } else {
+        summaryEl.innerHTML = '<div style="padding:6px 12px;border-radius:8px;background:rgba(139,148,158,0.1);color:var(--text-muted);font-size:11px">아직 XP 적립 내역이 없습니다</div>';
+      }
+    }
+
+    // 히스토리 리스트 렌더링
+    const listEl = document.getElementById('xp-history-list');
+    if (listEl) {
+      if (data.history && data.history.length > 0) {
+        listEl.innerHTML = renderXpHistoryItems(data.history);
+      } else {
+        listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">아직 XP 적립 내역이 없어요.<br>수업 기록, 질문 코칭 등 활동을 시작해보세요! 🚀</div>';
+      }
+    }
+
+    // 더보기 버튼
+    _xpHistoryOffset = _xpHistoryLimit;
+    _xpHistoryHasMore = data.history && data.history.length >= _xpHistoryLimit;
+    const moreEl = document.getElementById('xp-history-more');
+    if (moreEl) moreEl.style.display = _xpHistoryHasMore ? 'block' : 'none';
+
+  } catch (e) {
+    console.error('XP 내역 로드 실패:', e);
+    const summaryEl = document.getElementById('xp-summary');
+    if (summaryEl) summaryEl.innerHTML = '<div style="padding:6px 12px;border-radius:8px;background:rgba(139,148,158,0.1);color:var(--text-muted);font-size:11px">XP 내역을 불러올 수 없습니다</div>';
+  }
+}
+
+async function loadMoreXpHistory() {
+  const sid = DB.studentId();
+  if (!sid || !_xpHistoryHasMore) return;
+
+  try {
+    const res = await fetch(`/api/student/${sid}/xp-history?limit=${_xpHistoryLimit}&offset=${_xpHistoryOffset}`);
+    if (!res.ok) throw new Error('XP 히스토리 로드 실패');
+    const data = await res.json();
+
+    const listEl = document.getElementById('xp-history-list');
+    if (listEl && data.history && data.history.length > 0) {
+      listEl.insertAdjacentHTML('beforeend', renderXpHistoryItems(data.history));
+    }
+
+    _xpHistoryOffset += _xpHistoryLimit;
+    _xpHistoryHasMore = data.history && data.history.length >= _xpHistoryLimit;
+    const moreEl = document.getElementById('xp-history-more');
+    if (moreEl) moreEl.style.display = _xpHistoryHasMore ? 'block' : 'none';
+
+  } catch (e) {
+    console.error('XP 내역 추가 로드 실패:', e);
+  }
+}
+
+function renderXpHistoryItems(items) {
+  return items.map(item => {
+    const meta = getXpSourceMeta(item.source);
+    const detail = item.source_detail ? `<span style="color:var(--text-muted);font-size:11px;margin-left:2px">· ${item.source_detail.length > 30 ? item.source_detail.slice(0,30)+'…' : item.source_detail}</span>` : '';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(48,54,61,0.3)">
+      <div style="width:32px;height:32px;border-radius:8px;background:rgba(${hexToRgb(meta.color)},0.15);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${meta.icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${item.source}</span>
+          ${detail}
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:1px">${formatXpDate(item.created_at)}</div>
+      </div>
+      <div style="font-size:14px;font-weight:700;color:${meta.color};flex-shrink:0">+${item.amount} XP</div>
+    </div>`;
+  }).join('');
+}
+
+// hex -> rgb 변환 헬퍼
+function hexToRgb(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? `${parseInt(result[1],16)},${parseInt(result[2],16)},${parseInt(result[3],16)}` : '139,148,158';
+}
+
+// ==================== CLASSMATE MANAGEMENT (학생 관리) ====================
+
+function renderClassmateManage() {
+  const classmates = state.classmates || [];
+  const editing = state._editingClassmate; // null or classmate id
+  const adding = state._addingClassmate;   // boolean
+  
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state._editingClassmate=null;state._addingClassmate=false;goScreen('main');state.studentTab='my'"><i class="fas fa-arrow-left"></i></button>
+        <h1>👥 학생 관리</h1>
+        <button class="header-action-btn" onclick="state._addingClassmate=true;state._editingClassmate=null;state._cmName='';state._cmGrade='';state._cmMemo='';renderScreen()">
+          <i class="fas fa-user-plus"></i>
+        </button>
+      </div>
+
+      <div class="form-body">
+        <!-- 추가/편집 폼 -->
+        ${adding || editing ? `
+        <div class="card animate-in" style="border:2px solid var(--primary-light);margin-bottom:12px">
+          <div class="card-title">${editing ? '✏️ 학생 정보 수정' : '➕ 새 학생 추가'}</div>
+          <div class="field-group" style="margin-bottom:8px">
+            <label class="field-label">이름 <span style="color:var(--primary)">*</span></label>
+            <input class="input-field" id="cm-name" placeholder="학생 이름" value="${state._cmName || ''}">
+          </div>
+          <div class="field-group" style="margin-bottom:8px">
+            <label class="field-label">학년/반</label>
+            <input class="input-field" id="cm-grade" placeholder="예: 2-3" value="${state._cmGrade || ''}">
+          </div>
+          <div class="field-group" style="margin-bottom:8px">
+            <label class="field-label">메모 (선택)</label>
+            <input class="input-field" id="cm-memo" placeholder="예: 수학 같이 공부" value="${state._cmMemo || ''}">
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-primary" style="flex:1" onclick="${editing ? `saveEditClassmate('${editing}')` : 'addClassmate()'}">
+              <i class="fas fa-check"></i> ${editing ? '수정 완료' : '추가'}
+            </button>
+            <button class="btn-ghost" style="flex:0 0 auto" onclick="state._addingClassmate=false;state._editingClassmate=null;renderScreen()">취소</button>
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 학생 목록 -->
+        <div class="card">
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+            <span>📋 등록된 학생 (${classmates.length}명)</span>
+          </div>
+          ${classmates.length === 0 ? `
+          <div style="text-align:center;padding:24px 0;color:var(--text-muted)">
+            <div style="font-size:32px;margin-bottom:8px">👥</div>
+            <p style="font-size:12px">등록된 학생이 없습니다</p>
+            <p style="font-size:11px;color:var(--text-muted);margin-top:4px">위의 <strong>+</strong> 버튼으로 학생을 추가하세요</p>
+          </div>
+          ` : `
+          <div class="cm-list">
+            ${classmates.map((c, i) => `
+              <div class="cm-item stagger-${Math.min(i+1,6)} animate-in ${editing===c.id?'cm-item-editing':''}">
+                <div class="cm-avatar" style="background:${getAvatarColor(i)}">${c.name[0]}</div>
+                <div class="cm-info">
+                  <div class="cm-name">${c.name}</div>
+                  <div class="cm-detail">${c.grade}${c.memo ? ' · '+c.memo : ''}</div>
+                </div>
+                <div class="cm-actions">
+                  <button class="cm-action-btn" onclick="startEditClassmate('${c.id}')" title="수정">
+                    <i class="fas fa-pen"></i>
+                  </button>
+                  <button class="cm-action-btn cm-delete-btn" onclick="deleteClassmate('${c.id}','${c.name}')" title="삭제">
+                    <i class="fas fa-trash"></i>
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          `}
+        </div>
+
+        <div style="margin-top:12px;font-size:10px;color:var(--text-muted);text-align:center;line-height:1.6">
+          💡 여기서 추가한 학생은 <strong>교학상장 기록</strong>에서 선택할 수 있습니다.<br>
+          멘토 대시보드에서도 동일한 학생 목록이 표시됩니다.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getAvatarColor(index) {
+  const colors = ['#6C5CE7','#00B894','#E056A0','#FDCB6E','#FF6B6B','#74B9FF','#A29BFE','#00CEC9','#E17055','#FD79A8'];
+  return colors[index % colors.length];
+}
+
+function addClassmate() {
+  const name = document.getElementById('cm-name')?.value.trim();
+  const grade = document.getElementById('cm-grade')?.value.trim() || '';
+  const memo = document.getElementById('cm-memo')?.value.trim() || '';
+  
+  if (!name) { alert('이름을 입력해주세요!'); return; }
+  if (state.classmates.some(c => c.name === name && c.grade === grade)) {
+    alert('이미 등록된 학생입니다!'); return;
+  }
+  
+  const id = 'cm' + Date.now();
+  state.classmates.push({ id, name, grade, memo });
+  state._addingClassmate = false;
+  state._cmName = ''; state._cmGrade = ''; state._cmMemo = '';
+  renderScreen();
+}
+
+function startEditClassmate(id) {
+  const c = state.classmates.find(x => x.id === id);
+  if (!c) return;
+  state._editingClassmate = id;
+  state._addingClassmate = false;
+  state._cmName = c.name;
+  state._cmGrade = c.grade;
+  state._cmMemo = c.memo || '';
+  renderScreen();
+}
+
+function saveEditClassmate(id) {
+  const name = document.getElementById('cm-name')?.value.trim();
+  const grade = document.getElementById('cm-grade')?.value.trim() || '';
+  const memo = document.getElementById('cm-memo')?.value.trim() || '';
+  
+  if (!name) { alert('이름을 입력해주세요!'); return; }
+  
+  const c = state.classmates.find(x => x.id === id);
+  if (c) {
+    c.name = name;
+    c.grade = grade;
+    c.memo = memo;
+  }
+  state._editingClassmate = null;
+  state._cmName = ''; state._cmGrade = ''; state._cmMemo = '';
+  renderScreen();
+}
+
+function deleteClassmate(id, name) {
+  if (!confirm(`"${name}" 학생을 삭제할까요?`)) return;
+  state.classmates = state.classmates.filter(c => c.id !== id);
+  if (state._editingClassmate === id) state._editingClassmate = null;
+  renderScreen();
+}
+
+
+// ==================== TIMETABLE MANAGEMENT ====================
+
+function renderTimetableManage() {
+  const days = ['월','화','수','목','금'];
+  const acDays = ['월','화','수','목','금','토','일'];
+  const tt = state.timetable;
+  const baseSubjects = ['국어','수학','영어','과학','한국사','체육','미술','동아리','창체'];
+  if (tt.school) {
+    tt.school.forEach(row => {
+      if (Array.isArray(row)) row.forEach(s => { if (s && !baseSubjects.includes(s)) baseSubjects.push(s); });
+    });
+  }
+  baseSubjects.push('');
+  const subjectList = baseSubjects;
+  const maxSlots = 4;
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.editingTimetable=false;state.selectedTtCell=null;state.selectedAcSlot=null;state.viewingAcademyDetail=null;goScreen('main');state.studentTab='my'"><i class="fas fa-arrow-left"></i></button>
+        <h1>📋 시간표 관리</h1>
+        <button class="header-action-btn" onclick="state.editingTimetable=!state.editingTimetable;state.selectedTtCell=null;state.selectedAcSlot=null;renderScreen(true)">
+          <i class="fas ${state.editingTimetable ? 'fa-check' : 'fa-edit'}"></i>
+          ${state.editingTimetable ? '완료' : '편집'}
+        </button>
+      </div>
+
+      <div class="form-body">
+        <!-- 학교 시간표 섹션 -->
+        <div class="card animate-in" style="margin-bottom:16px">
+          <div class="card-header-row">
+            <span class="card-title">🏫 학교 시간표</span>
+            ${state.editingTimetable ? '<span class="card-subtitle" style="color:var(--primary-light)">셀을 터치하여 수정</span>' : ''}
+          </div>
+          <div style="margin-bottom:12px">
+            <input type="file" id="tt-manage-file" accept="image/*" style="display:none" onchange="ttManagePhoto(this)">
+            <button class="btn-secondary" onclick="document.getElementById('tt-manage-file').click();" style="width:100%;padding:10px;font-size:13px">
+              <i class="fas fa-camera" style="margin-right:6px"></i> 시간표 사진으로 자동 입력
+            </button>
+          </div>
+          <div class="tt-editor">
+            <div class="tt-editor-header"></div>
+            ${days.map(d => `<div class="tt-editor-header">${d}</div>`).join('')}
+            ${tt.school.map((row, pi) => `
+              <div class="tt-editor-period">${pi+1}</div>
+              ${row.map((s, di) => {
+                const color = tt.subjectColors[s] || 'var(--text-muted)';
+                const isSelected = state.selectedTtCell && state.selectedTtCell.period === pi && state.selectedTtCell.dayIdx === di;
+                return `
+                <div class="tt-editor-cell ${s?'filled':''} ${isSelected?'selected':''} editable" 
+                  ${s?`style="background:${color}22;color:${color};border-color:${color}44"`:''}
+                  onclick="if(!state.editingTimetable){state.editingTimetable=true;}selectTtCell(${pi},${di})">
+                  ${s||'<i class="fas fa-plus" style="font-size:9px;opacity:0.3"></i>'}
+                </div>`;
+              }).join('')}
+            `).join('')}
+          </div>
+
+          ${state.editingTimetable && state.selectedTtCell !== null ? `
+          <div class="tt-edit-panel animate-in" style="margin-top:12px">
+            <label class="field-label">과목 선택 (${state.selectedTtCell.period+1}교시 ${days[state.selectedTtCell.dayIdx]}요일)</label>
+            <div class="tt-subject-selector">
+              ${subjectList.map(s => {
+                const color = tt.subjectColors[s] || 'var(--text-muted)';
+                const current = tt.school[state.selectedTtCell.period][state.selectedTtCell.dayIdx];
+                return `<button class="tt-subj-btn ${current===s?'active':''}" 
+                  style="${s?`border-color:${color}44;color:${color}`:'color:var(--text-muted)'}" 
+                  onclick="setTtSubject('${s}')">
+                  ${s || '비움'}
+                </button>`;
+              }).join('')}
+            </div>
+            <div class="field-group" style="margin-top:8px">
+              <label class="field-label">👨‍🏫 담당 선생님</label>
+              <input class="input-field" id="tt-teacher-input" 
+                placeholder="선생님 이름" 
+                value="${tt.teachers[tt.school[state.selectedTtCell.period][state.selectedTtCell.dayIdx]] || ''}"
+                onchange="setTtTeacher(this.value)">
+            </div>
+          </div>
+          ` : ''}
+        </div>
+
+        <!-- 학원 시간표 그리드 섹션 -->
+        <div class="card animate-in" style="margin-bottom:16px">
+          <div class="card-header-row">
+            <span class="card-title">🏢 학원 시간표</span>
+            ${state.editingTimetable ? '<span class="card-subtitle" style="color:#E056A0">빈 칸을 터치하여 추가</span>' : '<span class="card-subtitle">클릭하여 상세보기</span>'}
+          </div>
+          <div class="ac-grid">
+            <!-- 헤더 -->
+            <div class="ac-grid-header"></div>
+            ${acDays.map(d => `<div class="ac-grid-header ${d==='토'||d==='일'?'weekend':''}">${d}</div>`).join('')}
+            <!-- 슬롯 rows -->
+            ${Array.from({length: maxSlots}, (_, slotIdx) => `
+              <div class="ac-grid-period">${slotIdx+1}</div>
+              ${acDays.map(day => {
+                const ac = tt.academy.find(a => a.day === day && a.slot === slotIdx + 1);
+                const isSelected = state.selectedAcSlot && state.selectedAcSlot.day === day && state.selectedAcSlot.slot === slotIdx + 1;
+                if (ac) {
+                  return `
+                  <div class="ac-grid-cell filled ${isSelected?'selected':''}"
+                    data-day="${day}" data-slot="${slotIdx+1}" data-ac-id="${ac.id}"
+                    style="background:${ac.color}18;border-color:${ac.color}44"
+                    onclick="${state.editingTimetable
+                      ? `state.editingAcademy='${ac.id}';goScreen('academy-add')`
+                      : `showAcademyDetail('${ac.id}')`}">
+                    <div class="ac-cell-name" style="color:${ac.color}">${ac.name}</div>
+                    <div class="ac-cell-time-ribbon" style="background:${ac.color}">${ac.startTime}~${ac.endTime}</div>
+                  </div>`;
+                } else {
+                  return `
+                  <div class="ac-grid-cell empty ${isSelected?'selected':''} editable"
+                    data-day="${day}" data-slot="${slotIdx+1}"
+                    onclick="if(!state.editingTimetable){state.editingTimetable=true;}addAcademyAtSlot('${day}',${slotIdx+1})">
+                    <i class="fas fa-plus" style="font-size:9px;opacity:0.3"></i>
+                  </div>`;
+                }
+              }).join('')}
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- 학원 상세보기 패널 -->
+        ${state.viewingAcademyDetail ? renderAcademyDetailPanel() : ''}
+
+        <!-- 플래너 연동 안내 -->
+        <div class="ai-plan-card animate-in">
+          <div class="ai-header">
+            <span class="ai-icon">🤖</span>
+            <span class="ai-title">정율 자동 연동</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-top:8px">
+            시간표와 학원 스케줄을 수정하면 <strong style="color:var(--primary-light)">플래너에 자동 반영</strong>됩니다. 
+            정율이 학교 수업, 학원, 과제를 종합 분석하여 최적의 학습 계획을 제안해요! 📅
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 학원 상세보기 패널
+function renderAcademyDetailPanel() {
+  const ac = state.timetable.academy.find(a => a.id === state.viewingAcademyDetail);
+  if (!ac) return '';
+
+  return `
+    <div class="ac-detail-panel animate-in" style="border-left:4px solid ${ac.color}">
+      <div class="ac-detail-header">
+        <div class="ac-detail-title-row">
+          <span class="ac-detail-title" style="color:${ac.color}">${ac.name}</span>
+          <button class="ac-detail-close" onclick="state.viewingAcademyDetail=null;renderScreen()">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="ac-detail-subtitle">${ac.academy}</div>
+      </div>
+      <div class="ac-detail-body">
+        <div class="ac-detail-row">
+          <span class="ac-detail-icon">📅</span>
+          <span class="ac-detail-label">요일</span>
+          <span class="ac-detail-value">${ac.day}요일</span>
+        </div>
+        <div class="ac-detail-row">
+          <span class="ac-detail-icon">⏰</span>
+          <span class="ac-detail-label">시간</span>
+          <span class="ac-detail-value">${ac.startTime} ~ ${ac.endTime}</span>
+        </div>
+        <div class="ac-detail-row">
+          <span class="ac-detail-icon">📚</span>
+          <span class="ac-detail-label">관련 과목</span>
+          <span class="ac-detail-value">${ac.subject}</span>
+        </div>
+        ${ac.memo ? `
+        <div class="ac-detail-row">
+          <span class="ac-detail-icon">📝</span>
+          <span class="ac-detail-label">메모</span>
+          <span class="ac-detail-value">${ac.memo}</span>
+        </div>
+        ` : ''}
+      </div>
+      <div class="ac-detail-actions">
+        <button class="btn-secondary" style="flex:1" onclick="state.editingAcademy='${ac.id}';state.viewingAcademyDetail=null;goScreen('academy-add')">
+          <i class="fas fa-edit"></i> 수정
+        </button>
+        <button class="btn-ghost" style="flex:1;color:var(--accent)" onclick="deleteAcademy('${ac.id}');state.viewingAcademyDetail=null;renderScreen()">
+          <i class="fas fa-trash"></i> 삭제
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function showAcademyDetail(id) {
+  state.viewingAcademyDetail = state.viewingAcademyDetail === id ? null : id;
+  renderScreen();
+}
+
+function addAcademyAtSlot(day, slot) {
+  state.editingAcademy = null;
+  state._prefillDay = day;
+  state._prefillSlot = slot;
+  state._acSelectedDays = [day];
+  goScreen('academy-add');
+}
+
+// 학원 추가/수정 화면
+function renderAcademyAdd() {
+  const editing = state.editingAcademy;
+  const isEdit = editing !== null;
+  const ac = isEdit ? state.timetable.academy.find(a => a.id === editing) : null;
+  const prefillDay = state._prefillDay || '월';
+  const prefillSlot = state._prefillSlot || 1;
+
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" onclick="state.editingAcademy=null;state._prefillDay=null;state._prefillSlot=null;goScreen('timetable-manage')"><i class="fas fa-arrow-left"></i></button>
+        <h1>${isEdit ? '🏢 학원 수정' : '🏢 학원 추가'}</h1>
+      </div>
+
+      <div class="form-body">
+        <div class="academy-add-intro animate-in">
+          <span style="font-size:32px">🏢</span>
+          <div>
+            <h3>${isEdit ? '학원 정보를 수정하세요' : '학원 일정을 등록하세요'}</h3>
+            <p>등록한 학원 일정은 시간표와 플래너에 자동 표시됩니다</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📝 수업명</label>
+          <input class="input-field" id="ac-name" placeholder="예: 수학 심화반" value="${isEdit ? ac.name : ''}">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">🏢 학원명</label>
+          <input class="input-field" id="ac-academy" placeholder="예: 대치 수학학원" value="${isEdit ? ac.academy : ''}">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📚 관련 과목</label>
+          <div class="chip-row" id="ac-subject-chips">
+            ${(() => {
+              const base = ['수학','영어','국어','과학','사회'];
+              const fromTT = new Set();
+              if (state.timetable.school) {
+                state.timetable.school.forEach(row => {
+                  if (Array.isArray(row)) row.forEach(s => { if (s) fromTT.add(s); });
+                });
+              }
+              fromTT.forEach(s => { if (!base.includes(s)) base.push(s); });
+              base.push('기타');
+              return base;
+            })().map(s =>
+              `<button class="chip ${(isEdit && ac.subject===s) || (!isEdit && s==='수학') ? 'active' : ''}" data-subject="${s}">${s}</button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📅 요일 ${isEdit ? '' : '<span class="field-hint">(여러 요일 선택 가능)</span>'}</label>
+          <div class="chip-row" id="ac-day-chips">
+            ${['월','화','수','목','금','토','일'].map(d => {
+              const isActive = isEdit ? ac.day===d : (state._acSelectedDays || []).includes(d) || (!state._acSelectedDays && d===prefillDay);
+              return `<button class="chip ${isActive ? 'active' : ''}" data-day="${d}">${d}</button>`;
+            }).join('')}
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">🔢 슬롯 (시간표 칸 위치)</label>
+          <div class="chip-row" id="ac-slot-chips">
+            ${[1,2,3,4].map(s => 
+              `<button class="chip ${(isEdit && ac.slot===s) || (!isEdit && s===prefillSlot) ? 'active' : ''}" data-slot="${s}">${s}번째</button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <div class="field-group" style="flex:1">
+            <label class="field-label">⏰ 시작 시간</label>
+            <input class="input-field" type="time" id="ac-start" value="${isEdit ? ac.startTime : '18:00'}" style="color:var(--text-primary)">
+          </div>
+          <div class="field-group" style="flex:1">
+            <label class="field-label">⏰ 종료 시간</label>
+            <input class="input-field" type="time" id="ac-end" value="${isEdit ? ac.endTime : '20:00'}" style="color:var(--text-primary)">
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">🎨 색상</label>
+          <div class="color-picker-row" id="ac-color-picker">
+            ${['#E056A0','#6C5CE7','#00B894','#FDCB6E','#FF6B6B','#74B9FF','#00CEC9','#FF9F43'].map(c => 
+              `<button class="color-pick-btn ${(isEdit && ac.color===c) || (!isEdit && c==='#E056A0') ? 'active' : ''}" 
+                data-color="${c}" style="background:${c}" onclick="selectAcColor('${c}')"></button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">📝 메모 <span class="field-hint">(선택)</span></label>
+          <textarea class="input-field" id="ac-memo" rows="2" placeholder="학원 수업 관련 메모">${isEdit ? (ac.memo || '') : ''}</textarea>
+        </div>
+
+        <!-- 정율 제안 -->
+        <div class="ai-plan-card animate-in">
+          <div class="ai-header">
+            <span class="ai-icon">🤖</span>
+            <span class="ai-title">정율 시간 분석</span>
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-top:8px">
+            학원 일정을 등록하면 정율이 <strong style="color:var(--primary-light)">학교 수업 → 학원 → 자습</strong> 패턴을 분석하고,
+            비는 시간에 과제나 복습을 배치해줘요! 📊
+          </p>
+        </div>
+
+        <button class="btn-primary" onclick="saveAcademy()">
+          ${isEdit ? '학원 수정 완료' : '학원 추가 완료'} ✨
+        </button>
+        ${isEdit ? `<button class="btn-ghost" style="width:100%;margin-top:8px;color:var(--accent)" onclick="deleteAcademy('${ac.id}');goScreen('timetable-manage')">삭제</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// 시간표 관리 유틸리티
+function selectTtCell(period, dayIdx) {
+  if (state.selectedTtCell && state.selectedTtCell.period === period && state.selectedTtCell.dayIdx === dayIdx) {
+    state.selectedTtCell = null;
+  } else {
+    state.selectedTtCell = { period, dayIdx };
+  }
+  renderScreen(true);
+}
+
+function setTtSubject(subject) {
+  if (!state.selectedTtCell) return;
+  const {period, dayIdx} = state.selectedTtCell;
+  state.timetable.school[period][dayIdx] = subject;
+  syncTodayRecords();
+  DB.saveTimetable();
+  renderScreen(true);
+}
+
+function setTtTeacher(name) {
+  if (!state.selectedTtCell) return;
+  const {period, dayIdx} = state.selectedTtCell;
+  const subject = state.timetable.school[period][dayIdx];
+  if (subject) {
+    state.timetable.teachers[subject] = name;
+    syncTodayRecords();
+    DB.saveTimetable();
+  }
+}
+
+function syncTodayRecords() {
+  // 오늘 요일 인덱스 (월=0, 화=1, ..., 금=4)
+  // kstNow()는 UTC+9 보정 Date이므로 .getDay()가 로컬TZ에서 이중보정 됨
+  // → toISOString()으로 요일 계산해야 정확
+  const todayStr = kstToday(); // 'YYYY-MM-DD'
+  const todayDate = new Date(todayStr + 'T00:00:00Z'); // UTC 기준 파싱
+  const jsDay = todayDate.getUTCDay(); // UTC 기준 요일 (0=일~6=토)
+  const dayIdx = jsDay === 0 ? -1 : jsDay - 1; // 월~금만
+  
+  if (dayIdx < 0 || dayIdx > 4) {
+    // 주말: 학교 수업 없음 → 빈 배열
+    state.todayRecords = [];
+    return;
+  }
+
+  const tt = state.timetable;
+  const periodTimes = tt.periodTimes || [];
+  // DB에서 오늘 날짜의 class_records 조회
+  const todayDbRecords = (state._dbClassRecords || []).filter(r => r.date === todayStr);
+  const newRecords = [];
+  for (let pi = 0; pi < tt.school.length; pi++) {
+    const subject = tt.school[pi][dayIdx];
+    if (!subject) continue;
+    const existing = state.todayRecords.find(r => r.period === pi + 1 && r.subject === subject);
+    const time = periodTimes[pi] || {};
+    // DB에 같은 날짜 + 과목 + 교시 기록이 있는지 확인
+    const dbMatch = todayDbRecords.find(db => {
+      if (db.subject !== subject) return false;
+      try {
+        const memo = JSON.parse(db.memo || '{}');
+        return memo.period === pi + 1;
+      } catch { return false; }
+    });
+    const isDone = !!(existing?.done || dbMatch);
+    newRecords.push({
+      period: pi + 1,
+      subject: subject,
+      teacher: tt.teachers[subject] || '',
+      done: isDone,
+      question: existing ? existing.question : null,
+      summary: existing?.summary || (dbMatch ? (dbMatch.topic || dbMatch.content || '기록완료') : ''),
+      color: tt.subjectColors[subject] || '#636e72',
+      startTime: time.start || '',
+      endTime: time.end || '',
+      _dbRecordId: existing?._dbRecordId || (dbMatch ? dbMatch.id : null),
+      _topic: existing?._topic || (dbMatch ? dbMatch.topic : ''),
+      _pages: existing?._pages || (dbMatch ? dbMatch.pages : ''),
+      _keywords: existing?._keywords || (dbMatch ? dbMatch.keywords : []),
+      _photos: existing?._photos || [],
+      _teacherNote: existing?._teacherNote || (dbMatch ? dbMatch.teacher_note : ''),
+      _assignmentText: existing ? existing._assignmentText : '',
+      _assignmentDue: existing ? existing._assignmentDue : '',
+    });
+  }
+  state.todayRecords = newRecords;
+}
+
+function saveAcademy() {
+  const name = document.getElementById('ac-name')?.value || '';
+  const academy = document.getElementById('ac-academy')?.value || '';
+  const subjectChip = document.querySelector('#ac-subject-chips .chip.active');
+  const slotChip = document.querySelector('#ac-slot-chips .chip.active');
+  const startTime = document.getElementById('ac-start')?.value || '18:00';
+  const endTime = document.getElementById('ac-end')?.value || '20:00';
+  const colorBtn = document.querySelector('#ac-color-picker .color-pick-btn.active');
+  const memo = document.getElementById('ac-memo')?.value || '';
+  const subject = subjectChip ? subjectChip.dataset.subject : '수학';
+  const slot = slotChip ? parseInt(slotChip.dataset.slot) : 1;
+  const color = colorBtn ? colorBtn.dataset.color : '#E056A0';
+
+  const wasEdit = !!state.editingAcademy;
+
+  if (state.editingAcademy) {
+    // 수정 모드: 단일 요일
+    const dayChip = document.querySelector('#ac-day-chips .chip.active');
+    const day = dayChip ? dayChip.dataset.day : '월';
+    const ac = state.timetable.academy.find(a => a.id === state.editingAcademy);
+    if (ac) {
+      ac.name = name || ac.name;
+      ac.academy = academy || ac.academy;
+      ac.subject = subject;
+      ac.day = day;
+      ac.slot = slot;
+      ac.startTime = startTime;
+      ac.endTime = endTime;
+      ac.color = color;
+      ac.memo = memo;
+    }
+    state.editingAcademy = null;
+  } else {
+    // 추가 모드: 다중 요일 지원 (state에서 읽음)
+    const days = (state._acSelectedDays && state._acSelectedDays.length > 0) ? [...state._acSelectedDays] : ['월'];
+    days.forEach(day => {
+      const newId = 'ac' + (Date.now() % 100000) + '_' + day;
+      state.timetable.academy.push({
+        id: newId, name: name || '학원 수업', academy: academy || '',
+        day, slot, startTime, endTime, color, subject, memo
+      });
+    });
+    state._addedDayCount = days.length;
+  }
+  state._prefillDay = null;
+  state._prefillSlot = null;
+
+  // 플래너에 학원 일정 자동 추가
+  syncAcademyToPlanner();
+  DB.saveTimetable();
+  if (wasEdit) {
+    showXpPopup(5, '학원 일정이 저장되었어요!');
+    goScreen('timetable-manage');
+  } else {
+    const count = state._addedDayCount || 1;
+    state._acSelectedDays = null;
+    state._addedDayCount = null;
+    showXpPopup(5 * count, `${count}개 학원 일정이 저장되었어요!`, { stayOnScreen: true });
+    state.editingAcademy = null;
+    goScreen('academy-add');
+  }
+}
+
+// ===== 학원 시간표 드래그 앤 드롭 =====
+let _acDrag = null; // { acId, ghost, originDay, originSlot }
+
+function initAcademyDragDrop() {
+  const grid = document.querySelector('.ac-grid');
+  if (!grid) return;
+  // 이미 바인딩 방지
+  if (grid._dragBound) return;
+  grid._dragBound = true;
+
+  let longPressTimer = null;
+  let startX = 0, startY = 0;
+
+  grid.addEventListener('pointerdown', (e) => {
+    const cell = e.target.closest('.ac-grid-cell.filled');
+    if (!cell) return;
+    startX = e.clientX; startY = e.clientY;
+    longPressTimer = setTimeout(() => {
+      e.preventDefault();
+      _startAcDrag(cell, e.clientX, e.clientY);
+    }, 400);
+  });
+
+  grid.addEventListener('pointermove', (e) => {
+    // 롱프레스 대기 중 이동하면 취소
+    if (longPressTimer && (Math.abs(e.clientX - startX) > 8 || Math.abs(e.clientY - startY) > 8)) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    if (!_acDrag) return;
+    e.preventDefault();
+    _moveAcDrag(e.clientX, e.clientY);
+  });
+
+  grid.addEventListener('pointerup', (e) => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (!_acDrag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _endAcDrag(e.clientX, e.clientY);
+  });
+
+  grid.addEventListener('pointercancel', () => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (_acDrag) _cancelAcDrag();
+  });
+
+  // 터치 스크롤 방지 (드래그 중)
+  grid.addEventListener('touchmove', (e) => {
+    if (_acDrag) e.preventDefault();
+  }, { passive: false });
+}
+
+function _startAcDrag(cell, x, y) {
+  const acId = cell.dataset.acId;
+  const ac = state.timetable.academy.find(a => a.id === acId);
+  if (!ac) return;
+
+  // 햅틱 피드백 (지원 기기)
+  if (navigator.vibrate) navigator.vibrate(30);
+
+  // 고스트 생성
+  const ghost = document.createElement('div');
+  ghost.className = 'ac-drag-ghost';
+  ghost.textContent = ac.name;
+  ghost.style.background = ac.color;
+  ghost.style.left = x + 'px';
+  ghost.style.top = y + 'px';
+  document.body.appendChild(ghost);
+
+  cell.classList.add('dragging');
+
+  _acDrag = {
+    acId, ghost,
+    originDay: ac.day,
+    originSlot: ac.slot,
+    sourceCell: cell
+  };
+
+  // 셀 클릭 이벤트 방지
+  cell.style.pointerEvents = 'none';
+}
+
+function _moveAcDrag(x, y) {
+  if (!_acDrag) return;
+  _acDrag.ghost.style.left = x + 'px';
+  _acDrag.ghost.style.top = y + 'px';
+
+  // 드롭 타겟 하이라이트
+  document.querySelectorAll('.ac-grid-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
+  const target = _getCellUnder(x, y);
+  if (target && target !== _acDrag.sourceCell) {
+    target.classList.add('drag-over');
+  }
+}
+
+function _endAcDrag(x, y) {
+  if (!_acDrag) return;
+  const target = _getCellUnder(x, y);
+
+  if (target && target !== _acDrag.sourceCell) {
+    const newDay = target.dataset.day;
+    const newSlot = parseInt(target.dataset.slot);
+    const targetAcId = target.dataset.acId;
+
+    const ac = state.timetable.academy.find(a => a.id === _acDrag.acId);
+    if (ac) {
+      if (targetAcId) {
+        // 채워진 셀이면 swap
+        const targetAc = state.timetable.academy.find(a => a.id === targetAcId);
+        if (targetAc) {
+          targetAc.day = _acDrag.originDay;
+          targetAc.slot = _acDrag.originSlot;
+        }
+      }
+      ac.day = newDay;
+      ac.slot = newSlot;
+      syncAcademyToPlanner();
+      DB.saveTimetable();
+      _cleanupAcDrag();
+      renderScreen(true);
+      return;
+    }
+  }
+
+  _cleanupAcDrag();
+}
+
+function _cancelAcDrag() {
+  _cleanupAcDrag();
+}
+
+function _cleanupAcDrag() {
+  if (!_acDrag) return;
+  _acDrag.ghost.remove();
+  _acDrag.sourceCell.classList.remove('dragging');
+  _acDrag.sourceCell.style.pointerEvents = '';
+  document.querySelectorAll('.ac-grid-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
+  _acDrag = null;
+}
+
+function _getCellUnder(x, y) {
+  // 고스트 숨기고 아래 요소 찾기
+  if (_acDrag) _acDrag.ghost.style.display = 'none';
+  const el = document.elementFromPoint(x, y);
+  if (_acDrag) _acDrag.ghost.style.display = '';
+  if (!el) return null;
+  return el.closest('.ac-grid-cell');
+}
+
+function deleteAcademy(id) {
+  state.timetable.academy = state.timetable.academy.filter(a => a.id !== id);
+  state.plannerItems = state.plannerItems.filter(p => p.academyId !== id);
+  DB.saveTimetable();
+  renderScreen();
+}
+
+function selectAcColor(color) {
+  document.querySelectorAll('#ac-color-picker .color-pick-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`#ac-color-picker .color-pick-btn[data-color="${color}"]`);
+  if (btn) btn.classList.add('active');
+}
+
+function syncAcademyToPlanner() {
+  // 학원 일정을 플래너에 반영 (향후 2주)
+  const dayMap = {'일':0,'월':1,'화':2,'수':3,'목':4,'금':5,'토':6};
+  const today = kstNow();
+  
+  // 기존 학원 일정 제거
+  state.plannerItems = state.plannerItems.filter(p => p.category !== 'academy');
+  
+  state.timetable.academy.forEach(ac => {
+    const targetDay = dayMap[ac.day];
+    if (targetDay === undefined) return;
+    
+    // 향후 14일 내에서 해당 요일 찾기
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      if (d.getDay() === targetDay) {
+        const dateStr = d.toISOString().split('T')[0];
+        state.plannerItems.push({
+          id: `pac_${ac.id}_${dateStr}`,
+          date: dateStr,
+          time: ac.startTime,
+          endTime: ac.endTime,
+          title: `🏢 ${ac.name}`,
+          category: 'academy',
+          color: ac.color,
+          icon: '🏢',
+          done: false,
+          aiGenerated: false,
+          detail: `${ac.academy} · ${ac.subject}`,
+          academyId: ac.id,
+        });
+      }
+    }
+  });
+}
+
+// 앱 시작 시 학원 플래너 동기화
+function initAcademySync() {
+  syncAcademyToPlanner();
+}
+
+// ==================== 학생용 멘토 피드백 화면 ====================
+
+function renderStudentFeedbackScreen() {
+  const feedbacks = state._mentorFeedbacks || [];
+  const typeLabels = { class: '📖 수업 기록', question: '❓ 질문', teach: '🤝 교학상장', assignment: '📋 과제', exam: '📝 시험', general: '💬 전체', activity: '🎯 활동', report: '📊 탐구', my_question: '💬 질문방' };
+
+  // 미읽음 피드백 자동 읽음 처리
+  feedbacks.filter(f => !f.is_read).forEach(f => {
+    DB.markFeedbackRead(f.id);
+    f.is_read = 1;
+  });
+  state._mentorFeedbackUnread = 0;
+
+  return `
+    <div class="screen-header">
+      <button class="back-btn" onclick="goScreen('main')"><i class="fas fa-arrow-left"></i></button>
+      <h1>💬 멘토 피드백</h1>
+      <div style="width:32px"></div>
+    </div>
+    <div style="padding:16px">
+      ${feedbacks.length === 0 ? `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted)">
+          <div style="font-size:48px;margin-bottom:16px;opacity:0.3">💬</div>
+          <p style="font-size:16px;margin-bottom:8px">아직 피드백이 없어요</p>
+          <p style="font-size:13px">멘토 선생님이 피드백을 보내면 여기에 표시됩니다</p>
+        </div>
+      ` : feedbacks.map(f => `
+        <div style="background:var(--bg-card);border:1px solid ${f.is_read ? 'var(--border)' : 'rgba(108,92,231,0.4)'};border-radius:var(--radius-lg);padding:16px;margin-bottom:12px;${!f.is_read ? 'box-shadow:0 0 0 1px rgba(108,92,231,0.2);' : ''}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;font-weight:700;color:var(--primary-light)">${f.mentor_name || '멘토'} 선생님</span>
+              <span style="font-size:11px;padding:2px 8px;background:var(--bg-input);border-radius:10px;color:var(--text-muted)">${typeLabels[f.record_type] || f.record_type}</span>
+            </div>
+            <span style="font-size:11px;color:var(--text-muted)">${f.created_at ? new Date(f.created_at).toLocaleDateString('ko-KR', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}</span>
+          </div>
+          <div style="font-size:14px;color:var(--text-secondary);line-height:1.7">${f.content}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+// ==================== MENTOR DASHBOARD (lazy-loaded from app-mentor.js) ====================
+
+// _mentor 상태 초기화 (즉시 필요)
+const _mentor = {
+  groups: [], selectedGroupId: null, studentList: [], groupSummary: [],
+  selectedStudentId: null, selectedStudentName: '', studentDetail: null,
+  feedbackDraft: '', feedbackRecordType: 'general', feedbackRecordId: null,
+  loading: false, initialLoading: true, detailLoading: false,
+  detailTab: 'timeline', photoViewId: null, photoViewData: null,
+  viewerStudentId: null, viewerStudentName: '', viewerStudentEmoji: '',
+  viewerLoading: false, viewerTab: 'home', viewerScreen: 'main',
+  _savedAuthUser: null, _savedAuthRole: null, _savedState: null,
+  qaStats: {}, // 질문방 통계 (user_id => { total: {q, a}, subjects: [{q, a}...] })
+  // 탐구 소재 분석
+  researchResult: null, researchHistory: [], researchLoading: false,
+  researchHistoryLoaded: false, researchSubjects: [],
+  researchDateFrom: '', researchDateTo: '',
+};
+
+// 멘토 코드 지연 로딩
+let _mentorCodeLoaded = false;
+let _mentorCodePromise = null;
+function _loadMentorCode() {
+  if (_mentorCodeLoaded) return Promise.resolve();
+  if (_mentorCodePromise) return _mentorCodePromise;
+  _mentorCodePromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/static/app-mentor.js';
+    s.onload = () => { _mentorCodeLoaded = true; resolve(); };
+    s.onerror = () => { _mentorCodePromise = null; reject(new Error('Failed to load mentor code')); };
+    document.head.appendChild(s);
+  });
+  return _mentorCodePromise;
+}
+
+// 스텁 함수들 (로딩 전까지 사용, 로딩 후 app-mentor.js 에서 덮어씀)
+function renderMentorDashboard() {
+  if (!_mentorCodeLoaded) {
+    _loadMentorCode().then(() => renderScreen()).catch(e => console.error(e));
+    return '<div style="text-align:center;padding:80px 20px;color:var(--text-muted)"><i class="fas fa-spinner fa-spin" style="font-size:36px;color:var(--primary-light)"></i><p style="margin-top:16px">멘토 대시보드 로딩 중...</p></div>';
+  }
+  return typeof _renderMentorDashboard === 'function' ? _renderMentorDashboard() : '';
+}
+function renderMentorStudentDashboard() {
+  return typeof _renderMentorStudentDashboard === 'function' ? _renderMentorStudentDashboard() : '';
+}
+function renderMentorStudentViewer() {
+  return typeof _renderMentorStudentViewer === 'function' ? _renderMentorStudentViewer() : '';
+}
+async function mentorEnterStudentView(a,b,c) {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorEnterStudentView === 'function') return _mentorEnterStudentView(a,b,c);
+}
+function mentorExitStudentView() {
+  if (typeof _mentorExitStudentView === 'function') return _mentorExitStudentView();
+}
+async function mentorLoadGroups() {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorLoadGroups === 'function') return _mentorLoadGroups();
+}
+async function mentorLoadGroupSummary() {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorLoadGroupSummary === 'function') return _mentorLoadGroupSummary();
+}
+async function mentorLoadStudentDetail(a,b) {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorLoadStudentDetail === 'function') return _mentorLoadStudentDetail(a,b);
+}
+async function mentorLoadPhoto(a) {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorLoadPhoto === 'function') return _mentorLoadPhoto(a);
+}
+async function mentorSaveFeedback() {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorSaveFeedback === 'function') return _mentorSaveFeedback();
+}
+async function mentorDeleteFeedback(a) {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorDeleteFeedback === 'function') return _mentorDeleteFeedback(a);
+}
+async function mentorViewQuestion(a) {
+  if (!_mentorCodeLoaded) await _loadMentorCode();
+  if (typeof _mentorViewQuestion === 'function') return _mentorViewQuestion(a);
+}
+function renderMentorMyQaPanel() {
+  return typeof _renderMentorMyQaPanel === 'function' ? _renderMentorMyQaPanel() : '';
+}
+function renderMentorTabContent() {
+  return typeof _renderMentorTabContent === 'function' ? _renderMentorTabContent() : '';
+}
+function renderMentorStudents() { return typeof _renderMentorStudents === 'function' ? _renderMentorStudents() : ''; }
+function renderMentorAlerts() { return typeof _renderMentorAlerts === 'function' ? _renderMentorAlerts() : ''; }
+function renderMentorFeedback() { return typeof _renderMentorFeedback === 'function' ? _renderMentorFeedback() : ''; }
+function renderMentorExams() { return typeof _renderMentorExams === 'function' ? _renderMentorExams() : ''; }
+function renderMentorNetwork() { return typeof _renderMentorNetwork === 'function' ? _renderMentorNetwork() : ''; }
+function renderMentorCroquet() { return typeof _renderMentorCroquet === 'function' ? _renderMentorCroquet() : ''; }
+function renderMentorStudentDetail() { return typeof _renderMentorStudentDetail === 'function' ? _renderMentorStudentDetail() : ''; }
+
+// ==================== DIRECTOR DASHBOARD ====================
+
+function renderDirectorDashboard() {
+  return `
+    <div class="desk-header">
+      <div style="display:flex;align-items:center;gap:14px">
+        <img src="/static/logo.png" alt="정율사관학원" class="desk-header-logo">
+        <div>
+          <h1>고교학점플래너 <span style="font-size:12px;color:var(--text-muted);font-weight:400">V 0.0.2</span> <span style="color:var(--accent)">원장</span></h1>
+          <p style="font-size:13px;color:var(--text-secondary);margin-top:4px">정율고교학점데이터센터 | 498/500명</p>
+        </div>
+      </div>
+      <div class="desk-header-right" style="display:flex;align-items:center;gap:12px"><span style="font-size:13px;color:var(--text-muted)">${kstToday()}</span><button onclick="if(confirm('로그아웃 하시겠습니까?')){logout()}" style="background:var(--card-bg);border:1px solid var(--border-color);color:var(--text-secondary);padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s" onmouseover="this.style.color='#FF6B6B';this.style.borderColor='#FF6B6B'" onmouseout="this.style.color='var(--text-secondary)';this.style.borderColor='var(--border-color)'"><i class="fas fa-sign-out-alt"></i>로그아웃</button></div>
+    </div>
+    <div class="desk-tabs">
+      ${['overview:📊 전체현황','questions:📈 질문분석','network:🤝 교학상장','mentors:👨‍🏫 멘토관리'].map(t => {
+        const [id, label] = t.split(':');
+        return `<button class="desk-tab ${state.directorTab===id?'active':''}" data-dtab="${id}">${label}</button>`;
+      }).join('')}
+    </div>
+    <div class="desk-body">${renderDirectorTabContent()}</div>
+  `;
+}
+
+function renderDirectorTabContent() {
+  switch(state.directorTab) {
+    case 'overview': return renderDirOverview();
+    case 'questions': return renderDirQuestions();
+    case 'network': return renderDirNetwork();
+    case 'mentors': return renderDirMentors();
+  }
+}
+
+function renderDirOverview() {
+  return `
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-label">오늘 기록률</div><div class="stat-value" style="color:var(--success)">82%</div><div class="stat-change stat-up">↑ 3%</div></div>
+      <div class="stat-card"><div class="stat-label">주간 질문</div><div class="stat-value" style="color:var(--primary-light)">1,247</div><div class="stat-change stat-up">↑ 12%</div></div>
+      <div class="stat-card"><div class="stat-label">B+C 비율</div><div class="stat-value" style="color:var(--question-b)">48%</div><div class="stat-change stat-up">↑ 5%</div></div>
+      <div class="stat-card"><div class="stat-label">교학상장</div><div class="stat-value" style="color:var(--teach-green)">156</div><div class="stat-change stat-up">↑ 23%</div></div>
+    </div>
+    <h3 style="margin-bottom:12px">🚨 주요 경보</h3>
+    <div class="alert-banner alert-red">🔴 3일+ 미기록: 12명 (고1:7, 고2:3, 고3:2)</div>
+    <div class="alert-banner alert-yellow">🟡 질문 수준 하락: 5명 (2주 연속)</div>
+    <div class="alert-banner alert-yellow">🟡 무드 저하: 3명 (3일 연속)</div>
+    <div class="alert-banner alert-green">✅ 질문 콤보 달성: 8명</div>
+  `;
+}
+
+function renderDirQuestions() {
+  return `
+    <h3 style="margin-bottom:16px">📈 학년별 질문 수준 분포</h3>
+    <div class="dir-grid">
+      ${[
+        {grade:'고1 (180명)', data:[{l:'A',p:60},{l:'B',p:35},{l:'C',p:5}]},
+        {grade:'고2 (200명)', data:[{l:'A',p:40},{l:'B',p:45},{l:'C',p:15}]},
+      ].map(g => `
+        <div class="stat-card"><h4 style="margin-bottom:12px">${g.grade}</h4>
+          ${g.data.map(q => `<div class="q-dist-row"><span class="q-dist-label">${q.l}단계</span><div class="q-dist-bar"><div class="q-dist-fill" style="width:${q.p}%;background:var(--question-${q.l.toLowerCase()})"></div></div><span class="q-dist-pct">${q.p}%</span></div>`).join('')}
+        </div>
+      `).join('')}
+      <div class="stat-card dir-full"><h4 style="margin-bottom:12px">고3 (120명)</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+          ${[{l:'A',p:25},{l:'B',p:50},{l:'C',p:25}].map(q => `<div class="q-dist-row"><span class="q-dist-label">${q.l}단계</span><div class="q-dist-bar"><div class="q-dist-fill" style="width:${q.p}%;background:var(--question-${q.l.toLowerCase()})"></div></div><span class="q-dist-pct">${q.p}%</span></div>`).join('')}
+        </div>
+        <p style="margin-top:12px;font-size:13px;color:var(--success)">→ 학년↑ 질문수준↑ 확인 ✅</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderDirNetwork() {
+  return `
+    <h3 style="margin-bottom:16px">🤝 전체 교학상장 네트워크</h3>
+    <div class="network-placeholder" style="height:300px"><i class="fas fa-project-diagram" style="font-size:64px"></i><p style="font-size:16px">500명 교학상장 네트워크 맵</p></div>
+    <div class="dir-grid" style="margin-top:20px">
+      <div class="stat-card">
+        <h4 style="margin-bottom:12px">🏆 Top 5 교학상장 허브</h4>
+        ${['데이터 없음']
+          .map((s,i) => `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px"><strong>${i+1}.</strong> ${s}</div>`).join('')}
+      </div>
+      <div class="insight-box">
+        <h4 style="margin-bottom:8px">💡 정율 인사이트</h4>
+        <div class="insight-item"><span>•</span> 수학 교학상장 42%로 가장 활발</div>
+        <div class="insight-item"><span>•</span> 고1 참여율 = 고2의 1/3 → 캠페인 필요</div>
+        <div class="insight-item"><span>•</span> 교학상장 활발 학생 B+C 비율 1.8배</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDirMentors() {
+  const mentors = [];
+  if (mentors.length === 0) {
+    return `
+      <h3 style="margin-bottom:16px">👨‍🏫 멘토별 관리 현황</h3>
+      <div style="text-align:center;color:var(--text-muted);padding:40px;font-size:14px">등록된 멘토 데이터가 없습니다.<br>멘토가 등록되면 여기에 표시됩니다.</div>
+    `;
+  }
+  return `
+    <h3 style="margin-bottom:16px">👨‍🏫 멘토별 관리 현황</h3>
+    <table class="student-table">
+      <thead><tr><th>멘토</th><th>담당</th><th>기록률</th><th>B+C</th><th>교학상장</th><th>상태</th></tr></thead>
+      <tbody>${mentors.map(m => `
+        <tr><td style="font-weight:600">${m.name}</td><td>${m.students}명</td>
+        <td><span class="mentor-rate" style="background:${m.rate>=80?'rgba(0,184,148,0.15);color:var(--success)':'rgba(243,156,18,0.15);color:var(--warning)'}">${m.rate}%</span></td>
+        <td>${m.qbc}%</td><td>${m.teach}회/주</td><td><span class="status-dot status-${m.color}"></span></td></tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+// ==================== UTILITIES ====================
+
+// ==================== NAVIGATION HISTORY ====================
+// 브라우저 뒤로가기(스와이프 포함) 지원을 위한 History API 통합
+const _screenHistory = ['onboarding-welcome'];
+let _isPopState = false;
+
+function goScreen(screen) {
+  // QA 웹사이트 진입점 인터셉트 → 새 탭으로 열기
+  if (screen === '__qa-new__') {
+    openMyQaIframe();
+    return;
+  }
+  // 아하 리포트 옵션 선택 인터셉트
+  if (screen === '__aha-options__') {
+    showAhaOptionsOverlay();
+    return;
+  }
+  // 화면 히스토리에 push (뒤로가기 지원)
+  if (!_isPopState) {
+    _screenHistory.push(screen);
+    try {
+      history.pushState({ screen, tab: state.studentTab }, '', '');
+    } catch(e) { /* ignore */ }
+  }
+  _isPopState = false;
+
+  state.currentScreen = screen;
+  renderScreen();
+
+  // Scroll to top on screen change
+  const appContent = document.getElementById('app-content');
+  if (appContent) appContent.scrollTop = 0;
+  const tabletContent = document.getElementById('tablet-content');
+  if (tabletContent) tabletContent.scrollTop = 0;
+}
+
+// 브라우저 뒤로가기 / 제스처 뒤로가기 / 안드로이드 뒤로가기 처리
+window.addEventListener('popstate', (e) => {
+  // 1. 시간표 분석 확인 화면 체크
+  if (state.currentScreen === 'timetable-onboarding' && state._ttOnboardingStep === 'confirm') {
+    const hasAnalyzedData = (state._ttMode === 'school')
+      ? (state._ttAnalyzedSlots && state._ttAnalyzedSlots.length > 0)
+      : (state._ttAcademySlots && state._ttAcademySlots.length > 0);
+    if (hasAnalyzedData) {
+      // 히스토리 복원 (뒤로가기 취소)
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('분석된 시간표를 저장하지 않고 나가시겠습니까?')) {
+        state._ttOnboardingStep = 'photo';
+        state._ttAnalyzedSlots = null;
+        state._ttAcademySlots = null;
+        renderScreen(true);
+      }
+      return;
+    }
+  }
+
+  // 2. 아카이브 모듈 (기록하기) 확인 화면 체크
+  if (_archiveModuleActive && window._RM && window._RM.state) {
+    const rmState = window._RM.state;
+    const rmScreen = rmState.currentScreen;
+
+    // 사진 업로드 화면에서 사진이 있는 경우
+    if (rmScreen === 'photo-upload' && rmState._classPhotos && rmState._classPhotos.length > 0) {
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('업로드한 사진이 저장되지 않습니다. 나가시겠습니까?')) {
+        rmState._classPhotos = [];
+        rmState._classPhotoTags = [];
+        rmState._studentComment = '';
+        window._RM.nav('period-select');
+      }
+      return;
+    }
+
+    // AI 분석 결과 화면에서 결과가 있는 경우
+    if (rmScreen === 'ai-result' && rmState._aiCreditLog) {
+      history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');
+      if (confirm('AI 분석 결과가 저장되지 않습니다. 나가시겠습니까?')) {
+        rmState._aiCreditLog = null;
+        rmState._aiCreditLogEditing = false;
+        window._RM.nav('photo-upload');
+      }
+      return;
+    }
+  }
+
+  // 3. 기본 뒤로가기 처리
+  if (_screenHistory.length > 1) {
+    _screenHistory.pop(); // 현재 화면 제거
+    const prevScreen = _screenHistory[_screenHistory.length - 1] || 'main';
+
+    _isPopState = true;
+
+    // 메인 탭 화면이면 탭도 복원
+    if (prevScreen === 'main') {
+      state.currentScreen = 'main';
+      // 기본 홈 탭으로
+      if (!['home','archive','planner','growth','my'].includes(state.studentTab)) {
+        state.studentTab = 'home';
+      }
+    } else {
+      state.currentScreen = prevScreen;
+    }
+
+    renderScreen();
+    const tabletContent = document.getElementById('tablet-content');
+    if (tabletContent) tabletContent.scrollTop = 0;
+    const appContent = document.getElementById('app-content');
+    if (appContent) appContent.scrollTop = 0;
+  } else {
+    // 4. 히스토리가 없을 때 (홈 화면이 아니면 홈으로 이동)
+    const isOnHome = state.currentScreen === 'main' && state.studentTab === 'home';
+
+    if (!isOnHome) {
+      // 홈이 아니면 → 뒤로가기 취소하고 홈으로 이동
+      history.pushState({ screen: 'main', tab: 'home' }, '', '');
+      _screenHistory.length = 0;
+      _screenHistory.push('main');
+      state.currentScreen = 'main';
+      state.studentTab = 'home';
+
+      // 아카이브 모듈이 활성화되어 있으면 비활성화
+      if (_archiveModuleActive) {
+        _archiveModuleActive = false;
+        const container = document.getElementById('records-container-tablet');
+        if (container) container.style.display = 'none';
+      }
+
+      renderScreen();
+    } else {
+      // 홈에서 뒤로가기 → 두 번 눌러야 종료
+      const now = Date.now();
+      if (now - _lastBackPressTime < 2000) {
+        // 2초 내 두 번째 뒤로가기 → 종료 허용 (아무것도 안 함)
+        return;
+      }
+      // 첫 번째 뒤로가기 → 히스토리 복원하고 안내
+      _lastBackPressTime = now;
+      history.pushState({ screen: 'main', tab: 'home' }, '', '');
+      // 토스트 메시지 표시
+      const toast = document.createElement('div');
+      toast.className = 'back-exit-toast';
+      toast.textContent = "'뒤로' 한 번 더 누르면 종료됩니다";
+      toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:white;padding:12px 24px;border-radius:24px;font-size:14px;z-index:99999;animation:fadeInOut 2s ease-in-out forwards';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    }
+  }
+});
+
+// 초기 히스토리 상태 설정 (2개 항목으로 뒤로가기 가로채기 가능하게)
+try {
+  history.replaceState({ screen: 'base' }, '', '');  // 베이스 항목
+  history.pushState({ screen: state.currentScreen, tab: state.studentTab }, '', '');  // 앱 상태
+} catch(e) { /* ignore */ }
+
+// 홈에서 뒤로가기 두 번 눌러야 종료 (마지막 뒤로가기 시간 추적)
+let _lastBackPressTime = 0;
+
+// 수업 기록 폼 유효성 검사 — 핵심 키워드가 있어야 버튼 활성화
+function validateClassRecordForm() {
+  // 핵심 키워드 textarea에서 실제 입력값 확인
+  const keywordInput = document.querySelector('.class-keyword-input');
+  const keywordText = keywordInput ? keywordInput.value.trim() : '';
+  
+  const hasContent = keywordText.length > 0;
+  
+  // 제출 버튼 찾기 (팝업 또는 전체화면 폼)
+  const submitBtns = document.querySelectorAll('.class-record-submit');
+  submitBtns.forEach(btn => {
+    if (hasContent) {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+    } else {
+      btn.disabled = true;
+      btn.style.opacity = '0.4';
+      btn.style.cursor = 'not-allowed';
+    }
+  });
+  
+  return hasContent;
+}
+
+function completeClassRecord(idx) {
+  // 유효성 검사
+  if (!validateClassRecordForm()) {
+    const keywordInput = document.querySelector('.class-keyword-input');
+    if (keywordInput) {
+      keywordInput.focus();
+      keywordInput.style.borderColor = 'var(--accent)';
+      keywordInput.setAttribute('placeholder', '핵심 키워드를 입력해야 기록을 완료할 수 있어요!');
+      setTimeout(() => { keywordInput.style.borderColor = ''; }, 2000);
+    }
+    return;
+  }
+  
+  if (idx >= 0 && idx < state.todayRecords.length) {
+    const r = state.todayRecords[idx];
+    
+    // 새 폼 필드 수집
+    const topicInput = document.querySelector('.class-topic-input');
+    const topic = topicInput ? topicInput.value.trim() : '';
+    
+    const pagesInput = document.querySelector('.class-pages-input');
+    const pages = pagesInput ? pagesInput.value.trim() : '';
+    
+    const keywordInput = document.querySelector('.class-keyword-input');
+    const keywordText = keywordInput ? keywordInput.value.trim() : '';
+    const keywordTexts = [];
+    if (keywordText) {
+      keywordText.split(/[,，、\n]+/).forEach(k => { const t = k.trim(); if (t) keywordTexts.push(t); });
+    }
+    
+    const photos = state._classPhotos || [];
+    
+    const teacherNoteInput = document.querySelector('.class-teacher-note-input');
+    const teacherNote = teacherNoteInput ? teacherNoteInput.value.trim() : '';
+    
+    r.done = true;
+    r.summary = topic || keywordTexts.join(', ') || '수업 기록 완료';
+    r._topic = topic;
+    r._pages = pages;
+    r._keywords = keywordTexts;
+    r._photos = photos;
+    r._teacherNote = teacherNote;
+    
+    // 과제 데이터를 레코드에 저장 (수정 화면에서 다시 볼 수 있도록)
+    const assignInput2 = document.querySelector('.class-assignment-input');
+    const assignText2 = assignInput2 ? assignInput2.value.trim() : '';
+    r._assignmentText = assignText2;
+    r._assignmentDue = state._classAssignmentDue || '';
+    
+    state.missions[0].current = state.todayRecords.filter(r => r.done).length;
+    if (state.missions[0].current >= state.missions[0].target) state.missions[0].done = true;
+
+    // DB 저장
+    if (DB.studentId()) {
+      DB.saveClassRecord({
+        subject: r.subject || '미지정',
+        date: kstToday(),
+        content: topic,
+        keywords: keywordTexts.length > 0 ? keywordTexts : [],
+        understanding: 3,
+        memo: JSON.stringify({ period: r.period || '', pages: pages, teacherNote: teacherNote, photoCount: photos.length }),
+        topic: topic,
+        pages: pages,
+        photos: photos,
+        teacher_note: teacherNote,
+      });
+    }
+  }
+  
+  // 과제가 있으면 플래너에 자동 등록
+  const rSubject = (idx >= 0 && idx < state.todayRecords.length) ? (state.todayRecords[idx].subject || '미지정') : '미지정';
+  const rPeriod = (idx >= 0 && idx < state.todayRecords.length) ? (state.todayRecords[idx].period || '') : '';
+  registerAssignmentFromClassRecord(rSubject, rPeriod);
+  if (idx >= 0 && idx < state.todayRecords.length) {
+    const assignText3 = document.querySelector('.class-assignment-input');
+    state.todayRecords[idx]._assignmentRegistered = !!(assignText3 && assignText3.value.trim());
+  }
+  
+  // 사진 상태 리셋
+  state._classPhotos = [];
+  
+  // 1차 XP 지급
+  showXpPopup(10, '수업 기록 완료!', { stayOnScreen: true });
+  
+  // 기록 완료 → UI 전환: 입력 필드 비활성화, 기록 버튼 숨기고 질문 섹션 표시
+  showPostRecordQuestion();
+}
+
+function showXpPopup(amount, label, options) {
+  const skipNavigate = options && options.stayOnScreen;
+  state.xp += amount;
+  
+  // XP를 DB에 동기화 (디바운스: 마지막 호출 후 2초 뒤 실행)
+  if (DB.studentId() && amount > 0) {
+    // XP 소스 추론 (label에서)
+    const _lastXpLabel = label || '';
+    clearTimeout(window._xpSyncTimer);
+    window._xpSyncTimer = setTimeout(() => {
+      fetch(`/api/student/${DB.studentId()}/profile`).then(r => { if (!r.ok) throw new Error('not ok'); return r.json(); }).then(data => {
+        // 서버의 현재 XP와 비교하여 차이만큼 업데이트
+        const serverXp = data.xp || 0;
+        if (state.xp > serverXp) {
+          const diff = state.xp - serverXp;
+          // label에서 source 추론
+          let source = '기타 활동';
+          let sourceDetail = _lastXpLabel;
+          if (_lastXpLabel.includes('수업 기록')) source = '수업 기록';
+          else if (_lastXpLabel.includes('코칭') || _lastXpLabel.includes('도전')) source = '질문 코칭';
+          else if (_lastXpLabel.includes('교학상장')) source = '교학상장';
+          else if (_lastXpLabel.includes('활동') || _lastXpLabel.includes('체험')) source = '창의적 체험활동';
+          else if (_lastXpLabel.includes('과제')) source = '과제 기록';
+          else if (_lastXpLabel.includes('시험') || _lastXpLabel.includes('수행평가')) source = '시험 관리';
+          else if (_lastXpLabel.includes('루틴') || _lastXpLabel.includes('마무리')) source = '일일 루틴';
+          else if (_lastXpLabel.includes('일정')) source = '플래너 관리';
+          
+          fetch(`/api/student/${DB.studentId()}/xp-sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ xpDelta: diff, source, sourceDetail })
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+    }, 2000);
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'xp-popup-overlay';
+  const popup = document.createElement('div');
+  popup.className = 'xp-popup';
+  popup.innerHTML = `
+    <div class="xp-popup-icon">✨</div>
+    <div class="xp-popup-amount">+${amount} XP</div>
+    <div class="xp-popup-label">${label}</div>
+    <div style="margin-top:16px">
+      <div style="font-size:12px;color:var(--text-muted)">Lv.${state.level} 연구자</div>
+      <div class="progress-bar" style="width:200px;margin:8px auto 0;height:8px;border-radius:4px">
+        <div class="progress-fill level-fill" style="width:${Math.min((state.xp/1500*100),100).toFixed(0)}%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${state.xp.toLocaleString()}/1,500 XP</div>
+    </div>
+    <div style="margin-top:8px;font-size:14px;color:var(--streak-fire);font-weight:700">🔥 ${state.streak}일 스트릭</div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.appendChild(popup);
+  
+  const close = () => {
+    overlay.style.opacity = '0';
+    popup.style.opacity = '0';
+    popup.style.transform = 'translate(-50%,-50%) scale(0.9)';
+    setTimeout(() => {
+      if (document.body.contains(overlay)) overlay.remove();
+      if (document.body.contains(popup)) popup.remove();
+      if (!skipNavigate) { state.currentScreen='main'; renderScreen(); }
+    }, 200);
+  };
+  overlay.addEventListener('click', close);
+  setTimeout(close, 2500);
+}
+
+// ==================== EVENT HANDLERS ====================
+
+function initStudentEvents(root) {
+  // 대부분의 이벤트 리스너는 document 레벨 위임으로 처리 (_initDelegatedEvents)
+  // 여기서는 위임 불가능한 것만 처리
+
+  // FAB - 매 렌더마다 새 DOM 생성되므로 여기서 처리
+  const fab = document.getElementById('fab-btn');
+  if (fab && !fab._delegated) {
+    fab.addEventListener('click', () => { state.studentTab = 'archive'; state.currentScreen = 'main'; renderScreen(); });
+    fab._delegated = true;
+  }
+
+  // Growth chart
+  const chartCanvas = document.getElementById('growth-chart');
+  if (chartCanvas) {
+    new Chart(chartCanvas, {
+      type: 'line',
+      data: {
+        labels: ['3월','4월','5월','6월','7월'],
+        datasets: [
+          { label:'나의 성장', data:[1.2,1.8,2.5,3.2,3.8], borderColor:'#6C5CE7', backgroundColor:'rgba(108,92,231,0.1)', fill:true, tension:0.4, borderWidth:3, pointRadius:5, pointBackgroundColor:'#6C5CE7', pointBorderColor:'#fff', pointBorderWidth:2 },
+          { label:'이상적 곡선', data:[1,1.8,2.6,3.4,4.2], borderColor:'#484F58', borderDash:[5,5], fill:false, tension:0.4, borderWidth:2, pointRadius:0 }
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          y:{min:0,max:5,ticks:{callback:v=>['','A','B-1','B-2/3','C-1','C-2'][v],color:'#8B949E',font:{size:10}},grid:{color:'rgba(48,54,61,0.5)'}},
+          x:{ticks:{color:'#8B949E',font:{size:11}},grid:{display:false}}
+        }
+      }
+    });
+  }
+
+}
+
+function initMentorEvents() {
+  // 대부분의 이벤트 리스너는 document 레벨 위임으로 처리 (_initDelegatedEvents)
+  // 여기서는 위임 불가능한 것만 처리
+}
+
+function initDirectorEvents() {
+  // document 레벨 위임으로 처리 (_initDelegatedEvents)
+}
+
+// ==================== MODE SWITCHER & INIT ====================
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mode = btn.dataset.mode;
+    if (state.mode === 'student') { state.currentScreen = 'main'; state.studentTab = 'home'; }
+    // 멘토 모드 전환 시: 멘토 로그인 상태이면 데이터 로드, 아니면 안내
+    if (state.mode === 'mentor') {
+      if (state._authRole === 'mentor' && state._authUser?.id) {
+        if (_mentor.groups.length === 0) {
+          mentorLoadGroups().then(() => mentorLoadGroupSummary()).catch(e => console.error('[MENTOR] mode-switch load error:', e));
+        }
+      }
+    }
+    renderScreen();
+  });
+});
+
+// 디바이스 프리뷰 전환 버튼
+document.querySelectorAll('.device-preview-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.device-preview-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const device = btn.dataset.device;
+    devicePreview = device === 'pc' ? null : device;
+    // phone/tablet 프리뷰는 학생모드만 지원 → 자동 전환
+    if (devicePreview && state.mode !== 'student') {
+      state.mode = 'student';
+      state.currentScreen = 'main';
+      state.studentTab = 'home';
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('.mode-btn[data-mode="student"]').classList.add('active');
+    }
+    renderScreen();
+  });
+});
+
+// 학원 플래너 동기화 초기화
+initAcademySync();
+syncTodayRecords(); // 오늘 요일 기준 학교 시간표 동적 생성
+initTodayAcademy(); // 오늘 요일 기준 학원 시간표 동적 생성
+
+// 외부 앱 파라미터 체크 → 자동 로그인 or 일반 자동 로그인
+// ★ 서비스 워커 등록 및 업데이트 (모든 접속 시)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/static/sw.js').then(reg => {
+    console.log('SW registered:', reg.scope);
+    // 새 SW가 대기 중이면 즉시 활성화 요청
+    if (reg.waiting) reg.waiting.postMessage('skipWaiting');
+    reg.addEventListener('updatefound', () => {
+      const newSW = reg.installing;
+      if (newSW) {
+        newSW.addEventListener('statechange', () => {
+          if (newSW.state === 'activated') {
+            console.log('[SW] New version activated');
+          }
+        });
+      }
+    });
+    // 명시적 업데이트 체크
+    reg.update();
+  }).catch(err => console.error('[SW] registration failed:', err));
+}
+
+const _urlParams = getUrlParams();
+
+// sessionStorage에서 viewOnly 상태 복원 (브라우저 뒤로/앞으로 시)
+if (sessionStorage.getItem('cp_viewOnly') === 'true' && !_viewOnly) {
+  applyViewOnlyMode();
+}
+
+if (_urlParams.user_id) {
+  // 외부 앱에서 호출됨 → 이전 세션 완전 제거 후 새로 로그인
+  localStorage.removeItem('cp_auth');
+  _externalMode = true;
+  externalLogin(_urlParams.user_id, _urlParams.device_mode, _urlParams.op_mode);
+} else {
+  // 일반 접속 → localStorage 기반 자동 로그인
+  autoLogin();
+}
+// 자동 로그인 데이터 로딩 중이 아닐 때만 즉시 렌더
+// (로딩 중이면 initial-loader를 유지하고, 완료 시점에 renderScreen 호출됨)
+if (!_autoLoginDataLoading) {
+  // 비인증 상태: 스플래시 잠깐 유지 후 로그인 화면 표시 (깜빡임 방지)
+  setTimeout(() => renderScreen(), 150);
+}
+
+// ==================== 시간표 온보딩 (시간표 사진 → 과목 자동 등록) ====================
+// state._ttOnboardingStep: 'intro' → 'photo' → 'loading' → 'confirm' → 'done'
+// state._ttAnalyzedSlots: AI 분석 결과
+// state._ttPhotoBase64: 촬영한 사진
+
+// 시간표 온보딩 전역 헬퍼
+async function ttAnalyze() {
+  if (!state._ttPhotoBase64) return;
+  state._ttOnboardingStep = 'loading';
+  renderScreen(true);
+  try {
+    const sid = state._authUser?.id;
+    const mode = state._ttMode || 'school';
+    const res = await fetch('/api/student/' + sid + '/timetable/photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: state._ttPhotoBase64, mimeType: 'image/jpeg', mode })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'AI 분석 실패');
+    if (mode === 'academy') {
+      state._ttAcademySlots = data.data.academySlots;
+    } else {
+      state._ttAnalyzedSlots = data.data.slots;
+      state._ttYear = data.data.year;
+      state._ttTerm = data.data.term;
+    }
+    state._ttOnboardingStep = 'confirm';
+  } catch (err) {
+    alert('분석 실패: ' + err.message);
+    state._ttOnboardingStep = 'photo';
+  }
+  renderScreen(true);
+}
+
+let _ttSaving = false;
+async function ttSave() {
+  if (_ttSaving) return; // 중복 클릭 방지
+  _ttSaving = true;
+  // 저장 버튼 비활성화 + 로딩 표시
+  const saveBtn = document.querySelector('.btn-primary.btn-glow');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:8px"></i> 저장 중...'; }
+
+  const mode = state._ttMode || 'school';
+
+  if (mode === 'academy') {
+    // 학원 모드: localStorage에 저장
+    const items = state._ttAcademySlots || [];
+    const colors = ['#E056A0','#6C5CE7','#00B894','#FDCB6E','#FF6B6B','#74B9FF','#00CEC9','#FF9F43'];
+    items.forEach((item, i) => {
+      const dayMap = {'월':0,'화':1,'수':2,'목':3,'금':4,'토':5,'일':6};
+      // 같은 학원+수업명 중복 방지
+      const exists = state.timetable.academy.find(a => a.name === item.name && a.day === item.day);
+      if (!exists) {
+        state.timetable.academy.push({
+          id: 'ac' + (Date.now() % 100000) + i,
+          name: item.name || '학원 수업',
+          academy: item.academy || '',
+          subject: item.subject || '기타',
+          day: item.day || '월',
+          slot: item.slot || 1,
+          startTime: item.startTime || '18:00',
+          endTime: item.endTime || '20:00',
+          color: colors[i % colors.length],
+          memo: ''
+        });
+      }
+    });
+    DB.saveTimetable();
+    state._ttSavedSubjects = items.map(s => ({ name: s.name + ' (' + (s.academy || '학원') + ')' }));
+    state._ttOnboardingStep = 'done';
+    _ttSaving = false;
+    renderScreen(true);
+    return;
+  }
+
+  // 학교 모드: DB에 저장 + state.timetable.school 반영
+  const nameInputs = document.querySelectorAll('.tt-subject-name');
+  const renameMap = {};
+  nameInputs.forEach(inp => {
+    const original = inp.dataset.original;
+    const newName = inp.value.trim();
+    if (original && newName && original !== newName) renameMap[original] = newName;
+  });
+  let slots = state._ttAnalyzedSlots || [];
+  if (Object.keys(renameMap).length > 0) {
+    slots = slots.map(s => ({ ...s, subject: renameMap[s.subject] || s.subject }));
+  }
+  try {
+    const sid = state._authUser?.id;
+    const res = await fetch('/api/student/' + sid + '/timetable/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year: state._ttYear, term: state._ttTerm, slots })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || '저장 실패');
+    state._ttSavedSubjects = data.data.subjects;
+
+    // state.timetable.school에도 반영 (시간표 관리 화면과 동기화)
+    const colors = ['#FF6B6B','#6C5CE7','#00B894','#FDCB6E','#74B9FF','#A29BFE','#FD79A8','#00CEC9','#E17055','#55E6C1'];
+    const maxP = Math.max(...slots.map(s => s.period), 7);
+    const newSchool = [];
+    for (let p = 0; p < maxP; p++) newSchool.push(['','','','','']);
+    const newTeachers = { ...state.timetable.teachers };
+    const newColors = { ...state.timetable.subjectColors };
+    const subjectSet = [...new Set(slots.map(s => s.subject))];
+    subjectSet.forEach((s, i) => {
+      if (!newColors[s]) newColors[s] = colors[i % colors.length];
+    });
+    slots.forEach(s => {
+      const pIdx = s.period - 1;
+      const dIdx = s.day_of_week - 1;
+      if (pIdx >= 0 && pIdx < newSchool.length && dIdx >= 0 && dIdx < 5) {
+        newSchool[pIdx][dIdx] = s.subject;
+      }
+      if (s.teacher) newTeachers[s.subject] = s.teacher;
+    });
+    state.timetable.school = newSchool;
+    state.timetable.teachers = newTeachers;
+    state.timetable.subjectColors = newColors;
+    await DB.saveTimetable();
+    syncTodayRecords();
+
+    state._ttOnboardingStep = 'done';
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+  }
+  _ttSaving = false;
+  renderScreen(true);
+}
+
+function ttRemoveSubject(name) {
+  const mode = state._ttMode || 'school';
+  if (mode === 'academy') {
+    state._ttAcademySlots = (state._ttAcademySlots || []).filter(s => s.name !== name);
+  } else {
+    state._ttAnalyzedSlots = (state._ttAnalyzedSlots || []).filter(s => s.subject !== name);
+  }
+  renderScreen(true);
+}
+
+function ttManagePhoto(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 1600;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      state._ttPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+      state._ttMode = 'school';
+      state._ttOnboardingStep = 'photo';
+      state._ttReturnTo = 'timetable-manage';
+      state.currentScreen = 'timetable-onboarding';
+      renderScreen(true);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function ttHandleFileInput(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 1600;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      state._ttPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+      renderScreen(true);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderTimetableOnboarding() {
+  const step = state._ttOnboardingStep || 'intro';
+
+  if (step === 'intro') return _renderTTIntro();
+  if (step === 'photo') return _renderTTPhoto();
+  if (step === 'loading') return _renderTTLoading();
+  if (step === 'confirm') return _renderTTConfirm();
+  if (step === 'done') return _renderTTDone();
+  return _renderTTIntro();
+}
+
+function _renderTTIntro() {
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;min-height:100vh">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
+        <div style="font-size:64px;margin-bottom:24px">📋</div>
+        <h2 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:12px">시간표를 등록해주세요</h2>
+        <p style="color:var(--text-secondary);font-size:15px;line-height:1.7;margin-bottom:8px">
+          시간표 사진을 찍으면<br>
+          <strong style="color:var(--primary-light)">AI가 자동으로 과목/일정을 인식</strong>합니다
+        </p>
+        <p style="color:var(--text-muted);font-size:13px;margin-top:16px">
+          학교 수업, 학원 일정 모두 등록 가능합니다
+        </p>
+      </div>
+      <button class="btn-primary btn-glow" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;state._ttMode='school';renderScreen(true);" style="width:100%;margin-bottom:12px">
+        <i class="fas fa-camera" style="margin-right:8px"></i> 시간표 촬영하기
+      </button>
+      <button class="btn-secondary" onclick="state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'base'},'','');history.pushState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>refreshDataWidgets());startClassEndChecker();startAutoSync();" style="width:100%">
+        나중에 할게요
+      </button>
+    </div>`;
+}
+
+function _renderTTPhoto() {
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:24px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 16px 0">
+        <button class="btn-back" onclick="state._ttOnboardingStep='intro';renderScreen(true);"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">${state._ttMode === 'academy' ? '학원 시간표 촬영' : '학교 시간표 촬영'}</h1>
+        <div style="width:32px"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
+        <div id="tt-photo-preview" style="width:100%;max-width:400px;aspect-ratio:3/4;border-radius:16px;overflow:hidden;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;margin-bottom:24px;border:2px dashed var(--border-color)">
+          ${state._ttPhotoBase64
+            ? '<img src="' + state._ttPhotoBase64 + '" style="width:100%;height:100%;object-fit:contain">'
+            : '<div style="color:var(--text-muted)"><i class="fas fa-image" style="font-size:48px;margin-bottom:12px;display:block"></i><p style="font-size:14px">시간표 사진을 선택해주세요</p></div>'
+          }
+        </div>
+        <input type="file" id="tt-file-input" accept="image/*" style="display:none" onchange="ttHandleFileInput(this)">
+        <div style="display:flex;gap:12px;width:100%;max-width:400px">
+          <button class="btn-secondary" onclick="var i=document.getElementById('tt-file-input');if(i){i.removeAttribute('capture');i.click();}" style="flex:1">
+            <i class="fas fa-camera" style="margin-right:6px"></i> 촬영
+          </button>
+          <button class="btn-secondary" onclick="var i=document.getElementById('tt-file-input');if(i){i.removeAttribute('capture');i.click();}" style="flex:1">
+            <i class="fas fa-images" style="margin-right:6px"></i> 앨범
+          </button>
+        </div>
+      </div>
+      <button class="btn-primary" onclick="ttAnalyze();" style="width:100%;margin-top:20px" ${state._ttPhotoBase64 ? '' : 'disabled'}>
+        <i class="fas fa-magic" style="margin-right:8px"></i> AI 분석 시작
+      </button>
+    </div>`;
+}
+
+function _renderTTLoading() {
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
+      <div style="font-size:48px;margin-bottom:24px" class="animate-pulse">🔍</div>
+      <i class="fas fa-spinner fa-spin" style="font-size:32px;color:var(--primary-light);margin-bottom:20px"></i>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:8px">시간표를 분석하고 있어요</h2>
+      <p style="color:var(--text-secondary);font-size:14px">AI가 과목명과 시간을 인식 중입니다...</p>
+    </div>`;
+}
+
+function _renderTTConfirm() {
+  const mode = state._ttMode || 'school';
+  if (mode === 'academy') return _renderTTConfirmAcademy();
+  return _renderTTConfirmSchool();
+}
+
+function _renderTTConfirmSchool() {
+  const slots = state._ttAnalyzedSlots || [];
+  const subjects = [...new Set(slots.map(s => s.subject))];
+  const dayNames = ['', '월', '화', '수', '목', '금'];
+
+  const colors = ['#6C5CE7', '#00B894', '#FDCB6E', '#E17055', '#74B9FF', '#A29BFE', '#FF7675', '#55E6C1', '#FDA7DF', '#778CA3'];
+  const subjectColor = {};
+  subjects.forEach((s, i) => { subjectColor[s] = colors[i % colors.length]; });
+
+  const maxPeriod = Math.max(...slots.map(s => s.period), 7);
+  let gridRows = '';
+  for (let p = 1; p <= maxPeriod; p++) {
+    gridRows += `<tr><td style="padding:6px 4px;font-weight:600;color:var(--text-muted);font-size:12px;text-align:center;width:30px">${p}</td>`;
+    for (let d = 1; d <= 5; d++) {
+      const slot = slots.find(s => s.day_of_week === d && s.period === p);
+      if (slot) {
+        const bg = subjectColor[slot.subject] || '#6C5CE7';
+        gridRows += `<td style="padding:3px"><div style="background:${bg}22;border:1px solid ${bg}44;border-radius:8px;padding:4px 2px;text-align:center;min-height:36px;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:11px;font-weight:600;color:${bg}">${escapeHtml(slot.subject)}</span>${slot.teacher ? '<span style="font-size:9px;color:var(--text-muted)">' + escapeHtml(slot.teacher) + '</span>' : ''}</div></td>`;
+      } else {
+        gridRows += `<td style="padding:3px"><div style="min-height:36px"></div></td>`;
+      }
+    }
+    gridRows += '</tr>';
+  }
+
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 12px 0">
+        <button class="btn-back" onclick="ttConfirmBack()"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">학교 시간표 확인</h1>
+        <div style="width:32px"></div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;text-align:center">
+        AI가 인식한 시간표입니다. 틀린 부분을 수정해주세요.
+      </p>
+      <div style="overflow-x:auto;margin-bottom:16px">
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+          <thead><tr>
+            <th style="width:30px"></th>
+            ${dayNames.slice(1).map(d => '<th style="padding:6px 4px;font-size:12px;font-weight:600;color:var(--text-secondary);text-align:center">' + d + '</th>').join('')}
+          </tr></thead>
+          <tbody>${gridRows}</tbody>
+        </table>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">
+          인식된 과목 (${subjects.length}개)
+        </h3>
+        <div style="display:flex;flex-direction:column;gap:8px" id="tt-subject-list">
+          ${subjects.map((s, i) => {
+            const count = slots.filter(sl => sl.subject === s).length;
+            const bg = subjectColor[s] || '#6C5CE7';
+            return `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg-secondary);border-radius:10px;border:1px solid var(--border-color)">
+              <div style="width:8px;height:8px;border-radius:50%;background:${bg};flex-shrink:0"></div>
+              <input class="input-field tt-subject-name" value="${escapeHtml(s)}" data-original="${escapeHtml(s)}" style="flex:1;font-size:14px;padding:4px 8px;margin:0">
+              <span style="font-size:11px;color:var(--text-muted);white-space:nowrap">${count}시간</span>
+              <button data-tt-remove-subject="${escapeHtml(s)}" onclick="ttRemoveSubjectFromData(this);" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div style="margin-top:auto;display:flex;flex-direction:column;gap:10px">
+        <button class="btn-primary btn-glow" onclick="ttSave();" style="width:100%">
+          <i class="fas fa-check" style="margin-right:8px"></i> 이대로 저장하기
+        </button>
+        <button class="btn-secondary" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;renderScreen(true);" style="width:100%">
+          <i class="fas fa-redo" style="margin-right:8px"></i> 다시 촬영하기
+        </button>
+      </div>
+    </div>`;
+}
+
+function _renderTTConfirmAcademy() {
+  const items = state._ttAcademySlots || [];
+  const colors = ['#E056A0','#6C5CE7','#00B894','#FDCB6E','#FF6B6B','#74B9FF','#00CEC9','#FF9F43'];
+
+  return `
+    <div class="onboarding-screen animate-slide" style="padding:20px;display:flex;flex-direction:column;min-height:100vh">
+      <div class="screen-header" style="padding:0 0 12px 0">
+        <button class="btn-back" onclick="ttConfirmBack()"><i class="fas fa-arrow-left"></i></button>
+        <h1 style="font-size:18px;font-weight:700">학원 일정 확인</h1>
+        <div style="width:32px"></div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;text-align:center">
+        AI가 인식한 학원 일정입니다. 확인 후 저장해주세요.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;flex:1;overflow-y:auto">
+        ${items.length === 0 ? '<p style="text-align:center;color:var(--text-muted);padding:40px 0">인식된 학원 일정이 없습니다</p>' : items.map((item, i) => {
+          const bg = colors[i % colors.length];
+          return `<div style="padding:14px 16px;background:var(--bg-secondary);border-radius:12px;border-left:4px solid ${bg}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <strong style="font-size:15px;color:var(--text-primary)">${escapeHtml(item.name || '수업')}</strong>
+              <button onclick="ttRemoveSubject('${escapeHtml(item.name).replace(/'/g, "\\'")}');" style="background:none;border:none;color:#FF6B6B;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--text-secondary)">
+              ${item.academy ? '<span><i class="fas fa-building" style="margin-right:4px;color:' + bg + '"></i>' + escapeHtml(item.academy) + '</span>' : ''}
+              <span><i class="fas fa-calendar-day" style="margin-right:4px"></i>${escapeHtml(item.day || '?')}요일</span>
+              <span><i class="fas fa-clock" style="margin-right:4px"></i>${escapeHtml(item.startTime || '?')} ~ ${escapeHtml(item.endTime || '?')}</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button class="btn-primary btn-glow" onclick="ttSave();" style="width:100%">
+          <i class="fas fa-check" style="margin-right:8px"></i> ${items.length}개 학원 일정 저장하기
+        </button>
+        <button class="btn-secondary" onclick="state._ttOnboardingStep='photo';state._ttPhotoBase64=null;renderScreen(true);" style="width:100%">
+          <i class="fas fa-redo" style="margin-right:8px"></i> 다시 촬영하기
+        </button>
+      </div>
+    </div>`;
+}
+
+function _renderTTDone() {
+  const subjects = state._ttSavedSubjects || [];
+  const returnTo = state._ttReturnTo;
+  const doneAction = returnTo === 'timetable-manage'
+    ? "state._ttReturnTo=null;syncTodayRecords();state.currentScreen='timetable-manage';renderScreen(true);"
+    : "syncTodayRecords();state.currentScreen='main';state.studentTab='home';_screenHistory.length=0;_screenHistory.push('main');try{history.replaceState({screen:'base'},'','');history.pushState({screen:'main',tab:'home'},'','');}catch(e){}renderScreen(true);DB.loadAll().then(()=>{syncTodayRecords();refreshDataWidgets();renderScreen();});startClassEndChecker();startAutoSync();";
+  const doneLabel = returnTo === 'timetable-manage' ? '시간표 관리로 돌아가기' : '시작하기';
+  return `
+    <div class="onboarding-screen animate-in" style="padding:24px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh;text-align:center">
+      <div style="font-size:64px;margin-bottom:24px">🎉</div>
+      <h2 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:12px">시간표 등록 완료!</h2>
+      <p style="color:var(--text-secondary);font-size:15px;margin-bottom:24px">
+        <strong>${subjects.length}개 과목</strong>이 등록되었습니다
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:32px">
+        ${subjects.map(s => `<span style="padding:6px 14px;background:var(--primary-light);color:white;border-radius:20px;font-size:13px;font-weight:500">${escapeHtml(s.name)}</span>`).join('')}
+      </div>
+      <button class="btn-primary btn-glow" onclick="${doneAction}" style="width:100%;max-width:320px">
+        ${doneLabel} <i class="fas fa-arrow-right" style="margin-left:8px"></i>
+      </button>
+    </div>`;
+}
+
+/** 시간표 분석 확인 화면에서 뒤로가기 시 확인 다이얼로그 */
+function ttConfirmBack() {
+  const mode = state._ttMode || 'school';
+  const hasAnalyzedData = mode === 'school'
+    ? (state._ttAnalyzedSlots && state._ttAnalyzedSlots.length > 0)
+    : (state._ttAcademySlots && state._ttAcademySlots.length > 0);
+
+  if (!hasAnalyzedData) {
+    // 분석된 데이터가 없으면 바로 뒤로가기
+    state._ttOnboardingStep = 'photo';
+    renderScreen(true);
+    return;
+  }
+
+  // 기존 시간표가 비어있는지 확인 (학교 시간표 기준)
+  const hasExistingTimetable = state.timetable?.school?.some(row =>
+    row.some(subj => subj && subj.trim() !== '')
+  );
+
+  // 분석된 데이터가 있으면 확인 다이얼로그 표시
+  const msg = hasExistingTimetable
+    ? '분석된 시간표를 저장하지 않고 나가시겠습니까?'
+    : '분석된 시간표가 저장되지 않습니다. 저장하지 않고 나가시겠습니까?\n\n(기존 시간표가 없으니 저장을 권장합니다)';
+
+  if (confirm(msg)) {
+    state._ttOnboardingStep = 'photo';
+    state._ttAnalyzedSlots = null;
+    state._ttAcademySlots = null;
+    renderScreen(true);
+  }
+}
+
+
+// ==================== PWA 설치 유도 + 업데이트 알림 ====================
+// (기존 로직과 완전 독립 — 이 블록은 추가만 되며 기존 함수를 수정하지 않음)
+
+(function initPWA() {
+  // --- 1. Android/Desktop: beforeinstallprompt 캡처 ---
+  let _deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    _deferredPrompt = e;
+    showInstallBanner('android');
+  });
+
+  // --- 2. 설치 완료 감지 ---
+  window.addEventListener('appinstalled', () => {
+    _deferredPrompt = null;
+    hideInstallBanner();
+    console.log('[PWA] App installed!');
+  });
+
+  // --- 3. iOS 감지 (standalone이 아닐 때만) ---
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+  if (isIOS && !isStandalone) {
+    // iOS는 beforeinstallprompt가 없으므로 첫 방문 3초 후 가이드 표시
+    const dismissed = localStorage.getItem('pwa_ios_dismissed');
+    if (!dismissed) {
+      setTimeout(() => showInstallBanner('ios'), 3000);
+    }
+  }
+
+  // --- 4. 배너 표시 함수 ---
+  function showInstallBanner(type) {
+    if (isStandalone) return; // 이미 앱으로 실행 중이면 표시 안 함
+    if (document.getElementById('pwa-install-banner')) return; // 중복 방지
+
+    const banner = document.createElement('div');
+    banner.id = 'pwa-install-banner';
+    banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:16px;padding-bottom:max(16px,env(safe-area-inset-bottom));background:linear-gradient(135deg,#6C5CE7,#8B5CF6);box-shadow:0 -4px 20px rgba(0,0,0,0.3);animation:slideUp .3s ease';
+
+    if (type === 'ios') {
+      banner.innerHTML = `
+        <div style="max-width:400px;margin:0 auto;color:#fff">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <img src="/static/icon-192.png" style="width:36px;height:36px;border-radius:8px" alt="">
+              <div>
+                <div style="font-weight:700;font-size:14px">앱으로 설치하기</div>
+                <div style="font-size:11px;opacity:0.85">홈 화면에 추가하면 더 빠르게!</div>
+              </div>
+            </div>
+            <button onclick="document.getElementById('pwa-install-banner').remove();localStorage.setItem('pwa_ios_dismissed','1')" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;padding:4px">✕</button>
+          </div>
+          <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6">
+            <span style="font-size:16px">📲</span> 하단 <b>공유 버튼</b> <span style="font-size:14px">⎋</span> 탭 → <b>"홈 화면에 추가"</b> 선택
+          </div>
+        </div>`;
+    } else {
+      banner.innerHTML = `
+        <div style="max-width:400px;margin:0 auto;color:#fff;display:flex;align-items:center;gap:12px">
+          <img src="/static/icon-192.png" style="width:40px;height:40px;border-radius:8px" alt="">
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:14px">학점플래너 앱 설치</div>
+            <div style="font-size:11px;opacity:0.85">홈 화면에서 바로 실행!</div>
+          </div>
+          <button id="pwa-install-btn" style="background:#fff;color:#6C5CE7;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer">설치</button>
+          <button onclick="document.getElementById('pwa-install-banner').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:4px">✕</button>
+        </div>`;
+    }
+    document.body.appendChild(banner);
+
+    // Android/Desktop 설치 버튼 이벤트
+    const installBtn = banner.querySelector('#pwa-install-btn');
+    if (installBtn && _deferredPrompt) {
+      installBtn.addEventListener('click', async () => {
+        _deferredPrompt.prompt();
+        const { outcome } = await _deferredPrompt.userChoice;
+        console.log('[PWA] Install prompt outcome:', outcome);
+        _deferredPrompt = null;
+        hideInstallBanner();
+      });
+    }
+  }
+
+  function hideInstallBanner() {
+    const el = document.getElementById('pwa-install-banner');
+    if (el) el.remove();
+  }
+
+  // --- 5. 업데이트 토스트 알림 ---
+  window._showPwaUpdateToast = function() {
+    if (document.getElementById('pwa-update-toast')) return;
+    const toast = document.createElement('div');
+    toast.id = 'pwa-update-toast';
+    toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;background:#1e293b;color:#fff;padding:12px 20px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-size:13px;display:flex;align-items:center;gap:10px;animation:slideDown .3s ease;max-width:90vw';
+    toast.innerHTML = `
+      <span>🔄 새 버전이 있습니다</span>
+      <button onclick="location.reload()" style="background:#6C5CE7;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">업데이트</button>
+      <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#999;font-size:16px;cursor:pointer">✕</button>`;
+    document.body.appendChild(toast);
+    setTimeout(() => { if (document.body.contains(toast)) toast.remove(); }, 15000);
+  };
+
+  // --- 6. 이벤트 위임 등록 (메모리 누수 방지 — 1회만 실행) ---
+  _initDelegatedEvents();
+
+  // --- 7. CSS 애니메이션 추가 (기존 스타일 시트에 영향 없음) ---
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  `;
+  document.head.appendChild(style);
+})();
+
+// ==================== 이벤트 위임 (메모리 누수 방지) ====================
+// document 레벨에서 1회만 등록하여, renderScreen() 호출 시 리스너가 쌓이지 않도록 함
+function _initDelegatedEvents() {
+  if (window._delegatedEventsAttached) return;
+
+  // --- 사이드바 + 모바일 하단 탭 공통 핸들러 ---
+  function _handleNavTabClick(tab) {
+    if (tab === 'myqa') { openMyQaIframe(); return; }
+    if (tab === 'community') {
+      state.studentTab = 'community';
+      state.currentScreen = 'main';
+      if (state._authUser && !state._authUser.nickname) {
+        state._communityScreen = 'nickname-setup';
+      } else if (state._communityScreen === 'nickname-setup') {
+        state._communityScreen = 'home';
+      }
+      renderScreen();
+      DB.loadCommunityBoards();
+      DB.getUnreadNotificationCount();
+      return;
+    }
+    if (tab === 'archive' && state.studentTab === 'archive' && typeof _archiveModuleActive !== 'undefined' && _archiveModuleActive && window.ArchiveModule) {
+      window.ArchiveModule.navigate('dashboard');
+      return;
+    }
+    state.studentTab = tab;
+    state.currentScreen = 'main';
+    renderScreen();
+    // 성장 탭 진입 시 아하 리포트 클래스 로드
+    if (tab === 'growth') {
+      loadGrowthAhaClasses();
+    }
+  }
+
+  // 사이드바 네비 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sidebar-nav-item');
+    if (!btn) return;
+    _handleNavTabClick(btn.dataset.tab);
+  });
+
+  // 모바일 하단 탭 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.mob-tab-item');
+    if (!btn) return;
+    _handleNavTabClick(btn.dataset.tab);
+  });
+
+  // --- Student Events 위임 ---
+
+  // Mood buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.mood-btn');
+    if (!btn) return;
+    document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mood = btn.dataset.mood;
+  });
+
+  // Question level rows
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('.q-level-row');
+    if (!row) return;
+    document.querySelectorAll('.q-level-row').forEach(r => r.classList.remove('selected'));
+    row.classList.add('selected');
+  });
+
+  // Career buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.career-btn');
+    if (!btn) return;
+    document.querySelectorAll('.career-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Activity type buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.activity-type-btn');
+    if (!btn) return;
+    document.querySelectorAll('.activity-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Chips (general)
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    // assignment-subject-chips는 별도 처리
+    if (chip.closest('#assignment-subject-chips')) {
+      e.stopPropagation();
+      document.querySelectorAll('#assignment-subject-chips .chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      return;
+    }
+    // 학원 추가 요일 칩은 다중선택 (토글) — state에 저장하여 re-render 시 유지
+    if (chip.closest('#ac-day-chips') && !state.editingAcademy) {
+      const day = chip.dataset.day;
+      let days = state._acSelectedDays ? [...state._acSelectedDays] : [];
+      if (days.includes(day)) {
+        days = days.filter(d => d !== day);
+      } else {
+        days.push(day);
+      }
+      state._acSelectedDays = days;
+      chip.classList.toggle('active');
+      return;
+    }
+    const siblings = chip.parentElement.querySelectorAll('.chip');
+    siblings.forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    if (chip.dataset.qsubject) {
+      state._questionSubject = chip.dataset.qsubject;
+    }
+  });
+
+  // Grid select buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.grid-select-btn');
+    if (!btn) return;
+    const siblings = btn.parentElement.querySelectorAll('.grid-select-btn');
+    siblings.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Planner view toggle
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-pview]');
+    if (!btn) return;
+    state.plannerView = btn.dataset.pview;
+    renderScreen();
+  });
+
+  // Planner category chips
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.planner-cat-btn');
+    if (!btn) return;
+    document.querySelectorAll('.planner-cat-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Assignment type buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.assignment-type-btn');
+    if (!btn) return;
+    document.querySelectorAll('.assignment-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+
+  // Assignment filter chips
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-afilter]');
+    if (!chip) return;
+    state.assignmentFilter = chip.dataset.afilter;
+    renderScreen();
+  });
+
+  // Teach student list
+  document.addEventListener('click', (e) => {
+    const item = e.target.closest('.teach-student-item');
+    if (!item) return;
+    document.querySelectorAll('.teach-student-item').forEach(i => {
+      i.classList.remove('selected');
+      const check = i.querySelector('.fa-check-circle');
+      if (check) check.remove();
+    });
+    item.classList.add('selected');
+    if (!item.querySelector('.fa-check-circle')) {
+      const check = document.createElement('i');
+      check.className = 'fas fa-check-circle';
+      check.style.cssText = 'color:var(--success);margin-left:auto';
+      item.appendChild(check);
+    }
+  });
+
+  // --- Mentor Events 위임 ---
+
+  // 멘토 탭 전환
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mtab]');
+    if (!btn) return;
+    state.mentorTab = btn.dataset.mtab;
+    renderScreen();
+  });
+
+  // 반(그룹) 전환
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-mgroup]');
+    if (!btn) return;
+    if (typeof _mentor !== 'undefined') {
+      _mentor.selectedGroupId = parseInt(btn.dataset.mgroup);
+      _mentor._relayLoaded = false;
+      _mentor._qData = null; _mentor._smMatrix = null; _mentor._smProgress = null; _mentor._phData = null;
+      if (typeof _checkRelayEligibility === 'function') await _checkRelayEligibility();
+      if (typeof mentorLoadGroupSummary === 'function') mentorLoadGroupSummary();
+    }
+  });
+
+  // 학생 행 클릭
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('.m-student-row');
+    if (!row) return;
+    const sname = row.dataset.studentName;
+    const extId = row.dataset.externalId;
+    if (extId) {
+      openStudentViewerIframe(extId, sname);
+    } else {
+      alert('외부 연동 정보가 없는 학생입니다.');
+    }
+  });
+
+  // 경보 배너 클릭
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-alert-student]');
+    if (!el) return;
+    const sname = el.dataset.alertName;
+    const extId = el.dataset.alertExternalId;
+    if (extId) {
+      openStudentViewerIframe(extId, sname);
+    } else {
+      alert('외부 연동 정보가 없는 학생입니다.');
+    }
+  });
+
+  // 학생 상세 탭 전환
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mdetail]');
+    if (!btn) return;
+    if (typeof _mentor !== 'undefined') { _mentor.detailTab = btn.dataset.mdetail; renderScreen(); }
+  });
+
+  // 타임라인 피드백 버튼
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.m-fb-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    if (typeof _mentor !== 'undefined') {
+      _mentor.feedbackRecordType = btn.dataset.fbType || 'general';
+      _mentor.feedbackRecordId = btn.dataset.fbId ? parseInt(btn.dataset.fbId) : null;
+      _mentor.detailTab = 'feedback';
+      renderScreen();
+      setTimeout(() => { document.getElementById('m-fb-input')?.focus(); }, 100);
+    }
+  });
+
+  // 피드백 입력 싱크
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'm-fb-input' && typeof _mentor !== 'undefined') {
+      _mentor.feedbackDraft = e.target.value;
+    }
+  });
+
+  // --- Director Events 위임 ---
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-dtab]');
+    if (!btn) return;
+    state.directorTab = btn.dataset.dtab;
+    renderScreen();
+  });
+
+  window._delegatedEventsAttached = true;
+}

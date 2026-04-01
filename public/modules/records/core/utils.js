@@ -1,0 +1,312 @@
+/* ================================================================
+   Records Module — core/utils.js
+   공유 유틸리티 (escapeHtml, KST 날짜, 색상맵 등)
+   ================================================================ */
+
+export function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+export function kstNow() {
+  return new Date(Date.now() + 9 * 3600000);
+}
+
+export function kstToday() {
+  return kstNow().toISOString().slice(0, 10);
+}
+
+export function kstDate(d) {
+  if (!d) return kstToday();
+  const kd = new Date(d.getTime() + 9 * 3600000);
+  return kd.toISOString().slice(0, 10);
+}
+
+export function kstDateOffset(days) {
+  return kstDate(new Date(Date.now() + days * 86400000));
+}
+
+export const SUBJECT_COLOR_MAP = {
+  '국어': '#FF6B6B',
+  '수학': '#6C5CE7',
+  '영어': '#00B894',
+  '과학': '#FDCB6E',
+  '사회': '#74B9FF',
+  '한국사': '#E056A0',
+  '제2외국어': '#A29BFE',
+  '기술가정': '#FF9F43',
+  '음악': '#fd79a8',
+  '미술': '#00cec9',
+  '체육': '#e17055',
+  '정보': '#0984e3',
+  '동아리': '#00CEC9',
+  '창체': '#E17055',
+  '진로': '#636e72',
+  '기타': '#888',
+};
+
+export const SUBJECT_LIST = ['수학', '국어', '영어', '과학', '한국사', '사회', '정보', '기술가정', '음악', '미술', '체육', '진로', '기타'];
+export const SUBJECT_COLORS_ARRAY = ['#6C5CE7', '#FF6B6B', '#00B894', '#FDCB6E', '#74B9FF', '#A29BFE', '#E056A0', '#FF9F43', '#00CEC9', '#FD79A8', '#E17055', '#636e72', '#888'];
+
+export const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
+
+export function getSubjectColor(subject) {
+  return SUBJECT_COLOR_MAP[subject] || '#636e72';
+}
+
+export function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return (dateStr).slice(5).replace('-', '/') + ' (' + DAY_NAMES[d.getDay()] + ')';
+}
+
+export function getDday(dateStr) {
+  if (!dateStr) return 999;
+  const target = new Date(dateStr + 'T00:00:00+09:00');
+  const today = new Date(kstToday() + 'T00:00:00+09:00');
+  return Math.ceil((target - today) / 86400000);
+}
+
+export function tryParseJSON(str, fallback) {
+  try { return JSON.parse(str || (Array.isArray(fallback) ? '[]' : '{}')); }
+  catch { return fallback !== undefined ? fallback : {}; }
+}
+
+/**
+ * KaTeX 수식 렌더링: $$블록$$ + $인라인$ 처리
+ * KaTeX 미로드 시 원문 그대로 반환
+ */
+export function renderMath(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  if (typeof katex === 'undefined') {
+    if (!renderMath._warned) {
+      console.warn('[KaTeX] Library not loaded. Math formulas will display as plain text.');
+      renderMath._warned = true;
+    }
+    return text;
+  }
+
+  // 블록 수식: $$...$$
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, formula) => {
+    try {
+      return katex.renderToString(formula.trim(), {
+        displayMode: true, throwOnError: false, strict: false, output: 'html'
+      });
+    } catch { return match; }
+  });
+
+  // 인라인 수식: $...$ (boundary-checked to reject $20 etc.)
+  text = text.replace(/(?<!\w)\$([^$\n]+?)\$(?!\d)/g, (match, formula) => {
+    try {
+      return katex.renderToString(formula.trim(), {
+        displayMode: false, throwOnError: false, strict: false, output: 'html'
+      });
+    } catch { return match; }
+  });
+
+  return text;
+}
+
+/**
+ * AI 생성 텍스트의 안전한 HTML 변환 (올바른 호출 순서 강제)
+ * 순서: escapeHtml -> renderMath -> nl2br -> markKeywords(선택)
+ * @param {string} text - raw AI text
+ * @param {{ keywords?: string[] }} opts - optional keywords for highlighting
+ * @returns {string} safe HTML string
+ */
+export function safeMathHtml(text, opts) {
+  if (!text || typeof text !== 'string') return text || '';
+  let result = escapeHtml(text);
+  result = renderMath(result);
+  result = result.replace(/\n/g, '<br>');
+  if (opts && opts.keywords && opts.keywords.length > 0) {
+    // markKeywords after renderMath: skip content inside KaTeX spans
+    result = markKeywordsOutsideKatex(result, opts.keywords);
+  }
+  return result;
+}
+
+/**
+ * markKeywords that skips content inside <span class="katex">...</span> blocks
+ */
+function markKeywordsOutsideKatex(html, keywords) {
+  if (!keywords || keywords.length === 0) return html;
+  const filtered = keywords.filter(k => k && k.length >= 2);
+  if (filtered.length === 0) return html;
+  const escaped = filtered.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const kwRegex = new RegExp(`(${escaped.join('|')})`, 'gi');
+  // Split by KaTeX spans to avoid modifying math output
+  const parts = html.split(/(<span class="katex[\s\S]*?<\/span>(?:<\/span>)*)/);
+  return parts.map((part, i) => {
+    // Even indices are non-KaTeX text, odd indices are KaTeX HTML
+    if (i % 2 === 0) {
+      return part.replace(kwRegex, '<span class="cl-mark">$1</span>');
+    }
+    return part;
+  }).join('');
+}
+
+/**
+ * 텍스트에서 keywords 배열에 포함된 단어를 찾아 <span class="cl-mark"> 으로 감싼다.
+ * HTML 태그 내부는 건드리지 않으며, 2글자 이상 키워드만 처리한다.
+ */
+export function markKeywords(text, keywords) {
+  if (!text || !keywords || keywords.length === 0) return text || '';
+  const filtered = keywords.filter(k => k && k.length >= 2);
+  if (filtered.length === 0) return text;
+  const escaped = filtered.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(${escaped.join('|')})`, 'gi');
+  return text.replace(regex, '<span class="cl-mark">$1</span>');
+}
+
+/**
+ * 과제 마감일까지의 단계별 플랜을 자동 생성
+ * @param {string} dueDate - YYYY-MM-DD 마감일
+ * @returns {Array} plan steps [{step, title, date, done}, ...]
+ */
+// 단순 과제 여부 판단 (키워드 기반)
+const SIMPLE_KEYWORDS = ['풀기', '풀이', '읽기', '외우기', '암기', '제출', '프린트', '복습', '정리', '필기'];
+const COMPLEX_KEYWORDS = ['보고서', '탐구', '발표', '제작', '조사', '만들기', '프로젝트', '실험', '에세이', '작문', '감상문'];
+
+export function isSimpleAssignment(title) {
+  if (!title) return true;
+  const t = title.toLowerCase();
+  // 복잡 키워드가 있으면 복잡 과제
+  if (COMPLEX_KEYWORDS.some(k => t.includes(k))) return false;
+  // 단순 키워드가 있으면 단순 과제
+  if (SIMPLE_KEYWORDS.some(k => t.includes(k))) return true;
+  // 기본: 단순 과제 (부담 줄이기)
+  return true;
+}
+
+export function generatePlanSteps(dueDate) {
+  if (!dueDate) return [];
+  const daysUntilDue = getDday(dueDate);
+  if (daysUntilDue <= 0) return [];
+  const stepsCount = Math.max(3, Math.min(6, daysUntilDue));
+  const plan = [];
+  const dueD = new Date(dueDate + 'T00:00:00+09:00');
+  const today = kstNow();
+  const stepLabels = ['자료 조사 및 준비', '초안 작성', '본문 완성', '검토 및 수정', '최종 점검', '제출'];
+  for (let i = 0; i < stepsCount; i++) {
+    const stepDate = new Date(today.getTime() + ((dueD - today) / stepsCount) * (i + 1));
+    plan.push({
+      step: i + 1,
+      title: stepLabels[i] || `${i + 1}단계 진행`,
+      date: `${stepDate.getMonth() + 1}/${stepDate.getDate()}`,
+      done: false,
+    });
+  }
+  return plan;
+}
+
+/**
+ * assignment 필드에서 표시용 텍스트를 추출 (object / string 둘 다 처리)
+ */
+/**
+ * 이미지 리사이즈 (최대 너비 제한)
+ */
+export function resizeImage(file, maxWidth = 1200) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) {
+          resolve(e.target.result);
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        const ratio = maxWidth / img.width;
+        canvas.width = maxWidth;
+        canvas.height = Math.round(img.height * ratio);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export function getAssignmentDisplayText(assignment) {
+  if (!assignment) return '';
+  if (typeof assignment === 'string') return assignment;
+  if (typeof assignment === 'object') {
+    let text = assignment.title || '';
+    if (assignment.description && assignment.description !== assignment.title) {
+      text += text ? ' - ' + assignment.description : assignment.description;
+    }
+    if (assignment.dueDateRaw) text += ` (기한: ${assignment.dueDateRaw})`;
+    return text;
+  }
+  return '';
+}
+
+// === 토스트 알림 ===
+export function showToast(icon, message, duration = 3000) {
+  const existing = document.querySelector('.toast-notification');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast-notification';
+  toast.innerHTML = `<span class="toast-icon">${icon}</span><span>${message}</span>`;
+
+  // .archive-module 컨테이너 안에 추가
+  const container = document.querySelector('.archive-module') || document.body;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// === 스켈레톤 HTML 생성 ===
+export function skeletonCards(count = 3) {
+  return Array.from({ length: count }, () => `
+    <div class="skeleton-card">
+      <div class="skeleton skeleton-thumb"></div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <div class="skeleton skeleton-chip"></div>
+        <div class="skeleton skeleton-chip" style="width:40px"></div>
+      </div>
+      <div class="skeleton skeleton-text long"></div>
+      <div class="skeleton skeleton-text medium"></div>
+      <div class="skeleton skeleton-text short"></div>
+    </div>
+  `).join('');
+}
+
+export function skeletonDetail() {
+  return `
+    <div class="full-screen animate-slide">
+      <div class="screen-header">
+        <button class="back-btn" disabled><i class="fas fa-arrow-left"></i></button>
+        <div class="skeleton skeleton-text medium" style="height:20px;margin:0"></div>
+      </div>
+      <div class="form-body">
+        <div class="skeleton-card" style="border-left:4px solid rgba(255,255,255,0.1)">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="skeleton skeleton-circle"></div>
+            <div style="flex:1">
+              <div class="skeleton skeleton-text medium" style="height:18px"></div>
+              <div class="skeleton skeleton-text short" style="height:12px"></div>
+            </div>
+          </div>
+        </div>
+        <div class="skeleton skeleton-text long" style="height:16px;margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium" style="height:14px"></div>
+        <div class="skeleton skeleton-thumb" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text long" style="margin-top:16px"></div>
+        <div class="skeleton skeleton-text medium"></div>
+        <div class="skeleton skeleton-text short"></div>
+      </div>
+    </div>`;
+}

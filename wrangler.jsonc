@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "credit-planner-v8",
+  "compatibility_date": "2026-02-14",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  // Smart Placement: AI API 서버(미국/유럽)에 가까운 데이터센터에서 Worker 실행
+  // Gemini/OpenAI/Anthropic 모두 일부 지역에서 "region not supported" 차단하므로 필수
+  "placement": {
+    "mode": "smart"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "credit-planner-db",
+      "database_id": "4e1b3a27-5c53-499f-b697-846560efcd60"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "credit-planner-photos"
+    }
+  ]
+}
