@@ -88,6 +88,40 @@ npm run cf-typegen
 | 배포 | **Cloudflare Pages** | `wrangler` 사용 |
 | AI | OpenAI, Claude, Gemini, Perplexity | 각 기능별 다른 모델 사용 |
 
+### ⚠️ AI API 호출 규칙 (절대 준수)
+
+**모든 AI API(Gemini, Claude, OpenAI)는 반드시 `jungyoul.com` 프록시 서버를 경유해야 한다. 직접 API 호출 금지.**
+
+- **이유**: CF Workers 아시아 엣지에서 Gemini/OpenAI/Anthropic 3개 서비스 모두 지역 차단됨
+- **프록시 URL**: `https://jungyoul.com/api/ai-proxy/planner`
+- **인증**: `Authorization: Bearer ${c.env.AI_PROXY_SECRET}` 헤더
+- **엔드포인트**: `/gemini`, `/claude`, `/openai`
+- **헬퍼 함수** (`src/helpers.ts`):
+  - `callProxyGemini()` — Gemini 호출
+  - `callProxyClaude()` — Claude 호출 (멀티턴 messages 지원, system 필드 지원)
+  - `callProxyOpenAI()` — OpenAI 호출
+  - `callGeminiWithFallback()` — Gemini → Claude 폴백 체인
+  - `callGeminiMultiImage()` — 다중 이미지 OCR + 분석 파이프라인
+- **추적 필드**: 모든 호출에 `externalId`(유저 ID)와 `task`(기능명) 전달 필수
+- **JSON 모드**: 프록시는 `responseMimeType` 미지원 → `jsonMode: true` 옵션 사용 (프롬프트에 JSON 지시 자동 추가)
+- **응답 형식**: `{ok: true, text: "..."}` 또는 `{ok: false, error: "..."}`
+- **타임아웃**: 프록시 제한 5분(300초). `timeoutMs: 300000` 이하로 설정
+
+```typescript
+// ✅ 올바른 사용법
+const text = await callProxyGemini({
+  proxySecret: c.env.AI_PROXY_SECRET,
+  prompt: '...',
+  externalId: String(studentId),
+  task: 'credit-log',
+})
+
+// ❌ 절대 금지 — 직접 API 호출
+fetch('https://generativelanguage.googleapis.com/...')
+fetch('https://api.anthropic.com/...')
+fetch('https://api.openai.com/...')
+```
+
 ---
 
 ## 3. 폴더 구조
