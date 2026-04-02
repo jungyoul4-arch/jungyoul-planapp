@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../types'
-import { callGeminiWithFallback } from '../helpers'
+import { callGeminiWithFallback, getExternalUserId } from '../helpers'
 
 const mentorAnalysis = new Hono<{ Bindings: Bindings }>()
 
@@ -104,12 +104,13 @@ ${questionLines}
   ]
 }`
 
+    const externalId = await getExternalUserId(c.env.DB, studentId)
     const { text, source } = await callGeminiWithFallback({
       proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       jsonMode: true,
       temperature: 0.4,
-      externalId: String(studentId),
+      externalId,
       task: 'question-analysis',
     })
 

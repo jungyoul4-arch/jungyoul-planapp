@@ -12,7 +12,7 @@ import {
   stripHtmlForPreview, sanitizeHTML,
   NICKNAME_BLOCKLIST, validateNickname,
   getStudentAcademy, canAccessBoard,
-  getStudentCareerContext,
+  getStudentCareerContext, getExternalUserId,
 } from './helpers'
 import mentorAuth from './routes/mentor-auth'
 import mentorGroups from './routes/mentor-groups'
@@ -268,6 +268,7 @@ app.post('/api/analyze', async (c) => {
 
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
     const rawText = await callProxyOpenAI({
       proxySecret: c.env.AI_PROXY_SECRET,
@@ -276,7 +277,7 @@ app.post('/api/analyze', async (c) => {
       model: 'gpt-4o-mini',
       jsonMode: true,
       temperature: 0.3,
-      externalId: studentId ? String(studentId) : undefined,
+      externalId,
       task: 'analyze',
     })
 
@@ -297,6 +298,7 @@ app.post('/api/coaching', async (c) => {
 
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
     const text = await callProxyClaude({
       proxySecret: c.env.AI_PROXY_SECRET,
@@ -304,7 +306,7 @@ app.post('/api/coaching', async (c) => {
       messages: messages.map((m: any) => ({ role: m.role, content: m.content })),
       maxTokens: 1024,
       timeoutMs: 45000,
-      externalId: studentId ? String(studentId) : undefined,
+      externalId,
       task: 'coaching',
     })
 
@@ -369,17 +371,36 @@ app.post('/api/ai/credit-log', async (c) => {
 
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
-    // base64 prefix 제거 + inline_data 배열 생성
-    const inlineImages = images.map((img: any) => ({
-      mime_type: img.mimeType || 'image/jpeg',
-      data: (img.base64 || '').replace(/^data:image\/\w+;base64,/, '')
-    }))
+    // ── AI 전달 이미지 선별: 필기 1장 + 참고 최대 4장 = 최대 5장 ──
+    const MAX_AI_IMAGES = 5
+    const MAX_BASE64_LEN = 1_500_000 // base64 ~1.5M자 ≈ 바이너리 ~1.1MB
+    const noteImages: any[] = []
+    const refImages: any[] = []
+    for (const img of images) {
+      const b64 = (img.base64 || '').replace(/^data:image\/\w+;base64,/, '')
+      if (b64.length > MAX_BASE64_LEN) {
+        console.log(`[credit-log] 이미지 크기 초과 스킵 (${Math.round(b64.length / 1000)}KB base64)`)
+        continue
+      }
+      const entry = { mime_type: img.mimeType || 'image/jpeg', data: b64, tag: img.tag || '참고' }
+      if (img.tag === '필기' && noteImages.length < 1) {
+        noteImages.push(entry)
+      } else if (refImages.length < MAX_AI_IMAGES - 1) {
+        refImages.push(entry)
+      }
+    }
+    const aiImages = [...noteImages, ...refImages].slice(0, MAX_AI_IMAGES)
+    if (aiImages.length === 0) return c.json({ success: false, error: '유효한 사진이 없습니다 (크기 초과)' }, 400)
+    console.log(`[credit-log] AI에 전달할 이미지: ${aiImages.length}장 (필기${noteImages.length} + 참고${refImages.length}) / 전체 ${images.length}장`)
+
+    const inlineImages = aiImages.map(({ mime_type, data }: any) => ({ mime_type, data }))
+    const imageTags = aiImages.map((img: any) => img.tag)
 
     // Note_OCR / Reference_OCR 구분 정보
-    const tagInfo = images.map((img: any, i: number) => {
-      const tag = img.tag || '노트'
-      return tag === '필기' ? `사진${i + 1}: [Note_OCR] 필기 노트` : `사진${i + 1}: [Reference_OCR] 참고사진 (${tag})`
+    const tagInfo = aiImages.map((img: any, i: number) => {
+      return img.tag === '필기' ? `사진${i + 1}: [Note_OCR] 필기 노트` : `사진${i + 1}: [Reference_OCR] 참고사진 (${img.tag})`
     }).join('\n')
 
     // [Subject] 동적 치환 — system prompt와 user prompt 분리
@@ -387,9 +408,6 @@ app.post('/api/ai/credit-log', async (c) => {
     const userContext = `[Subject]: ${subject || '미지정'}\n교시: ${period || '미지정'}교시\n날짜: ${date || '미지정'}\n${studentComment ? `[Student_Comment]: ${studentComment}\n` : ''}사진 구성:\n${tagInfo}`
     // Gemini용 (system+user 합침)
     const fullPrompt = systemPrompt + `\n\n---\n${userContext}\n\n위 JSON 형식으로만 응답하세요.`
-
-    // 병렬 OCR용 태그 배열
-    const imageTags = images.map((img: any) => img.tag || '참고')
 
     const { text } = await callGeminiMultiImage({
       proxySecret: c.env.AI_PROXY_SECRET,
@@ -400,7 +418,7 @@ app.post('/api/ai/credit-log', async (c) => {
       tags: imageTags,
       jsonMode: true,
       temperature: 0.3,
-      externalId: studentId ? String(studentId) : undefined,
+      externalId,
       task: 'credit-log',
     })
 
@@ -496,10 +514,11 @@ app.post('/api/deep-analyze', async (c) => {
 
     // 진로 프로파일 컨텍스트 로드
     const careerCtx = studentId ? await getStudentCareerContext(c.env.DB, Number(studentId)) : ''
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
     const text = await callProxyClaude({
       proxySecret: c.env.AI_PROXY_SECRET,
-      externalId: studentId ? String(studentId) : undefined,
+      externalId,
       task: 'deep-analyze',
       systemPrompt: `당신은 고등학교 수준의 고난도 문제를 분석하는 전문 튜터입니다.
 학생이 이해할 수 있도록 단계적으로 설명하되, 핵심 개념과 풀이 전략을 명확히 제시하세요.
@@ -4203,6 +4222,7 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
 
     const proxySecret = c.env.AI_PROXY_SECRET
     if (!proxySecret) return c.json({ success: false, error: 'AI 프록시 설정이 되지 않았습니다' }, 500)
+    const externalId = await getExternalUserId(c.env.DB, studentId)
 
     // 1. R2에 원본 PDF 저장
     let pdfR2Key = ''
@@ -4225,7 +4245,7 @@ app.post('/api/student/:id/career-profile/upload', async (c) => {
       const rawText = await callProxyGemini({
         proxySecret, prompt: CAREER_PDF_PARSE_PROMPT, images,
         jsonMode: true, temperature: 0.1, maxTokens: 8192, timeoutMs: 90000,
-        externalId: String(studentId), task: 'career-profile',
+        externalId, task: 'career-profile',
       })
       parsedData = JSON.parse(cleanJsonResponse(rawText))
     } catch (parseErr: any) {
@@ -4392,13 +4412,14 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
     // Gemini → OpenAI 폴백으로 시간표 분석 (프록시 경유)
     let aiText = '{}'
     const imageData = [{ mime_type: mimeType, data: cleanBase64 }]
+    const externalId = await getExternalUserId(c.env.DB, studentId)
 
     // 1차: Gemini Vision
     try {
       aiText = await callProxyGemini({
         proxySecret: c.env.AI_PROXY_SECRET,
         prompt, images: imageData, jsonMode: true, temperature: 0.1,
-        externalId: String(studentId), task: 'timetable-photo',
+        externalId, task: 'timetable-photo',
       })
     } catch (geminiErr: any) {
       console.error('Gemini Vision failed, trying OpenAI:', geminiErr.message)
@@ -4408,7 +4429,7 @@ app.post('/api/student/:id/timetable/photo', async (c) => {
         aiText = await callProxyOpenAI({
           proxySecret: c.env.AI_PROXY_SECRET,
           prompt, images: imageData, jsonMode: true, temperature: 0.1, timeoutMs: 300000,
-          externalId: String(studentId), task: 'timetable-photo',
+          externalId, task: 'timetable-photo',
         })
       } catch (openaiErr: any) {
         console.error('OpenAI Vision error:', openaiErr.message)
@@ -4734,20 +4755,21 @@ app.post('/api/ai/activity-analyze', async (c) => {
     let rawText = '{}'
     let aiSource = 'gemini'
     const proxySecret = c.env.AI_PROXY_SECRET
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
     // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId, task: 'activity-analyze' })
     } catch (geminiErr) {
       console.log('Activity AI: Gemini fail, OpenAI fallback:', geminiErr)
       aiSource = 'openai'
       try {
-        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId, task: 'activity-analyze' })
       } catch (openaiErr) {
         console.log('Activity AI: OpenAI fail, Claude fallback:', openaiErr)
         aiSource = 'claude'
         try {
-          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'activity-analyze' })
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId, task: 'activity-analyze' })
         } catch (claudeErr) {
           return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }
@@ -4835,20 +4857,21 @@ OCR 규칙:
     let rawText = '{}'
     let aiSource = 'gemini'
     const proxySecret = c.env.AI_PROXY_SECRET
+    const externalId = studentId ? await getExternalUserId(c.env.DB, Number(studentId)) : undefined
 
     // Step 1: Gemini → Step 2: OpenAI → Step 3: Claude (프록시 경유)
     try {
-      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
+      rawText = await callProxyGemini({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, externalId, task: 'aha-report-v2' })
     } catch (geminiErr) {
       console.log('Gemini 실패 (v2), OpenAI 폴백:', geminiErr)
       aiSource = 'openai'
       try {
-        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
+        rawText = await callProxyOpenAI({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId, task: 'aha-report-v2' })
       } catch (openaiErr) {
         console.log('OpenAI 실패 (v2), Claude 폴백:', openaiErr)
         aiSource = 'claude'
         try {
-          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId: studentId ? String(studentId) : undefined, task: 'aha-report-v2' })
+          rawText = await callProxyClaude({ proxySecret, prompt: promptText, images: imageDataList, jsonMode: true, temperature: 0.2, timeoutMs: 300000, externalId, task: 'aha-report-v2' })
         } catch (claudeErr) {
           return c.json({ error: '분석에 실패했어요. 다시 시도해주세요.', detail: 'all_ai_failed' }, 500)
         }

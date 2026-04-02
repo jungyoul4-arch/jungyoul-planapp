@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../types'
-import { getKSTString, recordXp, callGeminiWithFallback } from '../helpers'
+import { getKSTString, recordXp, callGeminiWithFallback, getExternalUserId } from '../helpers'
 
 const mentorQuestions = new Hono<{ Bindings: Bindings }>()
 
@@ -341,12 +341,13 @@ ${question.content ? `추가 설명: ${question.content}` : ''}
 ## 출력
 고도화된 질문 (한 문장~두 문장):`
 
+    const externalId = question.student_id ? await getExternalUserId(c.env.DB, question.student_id) : undefined
     const { text } = await callGeminiWithFallback({
       proxySecret: c.env.AI_PROXY_SECRET,
       prompt,
       jsonMode: false,
       temperature: 0.4,
-      externalId: question.student_id ? String(question.student_id) : undefined,
+      externalId,
       task: 'question-improve',
     })
 

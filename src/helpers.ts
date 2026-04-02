@@ -277,35 +277,20 @@ export async function callGeminiMultiImage(opts: {
   let ocrError = ''
 
   try {
-    console.log(`[OCR] ${images.length}장 사진 Gemini OCR 시작`)
+    console.log(`[OCR] ${images.length}장 사진 Gemini OCR 시작 (단일 호출)`)
 
-    if (images.length >= 3) {
-      // 3장 이상: 병렬 OCR
-      const ocrPromises = images.map((img, i) =>
-        callGeminiOcrSingle(proxySecret, img, tags[i] || '노트', i, externalId, task)
-          .catch(e => { console.log(`OCR 사진${i + 1} 실패:`, e); return `(사진${i + 1} OCR 실패)` })
-      )
-      const ocrResults = await Promise.all(ocrPromises)
-      ocrText = ocrResults.map((text, i) => {
-        const tag = tags[i] || '노트'
-        const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
-        return `--- 사진${i + 1} ${label} ${tag} ---\n${text}`
-      }).join('\n\n')
-      ocrSuccess = true
-    } else {
-      // 1~2장: 한 번에 OCR
-      const ocrPrompt = '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.'
-      const rawOcr = await callProxyGemini({
-        proxySecret, prompt: ocrPrompt, images,
-        temperature: 0.1, maxTokens: 4096, timeoutMs: 300000, externalId, task,
-      })
-      ocrText = images.map((_, i) => {
-        const tag = tags[i] || '노트'
-        const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
-        return `--- 사진${i + 1} ${label} ${tag} ---`
-      }).join('\n') + '\n\n' + rawOcr
-      ocrSuccess = true
-    }
+    // 모든 이미지를 하나의 Gemini API 호출로 전송 (프록시 1회 호출)
+    const ocrPrompt = '모든 사진의 텍스트를 정확히 읽어주세요. 수식은 LaTeX($...$) 변환. 줄바꿈 유지. 각 사진별로 구분해서 텍스트만 반환.'
+    const rawOcr = await callProxyGemini({
+      proxySecret, prompt: ocrPrompt, images,
+      temperature: 0.1, maxTokens: 4096, timeoutMs: 300000, externalId, task,
+    })
+    ocrText = images.map((_, i) => {
+      const tag = tags[i] || '노트'
+      const label = tag === '필기' ? '[Note_OCR]' : '[Reference_OCR]'
+      return `--- 사진${i + 1} ${label} ${tag} ---`
+    }).join('\n') + '\n\n' + rawOcr
+    ocrSuccess = true
     if (ocrSuccess) console.log(`[OCR] 완료 (${ocrText.length}자)`)
   } catch (e: any) {
     ocrError = `Gemini OCR error: ${e.message}`
@@ -455,6 +440,14 @@ export function validateNickname(nickname: string): { valid: boolean; error?: st
   if (!/^[가-힣a-zA-Z0-9\s]+$/.test(trimmed)) return { valid: false, error: '닉네임에 한글, 영문, 숫자, 공백만 사용 가능합니다' };
   if (NICKNAME_BLOCKLIST.some(w => trimmed.toLowerCase().includes(w))) return { valid: false, error: '사용할 수 없는 닉네임입니다' };
   return { valid: true };
+}
+
+/** D1 studentId → external_user_id 변환 (프록시 추적용) */
+export async function getExternalUserId(db: any, studentId: number): Promise<string | undefined> {
+  try {
+    const row: any = await db.prepare('SELECT external_user_id FROM students WHERE id = ?').bind(studentId).first()
+    return row?.external_user_id ? String(row.external_user_id) : undefined
+  } catch { return undefined }
 }
 
 /** 학생의 학원명 조회 (join chain via student_groups) */
