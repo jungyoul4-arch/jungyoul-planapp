@@ -913,18 +913,62 @@ app.get('/api/auth/external-login', async (c) => {
       ).bind(remoteUserId).first();
 
       if (!student) {
-        // 학생이 아직 로컬에 없으면 자동 생성 (group_id 없이)
+        // 학생이 아직 로컬에 없으면 자동 생성
         const stPwHash = await hashPassword(`ext_${remoteUserId}_auto`);
         const emojis = ['😊','😎','🤓','🦊','🐱','🐶','🦁','🐻','🐼','🐨','🦄','🐸','🐰','🐯'];
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
 
-        const result = await c.env.DB.prepare(
-          'INSERT INTO students (name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?)'
-        ).bind(name, stPwHash, '', 0, emoji, remoteUserId).run();
+        // 원격 사용자의 class_id로 로컬 그룹 찾기
+        let groupId: number | null = null;
+        const remoteClassId = remoteUser.class_id ? Number(remoteUser.class_id) : null;
 
+        if (remoteClassId) {
+          // external_class_id로 그룹 찾기
+          const group: any = await c.env.DB.prepare(
+            'SELECT id FROM groups WHERE external_class_id = ? AND is_active = 1'
+          ).bind(remoteClassId).first();
+          if (group) {
+            groupId = group.id;
+          }
+        }
+
+        // 그룹이 없으면 첫 번째 활성 그룹 사용, 없으면 새로 생성
+        if (!groupId) {
+          const defaultGroup: any = await c.env.DB.prepare(
+            'SELECT id FROM groups WHERE is_active = 1 ORDER BY id LIMIT 1'
+          ).first();
+
+          if (defaultGroup) {
+            groupId = defaultGroup.id;
+          } else {
+            // 그룹이 하나도 없으면 기본 그룹 생성
+            const inviteCode = generateInviteCode();
+            const newGroupResult = await c.env.DB.prepare(
+              'INSERT INTO groups (mentor_id, name, invite_code, description) VALUES (1, ?, ?, ?)'
+            ).bind('기본반', inviteCode, '외부 로그인 학생용 기본 그룹').run();
+            groupId = newGroupResult.meta.last_row_id as number;
+          }
+        }
+
+        if (!groupId) {
+          return c.json({ error: '학생을 배치할 그룹을 찾을 수 없습니다. 먼저 멘토/그룹을 생성해주세요.' }, 400);
+        }
+
+        const result = await c.env.DB.prepare(
+          'INSERT INTO students (group_id, name, password_hash, school_name, grade, profile_emoji, external_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(groupId, name, stPwHash, '', 0, emoji, remoteUserId).run();
+
+        const studentId = result.meta.last_row_id;
         student = await c.env.DB.prepare(
           'SELECT * FROM students WHERE id = ?'
-        ).bind(result.meta.last_row_id).first();
+        ).bind(studentId).first();
+
+        // student_groups 테이블에도 추가
+        try {
+          await c.env.DB.prepare(
+            'INSERT OR IGNORE INTO student_groups (student_id, group_id) VALUES (?, ?)'
+          ).bind(studentId, groupId).run();
+        } catch(_) { /* ignore */ }
       } else {
         // 이름 동기화
         if (student.name !== name) {
@@ -3113,7 +3157,7 @@ app.get('/api/migrate', async (c) => {
       `CREATE INDEX IF NOT EXISTS idx_mentors_external ON mentors(external_user_id)`,
       `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL, name TEXT NOT NULL, invite_code TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', max_students INTEGER DEFAULT 30, is_active INTEGER DEFAULT 1, external_class_id INTEGER DEFAULT NULL, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (mentor_id) REFERENCES mentors(id))`,
       `CREATE INDEX IF NOT EXISTS idx_groups_external ON groups(external_class_id)`,
-      `CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, password_hash TEXT NOT NULL, school_name TEXT DEFAULT '', grade INTEGER DEFAULT 1, profile_emoji TEXT DEFAULT '😊', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, is_active INTEGER DEFAULT 1, external_user_id INTEGER DEFAULT NULL, last_login_at DATETIME, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (group_id) REFERENCES groups(id))`,
+      `CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, name TEXT NOT NULL, password_hash TEXT NOT NULL, school_name TEXT DEFAULT '', grade INTEGER DEFAULT 1, profile_emoji TEXT DEFAULT '😊', xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, is_active INTEGER DEFAULT 1, external_user_id INTEGER DEFAULT NULL, nickname TEXT, croquet_balance INTEGER NOT NULL DEFAULT 0, last_login_at DATETIME, created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (group_id) REFERENCES groups(id))`,
       `CREATE INDEX IF NOT EXISTS idx_students_external ON students(external_user_id)`,
       `CREATE TABLE IF NOT EXISTS exams (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'midterm', start_date TEXT NOT NULL, subjects TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'upcoming', memo TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (student_id) REFERENCES students(id))`,
       `CREATE TABLE IF NOT EXISTS exam_results (id INTEGER PRIMARY KEY AUTOINCREMENT, exam_id INTEGER NOT NULL UNIQUE, student_id INTEGER NOT NULL, total_score INTEGER, grade INTEGER, subjects_data TEXT NOT NULL DEFAULT '[]', overall_reflection TEXT DEFAULT '', created_at DATETIME DEFAULT (datetime('now','+9 hours')), updated_at DATETIME DEFAULT (datetime('now','+9 hours')), FOREIGN KEY (exam_id) REFERENCES exams(id), FOREIGN KEY (student_id) REFERENCES students(id))`,
@@ -3349,6 +3393,66 @@ app.get('/api/migrate', async (c) => {
         ).bind('director', dirPwHash, '원장', '정율사관학원').run();
       }
     } catch(_) { /* director account may already exist */ }
+
+    // ===== students.group_id nullable 마이그레이션 (테이블 재생성) =====
+    // SQLite에서는 ALTER TABLE로 NOT NULL 제약을 제거할 수 없으므로 테이블 재생성 필요
+    try {
+      // 현재 students 테이블의 group_id 컬럼이 NOT NULL인지 확인
+      const tableInfo: any = await c.env.DB.prepare("PRAGMA table_info(students)").all();
+      const groupIdCol = tableInfo.results?.find((col: any) => col.name === 'group_id');
+
+      if (groupIdCol && groupIdCol.notnull === 1) {
+        console.log('students.group_id is NOT NULL, starting migration to nullable...');
+
+        // 0. 이전 마이그레이션 실패로 남은 students_new 테이블 정리
+        try {
+          await c.env.DB.prepare('DROP TABLE IF EXISTS students_new').run();
+        } catch(_) { /* ignore */ }
+
+        // D1 batch로 한 번에 실행 (트랜잭션으로 외래 키 체크 연기)
+        await c.env.DB.batch([
+          // 1. 임시 테이블 생성 (group_id nullable, 외래 키 제약 제거)
+          c.env.DB.prepare(`
+            CREATE TABLE students_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              group_id INTEGER,
+              name TEXT NOT NULL,
+              password_hash TEXT NOT NULL,
+              school_name TEXT DEFAULT '',
+              grade INTEGER DEFAULT 1,
+              profile_emoji TEXT DEFAULT '😊',
+              xp INTEGER DEFAULT 0,
+              level INTEGER DEFAULT 1,
+              is_active INTEGER DEFAULT 1,
+              external_user_id INTEGER DEFAULT NULL,
+              nickname TEXT,
+              croquet_balance INTEGER NOT NULL DEFAULT 0,
+              last_login_at DATETIME,
+              created_at DATETIME DEFAULT (datetime('now','+9 hours')),
+              updated_at DATETIME DEFAULT (datetime('now','+9 hours'))
+            )
+          `),
+          // 2. 기존 데이터 복사
+          c.env.DB.prepare(`
+            INSERT INTO students_new (id, group_id, name, password_hash, school_name, grade, profile_emoji, xp, level, is_active, external_user_id, nickname, croquet_balance, last_login_at, created_at, updated_at)
+            SELECT id, group_id, name, password_hash, school_name, grade, profile_emoji, xp, level, is_active, external_user_id, nickname, croquet_balance, last_login_at, created_at, updated_at
+            FROM students
+          `),
+          // 3. 기존 테이블 삭제
+          c.env.DB.prepare('DROP TABLE students'),
+          // 4. 새 테이블 이름 변경
+          c.env.DB.prepare('ALTER TABLE students_new RENAME TO students'),
+          // 5. 인덱스 재생성
+          c.env.DB.prepare('CREATE INDEX idx_students_group ON students(group_id)'),
+          c.env.DB.prepare('CREATE INDEX idx_students_name_group ON students(name, group_id)'),
+          c.env.DB.prepare('CREATE INDEX idx_students_external ON students(external_user_id)'),
+        ]);
+
+        console.log('students.group_id nullable migration completed');
+      }
+    } catch(e: any) {
+      errors.push('students.group_id nullable migration: ' + (e.message || String(e)));
+    }
 
     // ===== 기존 students.group_id 데이터를 student_groups로 이관 =====
     try {
