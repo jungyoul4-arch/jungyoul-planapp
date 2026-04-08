@@ -765,20 +765,25 @@ app.get('/api/auth/external-login', async (c) => {
           }
           if (groupStmts.length > 0) {
             await c.env.DB.batch(groupStmts);
-            // 배치 생성된 그룹들에 대해 커뮤니티 보드 생성
+            // 배치 생성된 그룹들에 대해 커뮤니티 보드 생성 (최적화: 배치 쿼리)
             try {
               const newGroups: any = await c.env.DB.prepare(
                 'SELECT id, name FROM groups WHERE mentor_id = ? AND is_active = 1'
               ).bind(mentorId).all();
-              for (const g of (newGroups.results || [])) {
-                const boardExists: any = await c.env.DB.prepare(
-                  "SELECT id FROM community_boards WHERE board_type = 'group' AND group_id = ?"
-                ).bind(g.id).first();
-                if (!boardExists) {
-                  await c.env.DB.prepare(
+              const groupIds = (newGroups.results || []).map((g: any) => g.id);
+              if (groupIds.length > 0) {
+                // 기존 보드를 한 번에 조회
+                const existingBoards: any = await c.env.DB.prepare(
+                  `SELECT group_id FROM community_boards WHERE board_type = 'group' AND group_id IN (${groupIds.join(',')})`
+                ).all();
+                const existingGroupIds = new Set((existingBoards.results || []).map((b: any) => b.group_id));
+                // 없는 그룹만 배치 INSERT
+                const boardInserts = (newGroups.results || [])
+                  .filter((g: any) => !existingGroupIds.has(g.id))
+                  .map((g: any) => c.env.DB.prepare(
                     "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
-                  ).bind(g.id, `${g.name} 게시판`).run();
-                }
+                  ).bind(g.id, `${g.name} 게시판`));
+                if (boardInserts.length > 0) await c.env.DB.batch(boardInserts);
               }
             } catch (e) { console.error('Board creation hook error:', e); }
           }
@@ -865,21 +870,26 @@ app.get('/api/auth/external-login', async (c) => {
               // 배치 실행 (그룹 동기화만, 학생은 별도)
               if (batchStmts.length > 0) {
                 await c.env.DB.batch(batchStmts);
-                // 새로 생성된 그룹에 커뮤니티 보드 자동 생성
+                // 새로 생성된 그룹에 커뮤니티 보드 자동 생성 (최적화: 배치 쿼리)
                 if (newGroups.length > 0) {
                   try {
                     const allGroups: any = await c.env.DB.prepare(
                       'SELECT id, name FROM groups WHERE mentor_id = ? AND is_active = 1'
                     ).bind(mentor.id).all();
-                    for (const g of (allGroups.results || [])) {
-                      const boardExists: any = await c.env.DB.prepare(
-                        "SELECT id FROM community_boards WHERE board_type = 'group' AND group_id = ?"
-                      ).bind(g.id).first();
-                      if (!boardExists) {
-                        await c.env.DB.prepare(
+                    const groupIds = (allGroups.results || []).map((g: any) => g.id);
+                    if (groupIds.length > 0) {
+                      // 기존 보드를 한 번에 조회
+                      const existingBoards: any = await c.env.DB.prepare(
+                        `SELECT group_id FROM community_boards WHERE board_type = 'group' AND group_id IN (${groupIds.join(',')})`
+                      ).all();
+                      const existingGroupIds = new Set((existingBoards.results || []).map((b: any) => b.group_id));
+                      // 없는 그룹만 배치 INSERT
+                      const boardInserts = (allGroups.results || [])
+                        .filter((g: any) => !existingGroupIds.has(g.id))
+                        .map((g: any) => c.env.DB.prepare(
                           "INSERT INTO community_boards (board_type, group_id, name, description) VALUES ('group', ?, ?, '')"
-                        ).bind(g.id, `${g.name} 게시판`).run();
-                      }
+                        ).bind(g.id, `${g.name} 게시판`));
+                      if (boardInserts.length > 0) await c.env.DB.batch(boardInserts);
                     }
                   } catch (e) { console.error('Board creation hook error:', e); }
                 }
