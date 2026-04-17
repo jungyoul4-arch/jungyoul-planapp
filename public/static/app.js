@@ -17105,7 +17105,18 @@ function _initDelegatedEvents() {
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-mtab]');
     if (!btn) return;
-    state.mentorTab = btn.dataset.mtab;
+    const tabId = btn.dataset.mtab;
+    // 티쳐스 탭: 외부 URL로 이동
+    if (tabId === 'teachers') {
+      const userId = state._externalUserId;
+      if (userId) {
+        window.open(`https://teachers.jung-youl.com?user_id=${userId}`, '_blank');
+      } else {
+        alert('로그인 정보를 확인할 수 없습니다.');
+      }
+      return;
+    }
+    state.mentorTab = tabId;
     renderScreen();
   });
 

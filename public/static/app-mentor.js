@@ -735,7 +735,7 @@ function __renderMentorDashboard() {
     ${_mentor.groups.length > 1 ? `<div class="desk-tabs" style="border-bottom:none;padding-bottom:0">${groupTabs}</div>` : ''}
     <div class="desk-tabs">
       ${(() => {
-        const baseTabs = ['students:📋 내 학생','subjects:📊 과목별','questions:💬 질문함','photos:📸 사진','alerts:🚨 경보','feedback:💬 피드백','exams:📝 시험','network:🤝 교학상장','croquet:🍩 포인트'];
+        const baseTabs = ['students:📋 내 학생','subjects:📊 과목별','questions:💬 질문함','photos:📸 사진','alerts:🚨 경보','feedback:💬 피드백','exams:📝 시험','network:🤝 교학상장','croquet:🍩 포인트','teachers:🎓 티쳐스'];
         // 릴레이단어장 탭: 현재 선택된 그룹이 영어 클래스(external_class_id 있고 릴레이 대상)인 경우 표시
         if (_mentor._relayClassId) baseTabs.push('relay:📚 릴레이단어장');
         return baseTabs.map(t => {
