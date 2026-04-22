@@ -723,7 +723,10 @@ function __renderMentorDashboard() {
       <div style="display:flex;align-items:center;gap:14px">
         <img src="/static/logo.png" alt="정율사관학원" class="desk-header-logo">
         <div>
-          <h1>고교학점플래너 <span style="color:var(--primary-light)">멘토</span></h1>
+          <div style="display:flex;align-items:center;gap:12px">
+            <h1>고교학점플래너 <span style="color:var(--primary-light)">멘토</span></h1>
+            ${state._externalKind === 3 ? `<button onclick="window.open('https://qa-tutoring.jung-youl.com?user_id=${state._externalUserId || ''}&use=staff', '_blank')" style="background:linear-gradient(135deg,#6366F1,#8B5CF6);border:none;color:#fff;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s;box-shadow:0 2px 8px rgba(99,102,241,0.3)" onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 4px 12px rgba(99,102,241,0.4)'" onmouseout="this.style.transform='translateY(0)';this.style.boxShadow='0 2px 8px rgba(99,102,241,0.3)'"><i class="fas fa-comments"></i>직원질문방</button>` : ''}
+          </div>
           <p style="font-size:13px;color:var(--text-secondary);margin-top:4px">${user?.name || '멘토'} | 담당 학생 ${totalStudents}명</p>
         </div>
       </div>

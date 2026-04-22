@@ -912,6 +912,7 @@ app.get('/api/auth/external-login', async (c) => {
         token,
         role: 'mentor',
         externalUserId: remoteUserId,
+        externalKind: kind, // 원격 DB의 kind 값 (3=teacher)
         user: { id: mentor.id, loginId: mentor.login_id, name: mentor.name, academyName: mentor.academy_name, phone: mentor.phone },
         groups: groups.results,
       });

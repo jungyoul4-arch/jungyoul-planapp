@@ -1704,8 +1704,9 @@ async function externalLogin(userId, deviceMode, opMode) {
       startAutoSync();
     } else if (data.role === 'mentor') {
       state._authMentorGroups = data.groups;
+      state._externalKind = data.externalKind || null; // 원격 DB의 kind (3=teacher)
       state.mode = 'mentor';
-      localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, groups: data.groups, externalUserId: data.externalUserId }));
+      localStorage.setItem('cp_auth', JSON.stringify({ user: data.user, token: data.token, role: data.role, groups: data.groups, externalUserId: data.externalUserId, externalKind: data.externalKind }));
       _mentor.initialLoading = true;
       renderScreen();
       fetch('/api/migrate').catch(() => {});
@@ -1758,6 +1759,7 @@ function autoLogin() {
       state.mode = 'student';
     } else if (auth.role === 'mentor') {
       state._authMentorGroups = auth.groups;
+      state._externalKind = auth.externalKind || null; // 원격 DB의 kind (3=teacher)
       state.mode = 'mentor';
     }
     state.currentScreen = 'main';
